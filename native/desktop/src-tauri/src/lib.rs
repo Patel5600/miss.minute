@@ -122,7 +122,7 @@ impl DesktopState {
                 );
                 if let Err(error) = result {
                     if let Ok(mut slot) = worker_error.lock() {
-                        *slot = Some(format!("${error:#}"));
+                        *slot = Some(format!("{error:#}"));
                     }
                 }
             })
@@ -502,7 +502,7 @@ fn start_windows_cursor_gate(
 
                 let interactive = dragging.load(Ordering::Acquire) || if let Some(origin) = origin.filter(|_| cursor_available) {
                     let left = origin.x as f64 + (bounds.x - 12.0) * scale;
-                    let top = origin.y as f64 + (bounds.y - 110.0) * scale;
+                    let top = origin.y as f64 + (bounds.y - 12.0) * scale;
                     let right = origin.x as f64 + (bounds.x + bounds.width + 12.0) * scale;
                     let bottom = origin.y as f64 + (bounds.y + bounds.height + 20.0) * scale;
                     (cursor.x as f64) >= left
