@@ -122,7 +122,7 @@ impl DesktopState {
                 );
                 if let Err(error) = result {
                     if let Ok(mut slot) = worker_error.lock() {
-                        *slot = Some(format!("${error:#}"));
+                        *slot = Some(format!("{error:#}"));
                     }
                 }
             })
@@ -176,7 +176,7 @@ fn agent_status_inner(state: &DesktopState) -> AgentStatus {
         approved_note_roots: Vec::new(),
         pending_actions: 0,
         auto_create_notes: false,
-        notes_created_today: 0,
+        automatic_actions_today: 0,
         daily_note_limit: 3,
     };
 
@@ -203,7 +203,7 @@ fn agent_status_inner(state: &DesktopState) -> AgentStatus {
             let now = miss_minute_agent::config::now_unix_ms();
             let day_start = now.div_euclid(DAY_MS) * DAY_MS;
             if let Ok(count) = store.automatic_actions_since(day_start) {
-                status.notes_created_today = count;
+                status.automatic_actions_today = count;
             }
             if let Ok((events, files, decisions)) = store.counts() {
                 status.events = events;
