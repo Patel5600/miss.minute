@@ -11,7 +11,10 @@ use std::{
 use miss_minute_agent::{
     collector::run_agent_until,
     actions::{approve_and_execute, ActionExecutionResult},
-    config::{authorize_note_root, create_config, load_config, revoke_note_root},
+    config::{
+        authorize_note_root as grant_note_root, create_config, load_config,
+        revoke_note_root as drop_note_root,
+    },
     store::{PendingActionRecord, Store},
 };
 use serde::{Deserialize, Serialize};
@@ -207,7 +210,7 @@ fn authorize_note_root(
     confirm_write_permission: bool,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<AgentStatus, String> {
-    authorize_note_root(&state.config_path, Path::new(&path), confirm_write_permission)
+    grant_note_root(&state.config_path, Path::new(&path), confirm_write_permission)
         .map_err(|error| format!("{error:#}"))?;
     Ok(agent_status_inner(&state))
 }
@@ -217,7 +220,7 @@ fn revoke_note_root(
     path: String,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<AgentStatus, String> {
-    let config = revoke_note_root(&state.config_path, Path::new(&path))
+    let config = drop_note_root(&state.config_path, Path::new(&path))
         .map_err(|error| format!("{error:#}"))?;
     let mut store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
     store.expire_pending_actions("note_write_permission_revoked")
