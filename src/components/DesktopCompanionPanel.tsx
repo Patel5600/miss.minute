@@ -13,6 +13,8 @@ const emptyStatus: NativeAgentStatus = {
   approvedNoteRoots: [],
   pendingActions: 0,
   autoCreateNotes: false,
+  foregroundWindowContextEnabled: false,
+  foregroundWindowContextSupported: false,
   automaticActionsToday: 0,
   dailyNoteLimit: 3,
 };
@@ -297,6 +299,36 @@ export function DesktopCompanionPanel() {
             <span className="flex items-center gap-2"><TimerReset className="h-3.5 w-3.5 text-amber-400" /> Launch Miss Minutes at login</span>
             <span className={startupEnabled ? 'font-bold text-emerald-300' : 'text-amber-500'}>{startupEnabled ? 'Enabled' : 'Disabled'}</span>
           </button>
+          <div className="mt-3 rounded-xl border border-amber-700/30 bg-black/25 p-3">
+            <label className="flex cursor-pointer items-start justify-between gap-3">
+              <span>
+                <span className="block text-[10px] font-bold uppercase tracking-wider text-amber-200">Foreground window title context</span>
+                <span className="mt-1 block text-[10px] leading-relaxed text-amber-500/80">
+                  Windows only. When enabled, record the title of the current foreground window every 10 seconds, only when it changes. Titles can reveal document or conversation names. No window contents, screenshots, keystrokes, clipboard, browser history or background-app enumeration are collected.
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                checked={status.foregroundWindowContextEnabled}
+                disabled={busy || !status.foregroundWindowContextSupported}
+                onChange={event => {
+                  const enabled = event.target.checked;
+                  void run(async () => {
+                    const next = await invokeNative<NativeAgentStatus>('set_foreground_window_context', { enabled });
+                    setStatus(next);
+                  });
+                }}
+                className="mt-1 h-4 w-4 shrink-0 accent-amber-500 disabled:opacity-40"
+                aria-label="Enable foreground window title context"
+              />
+            </label>
+            {!status.foregroundWindowContextSupported && (
+              <p className="mt-2 border-t border-amber-800/30 pt-2 text-[9px] text-amber-600/80">
+                This source is available only in the Windows desktop build.
+              </p>
+            )}
+          </div>
+
           <div className="mt-3 rounded-xl border border-amber-700/30 bg-black/25 p-3">
             <label className="flex cursor-pointer items-start justify-between gap-3">
               <span>
