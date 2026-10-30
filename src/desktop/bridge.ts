@@ -12,10 +12,15 @@ interface TauriCore {
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
 }
 
+interface TauriEventApi {
+  listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<() => void>;
+}
+
 declare global {
   interface Window {
     __TAURI__?: {
       core?: TauriCore;
+      event?: TauriEventApi;
     };
   }
 }

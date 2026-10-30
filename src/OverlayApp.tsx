@@ -4,6 +4,7 @@ import { MissMinutesFloating } from './components/MissMinutesFloating';
 import { voiceService } from './services/voiceService';
 import { soundEffects } from './utils/audioEffects';
 import { invokeNative } from './desktop/bridge';
+import './overlay.css';
 
 interface AvatarUtterance {
   text: string;
@@ -13,19 +14,6 @@ interface AvatarUtterance {
   elevenLabsKey?: string;
   elevenLabsVoiceId?: string;
 }
-
-interface TauriEventApi {
-  listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<() => void>;
-}
-
-declare global {
-  interface Window {
-    __TAURI__?: {
-      event?: TauriEventApi;
-    };
-  }
-}
-import './overlay.css';
 
 export function OverlayApp() {
   const [emotion, setEmotion] = useState<Emotion>('cheerful');
@@ -40,19 +28,23 @@ export function OverlayApp() {
     let unlisten: (() => void) | undefined;
     let disposed = false;
 
-    void window.__TAURI__?.event?.listen<AvatarUtterance>('miss-minutes:speak', ({ payload }) => {
-      setEmotion(payload.emotion);
-      soundEffects.playClockTick(false);
-      void voiceService.speak(payload.text, {
-        pitch: payload.pitch,
-        rate: payload.rate,
-        elevenLabsKey: payload.elevenLabsKey,
-        elevenLabsVoiceId: payload.elevenLabsVoiceId,
-      }).finally(() => setEmotion('cheerful'));
-    }).then(stop => {
-      if (disposed) stop();
-      else unlisten = stop;
-    }).catch(error => console.error('[Miss Minutes] Avatar event listener failed:', error));
+    const eventApi = window.__TAURI__?.event;
+    if (eventApi) {
+      void eventApi.listen<AvatarUtterance>('miss-minutes:speak', event => {
+        const { payload } = event;
+        setEmotion(payload.emotion);
+        soundEffects.playClockTick(false);
+        void voiceService.speak(payload.text, {
+          pitch: payload.pitch,
+          rate: payload.rate,
+          elevenLabsKey: payload.elevenLabsKey,
+          elevenLabsVoiceId: payload.elevenLabsVoiceId,
+        }).finally(() => setEmotion('cheerful'));
+      }).then(stop => {
+        if (disposed) stop();
+        else unlisten = stop;
+      }).catch((error: unknown) => console.error('[Miss Minutes] Avatar event listener failed:', error));
+    }
 
     return () => {
       disposed = true;
