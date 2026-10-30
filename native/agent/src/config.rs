@@ -99,9 +99,25 @@ pub fn create_config(config_path: &Path, roots: &[PathBuf], confirmed: bool) -> 
         }
     }
 
-    if let Some(parent) = config_path.parent().filter(|value| !value.as_os_str().is_empty()) {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Cannot create config directory {}", parent.display()))?;
+    let requested_parent = config_path
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(requested_parent)
+        .with_context(|| format!("Cannot create config directory {}", requested_parent.display()))?;
+    let canonical_parent = fs::canonicalize(requested_parent)
+        .with_context(|| format!("Cannot resolve config directory {}", requested_parent.display()))?;
+    let file_name = config_path.file_name().context("Config path must include a filename")?;
+    let config_target = canonical_parent.join(file_name);
+    let database_path = config_target.with_extension("sqlite3");
+
+    for root in &canonical_roots {
+        if config_target.starts_with(root) || database_path.starts_with(root) {
+            bail!(
+                "Keep the config and local database outside monitored roots. Move them outside {}.",
+                root.display()
+            );
+        }
     }
 
     let config = AgentConfig {
@@ -116,7 +132,7 @@ pub fn create_config(config_path: &Path, roots: &[PathBuf], confirmed: bool) -> 
             file_contents: false,
             follow_symlinks: false,
         },
-        database_path: config_path.with_extension("sqlite3"),
+        database_path,
         retention_days: 30,
         reasoner: None,
     };
@@ -130,6 +146,11 @@ pub fn load_config(path: &Path) -> Result<AgentConfig> {
         .with_context(|| format!("Cannot read agent configuration: {}", path.display()))?;
     let config: AgentConfig = serde_json::from_str(&raw)
         .with_context(|| format!("Invalid JSON configuration: {}", path.display()))?;
+    let config_location = fs::canonicalize(path)
+        .with_context(|| format!("Cannot resolve config location: {}", path.display()))?;
+    if config.consent.allowed_roots.iter().any(|root| config_location.starts_with(root)) {
+        bail!("Keep the agent config outside monitored roots to avoid collecting its own configuration.");
+    }
     validate_config(&config)?;
     Ok(config)
 }
@@ -178,9 +199,21 @@ pub fn validate_config(config: &AgentConfig) -> Result<()> {
         }
         let canonical = fs::canonicalize(root)
             .with_context(|| format!("Cannot verify authorized root {}", root.display()))?;
-        if canonical != *root || canonical.parent().is_none_or(|parent| parent == canonical) {
+        if canonical != *root || canonical.parent().is_none_or(|parent| parent == canonical.as_path()) {
             bail!("An authorized root changed or is a filesystem root: {}", root.display());
         }
+    }
+
+    if !config.database_path.is_absolute() {
+        bail!("The local database path must be absolute.");
+    }
+    let database_parent = config.database_path.parent().context("Database path has no parent directory")?;
+    let database_parent = fs::canonicalize(database_parent)
+        .with_context(|| format!("Cannot resolve database directory {}", database_parent.display()))?;
+    let database_name = config.database_path.file_name().context("Database path has no filename")?;
+    let database_target = database_parent.join(database_name);
+    if config.consent.allowed_roots.iter().any(|root| database_target.starts_with(root)) {
+        bail!("The local database must be outside every monitored root.");
     }
 
     if let Some(reasoner) = &config.reasoner {
