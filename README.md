@@ -67,3 +67,10 @@ An interactive retro-futuristic AI companion inspired by Marvel's *Loki*. Miss M
 ---
 
 *For all time. Always.*
+
+
+---
+
+## Native desktop companion
+
+The Tauri desktop build adds a persistent Windows avatar overlay, a native system tray, opt-in login startup, and typed browser-to-Rust IPC. See [native/desktop/README.md](native/desktop/README.md) for the platform matrix, privacy boundary, and build commands. The task executor and Android/iOS background agents remain future phases; this branch does not claim those features are implemented.

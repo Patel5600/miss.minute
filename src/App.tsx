@@ -9,6 +9,7 @@ import { TimelineMonitor } from './components/TimelineMonitor';
 import { VariantCard } from './components/VariantCard';
 import { SettingsModal } from './components/SettingsModal';
 import { TvaHeader } from './components/TvaHeader';
+import { DesktopCompanionPanel } from './components/DesktopCompanionPanel';
 import confetti from 'canvas-confetti';
 
 export function App() {
@@ -199,6 +200,7 @@ export function App() {
 
         {/* LEFT: mood picker + variant dossier */}
         <section className="lg:col-span-4 flex flex-col gap-4">
+          <DesktopCompanionPanel />
           {/* Mood Selector */}
           <div className="bg-amber-950/40 border border-amber-600/28 rounded-2xl p-4 backdrop-blur-md shadow-xl">
             <p className="text-[10px] uppercase font-bold text-amber-400/80 tracking-[0.2em] mb-2.5">

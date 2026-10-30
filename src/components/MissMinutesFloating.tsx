@@ -91,6 +91,7 @@ interface Props {
   mouthFrame?: 0 | 1 | 2 | 3 | 4;
   autonomousChatter?: boolean;
   isBusy?: boolean;
+  onBoundsChange?: (bounds: { x: number; y: number; width: number; height: number }) => void;
 }
 
 type BehaviorMode =
@@ -109,6 +110,7 @@ export const MissMinutesFloating: React.FC<Props> = ({
   mouthFrame = 0,
   autonomousChatter = false,
   isBusy = false,
+  onBoundsChange,
 }) => {
   // ── High-Level React State ─────────────────────────────────────────────────
   const [blink, setBlink] = useState(false);
@@ -124,6 +126,8 @@ export const MissMinutesFloating: React.FC<Props> = ({
   const wrapRef = useRef<HTMLDivElement>(null);
   const callbackRef = useRef(onAvatarClick);
   callbackRef.current = onAvatarClick;
+  const boundsCallbackRef = useRef(onBoundsChange);
+  boundsCallbackRef.current = onBoundsChange;
   const isSpeakingRef = useRef(isSpeaking);
   isSpeakingRef.current = isSpeaking;
   const isBusyRef = useRef(isBusy);
@@ -390,6 +394,7 @@ export const MissMinutesFloating: React.FC<Props> = ({
     let rafId: number;
 
     let previousFrameTime = 0;
+    let lastBoundsPublish = 0;
     const animate = (timestamp: number) => {
       const frameScale = previousFrameTime === 0 ? 1 : Math.min((timestamp - previousFrameTime) / 16.6667, 3);
       previousFrameTime = timestamp;
@@ -596,6 +601,18 @@ export const MissMinutesFloating: React.FC<Props> = ({
         wrapRef.current.style.left = `${pos.current.x}px`;
         wrapRef.current.style.top = `${pos.current.y - bodyBob}px`;
         wrapRef.current.style.transform = `scale(${smoothFacing.current * squash.current.sx}, ${squash.current.sy}) rotate(${headTilt.current}deg)`;
+      }
+
+      // Keep the native Windows hit-test rectangle in sync without sending
+      // frame-rate IPC traffic. Character animation itself remains RAF-driven.
+      if (timestamp - lastBoundsPublish >= 100) {
+        lastBoundsPublish = timestamp;
+        boundsCallbackRef.current?.({
+          x: pos.current.x,
+          y: pos.current.y - bodyBob,
+          width: AVATAR_W,
+          height: AVATAR_H,
+        });
       }
 
       rafId = requestAnimationFrame(animate);

@@ -176,6 +176,22 @@ fn evaluate_context(store: &mut Store, config: &AgentConfig) -> Result<bool> {
 }
 
 pub fn run_agent(config: &AgentConfig, quiet_window_seconds: u64, rescan_seconds: u64) -> Result<()> {
+    let stopping = Arc::new(AtomicBool::new(false));
+    let signal_stopping = Arc::clone(&stopping);
+    ctrlc::set_handler(move || {
+        signal_stopping.store(true, Ordering::Release);
+    }).context("Cannot register shutdown handler")?;
+    run_agent_until(config, quiet_window_seconds, rescan_seconds, stopping)
+}
+
+/// Run under an externally managed shutdown token. Desktop hosts use this
+/// entry point instead of installing a process-global Ctrl+C handler.
+pub fn run_agent_until(
+    config: &AgentConfig,
+    quiet_window_seconds: u64,
+    rescan_seconds: u64,
+    stopping: Arc<AtomicBool>,
+) -> Result<()> {
     let roots = config.consent.allowed_roots.clone();
     let (sender, receiver) = mpsc::sync_channel::<notify::Result<Event>>(2048);
     let overflowed = Arc::new(AtomicBool::new(false));
@@ -204,12 +220,6 @@ pub fn run_agent(config: &AgentConfig, quiet_window_seconds: u64, rescan_seconds
         deleted
     );
     println!("[agent] Metadata only. File contents, keystrokes, clipboard, screenshots and private app data are not collected.");
-
-    let stopping = Arc::new(AtomicBool::new(false));
-    let signal_stopping = Arc::clone(&stopping);
-    ctrlc::set_handler(move || {
-        signal_stopping.store(true, Ordering::Release);
-    }).context("Cannot register shutdown handler")?;
 
     let quiet_window = Duration::from_secs(quiet_window_seconds.clamp(5, 3600));
     let rescan_interval = Duration::from_secs(rescan_seconds.clamp(30, 86_400));

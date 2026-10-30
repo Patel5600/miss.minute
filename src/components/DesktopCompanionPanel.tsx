@@ -1,0 +1,175 @@
+import { useCallback, useEffect, useState } from 'react';
+import { Activity, Monitor, Power, RefreshCw, Rocket, ShieldCheck, Square, TimerReset } from 'lucide-react';
+import { invokeNative, isDesktopRuntime, type NativeAgentStatus } from '../desktop/bridge';
+
+const emptyStatus: NativeAgentStatus = {
+  enrolled: false,
+  running: false,
+  roots: [],
+  events: 0,
+  indexedFiles: 0,
+  decisions: 0,
+  lastError: null,
+};
+
+export function DesktopCompanionPanel() {
+  const desktop = isDesktopRuntime();
+  const [status, setStatus] = useState<NativeAgentStatus>(emptyStatus);
+  const [startupEnabled, setStartupEnabled] = useState(false);
+  const [rootsText, setRootsText] = useState('');
+  const [consent, setConsent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const refresh = useCallback(async () => {
+    if (!desktop) return;
+    try {
+      const next = await invokeNative<NativeAgentStatus>('agent_status');
+      setStatus(next);
+      const startup = await invokeNative<boolean>('get_startup');
+      setStartupEnabled(startup);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Native status is unavailable.');
+    }
+  }, [desktop]);
+
+  useEffect(() => {
+    if (!desktop) return;
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5000);
+    return () => window.clearInterval(timer);
+  }, [desktop, refresh]);
+
+  if (!desktop) return null;
+
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true);
+    setError('');
+    try {
+      await action();
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'The native operation failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const enroll = async () => {
+    const roots = rootsText.split(/\r?\n/).map(root => root.trim()).filter(Boolean);
+    await run(async () => {
+      const next = await invokeNative<NativeAgentStatus>('agent_enroll', {
+        roots,
+        confirmOwnerPermission: consent,
+      });
+      setStatus(next);
+    });
+  };
+
+  return (
+    <section className="rounded-2xl border border-amber-500/30 bg-[#170F08]/90 p-4 shadow-xl backdrop-blur-xl">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Monitor className="h-4 w-4 text-amber-400" />
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-200">Desktop Companion</p>
+            <p className="text-[10px] text-amber-500/70">Native process • local IPC • Windows overlay</p>
+          </div>
+        </div>
+        <span className={
+          status.running
+            ? 'rounded-full border border-emerald-500/40 bg-emerald-950/50 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-300'
+            : 'rounded-full border border-amber-700/40 bg-black/30 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-400'
+        }>
+          {status.running ? 'Agent running' : status.enrolled ? 'Agent stopped' : 'Not enrolled'}
+        </span>
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <div className="rounded-xl border border-amber-800/30 bg-black/30 p-2">
+          <p className="text-lg font-black tabular-nums text-amber-200">{status.events}</p>
+          <p className="text-[9px] uppercase tracking-wider text-amber-500/70">Events</p>
+        </div>
+        <div className="rounded-xl border border-amber-800/30 bg-black/30 p-2">
+          <p className="text-lg font-black tabular-nums text-amber-200">{status.indexedFiles}</p>
+          <p className="text-[9px] uppercase tracking-wider text-amber-500/70">Files</p>
+        </div>
+        <div className="rounded-xl border border-amber-800/30 bg-black/30 p-2">
+          <p className="text-lg font-black tabular-nums text-amber-200">{status.decisions}</p>
+          <p className="text-[9px] uppercase tracking-wider text-amber-500/70">Decisions</p>
+        </div>
+      </div>
+
+      {!status.enrolled && (
+        <div className="mt-3 rounded-xl border border-amber-700/30 bg-black/25 p-3">
+          <div className="mb-2 flex items-center gap-2 text-amber-200">
+            <ShieldCheck className="h-4 w-4 text-amber-400" />
+            <p className="text-[11px] font-bold">Authorize folders explicitly</p>
+          </div>
+          <textarea
+            value={rootsText}
+            onChange={event => setRootsText(event.target.value)}
+            rows={3}
+            placeholder={'One existing absolute folder path per line\nC:\\Users\\You\\Projects'}
+            className="w-full resize-y rounded-lg border border-amber-700/40 bg-[#0D0906] px-3 py-2 text-[11px] text-amber-100 outline-none placeholder:text-amber-800 focus:border-amber-400"
+          />
+          <label className="mt-2 flex cursor-pointer items-start gap-2 text-[10px] leading-relaxed text-amber-400/80">
+            <input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} className="mt-0.5 accent-amber-500" />
+            I reviewed these exact paths and authorize metadata-only monitoring. File contents, screenshots, clipboard and keystrokes are not collected.
+          </label>
+          <button
+            type="button"
+            disabled={busy || !consent || !rootsText.trim()}
+            onClick={() => void enroll()}
+            className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-3 py-2 text-[11px] font-black uppercase tracking-wider text-neutral-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Rocket className="h-3.5 w-3.5" /> Enroll and start
+          </button>
+        </div>
+      )}
+
+      {status.enrolled && (
+        <>
+          <div className="mt-3 space-y-1 rounded-xl border border-amber-800/30 bg-black/25 p-3">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-amber-400">Authorized roots</p>
+            {status.roots.map(root => <p key={root} className="break-all text-[10px] text-amber-200/75">{root}</p>)}
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button type="button" disabled={busy || status.running} onClick={() => void run(async () => { await invokeNative('agent_start'); })} className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-600/40 bg-emerald-950/35 px-2 py-2 text-[10px] font-bold text-emerald-200 disabled:opacity-40">
+              <Power className="h-3.5 w-3.5" /> Start agent
+            </button>
+            <button type="button" disabled={busy || !status.running} onClick={() => void run(async () => { await invokeNative('agent_stop'); })} className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-amber-700/40 bg-black/30 px-2 py-2 text-[10px] font-bold text-amber-200 disabled:opacity-40">
+              <Square className="h-3.5 w-3.5" /> Stop agent
+            </button>
+            <button type="button" disabled={busy} onClick={() => void run(async () => { await invokeNative('toggle_avatar'); })} className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-amber-700/40 bg-black/30 px-2 py-2 text-[10px] font-bold text-amber-200 disabled:opacity-40">
+              <Activity className="h-3.5 w-3.5" /> Toggle avatar
+            </button>
+            <button type="button" disabled={busy} onClick={() => void refresh()} className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-amber-700/40 bg-black/30 px-2 py-2 text-[10px] font-bold text-amber-200 disabled:opacity-40">
+              <RefreshCw className="h-3.5 w-3.5" /> Refresh
+            </button>
+          </div>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(async () => {
+              const next = await invokeNative<boolean>('set_startup', { enabled: !startupEnabled });
+              setStartupEnabled(next);
+            })}
+            className="mt-2 inline-flex w-full items-center justify-between rounded-lg border border-amber-700/30 bg-black/25 px-3 py-2 text-left text-[10px] text-amber-200"
+          >
+            <span className="flex items-center gap-2"><TimerReset className="h-3.5 w-3.5 text-amber-400" /> Launch Miss Minutes at login</span>
+            <span className={startupEnabled ? 'font-bold text-emerald-300' : 'text-amber-500'}>{startupEnabled ? 'Enabled' : 'Disabled'}</span>
+          </button>
+        </>
+      )}
+
+      {status.lastError && <p className="mt-2 rounded-lg border border-red-700/40 bg-red-950/35 p-2 text-[10px] text-red-300">{status.lastError}</p>}
+      {error && <p className="mt-2 rounded-lg border border-red-700/40 bg-red-950/35 p-2 text-[10px] text-red-300">{error}</p>}
+      <p className="mt-3 text-[9px] leading-relaxed text-amber-600/80">
+        Closing the dashboard leaves the native process and avatar active. The tray menu controls visibility and shutdown. Activity coverage is limited to the folders above.
+      </p>
+    </section>
+  );
+}
+
+export default DesktopCompanionPanel;
