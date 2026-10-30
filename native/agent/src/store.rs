@@ -1,4 +1,10 @@
-use std::path::Path;
+use std::{
+    fs::{self, OpenOptions},
+    path::{Path, PathBuf},
+};
+
+use fs2::FileExt;
+use zeroize::Zeroizing;
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -43,6 +49,71 @@ pub struct PendingActionRecord {
     pub result_json: Option<String>,
 }
 
+
+fn key_hex(key: &[u8]) -> String {
+    key.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn open_encrypted_connection(path: &Path, key: &[u8]) -> Result<Connection> {
+    let connection = Connection::open(path)
+        .with_context(|| format!("Cannot open encrypted database {}", path.display()))?;
+    let pragma = format!("PRAGMA key = \"x'{}'\"; PRAGMA cipher_memory_security = ON;", key_hex(key));
+    connection.execute_batch(&pragma).context("Cannot initialize SQLCipher key")?;
+    let _: i64 = connection.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get(0))
+        .context("SQLCipher could not authenticate the local event database. The key is missing, incorrect, or the file is damaged.")?;
+    Ok(connection)
+}
+
+fn is_plaintext_database(path: &Path) -> Result<bool> {
+    let connection = Connection::open(path)
+        .with_context(|| format!("Cannot inspect local database {}", path.display()))?;
+    Ok(connection.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0)).is_ok())
+}
+
+fn sql_literal_path(path: &Path) -> Result<String> {
+    let value = path.to_str().context("Database migration path is not valid UTF-8")?;
+    Ok(value.replace('\'', "''"))
+}
+
+fn migrate_plaintext_database(path: &Path, key: &[u8]) -> Result<()> {
+    let (temporary, backup) = crate::secrets::migration_paths(path);
+    if backup.exists() {
+        bail!("An interrupted database migration backup exists at {}. Refusing to overwrite or delete it; recover it manually first.", backup.display());
+    }
+    if temporary.exists() {
+        fs::remove_file(&temporary)
+            .with_context(|| format!("Cannot remove stale migration file {}", temporary.display()))?;
+    }
+
+    let source = Connection::open(path)
+        .with_context(|| format!("Cannot open legacy plaintext database {}", path.display()))?;
+    source.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+        .context("Cannot checkpoint legacy database before encryption")?;
+    let attach = format!(
+        "ATTACH DATABASE '{}' AS encrypted KEY \"x'{}'\"; SELECT sqlcipher_export('encrypted'); DETACH DATABASE encrypted;",
+        sql_literal_path(&temporary)?,
+        key_hex(key)
+    );
+    let export_result = source.execute_batch(&attach)
+        .context("SQLCipher failed to export the legacy plaintext database");
+    drop(source);
+    export_result?;
+
+    let verified = open_encrypted_connection(&temporary, key)
+        .context("Encrypted migration output failed verification; plaintext source was preserved")?;
+    drop(verified);
+
+    fs::rename(path, &backup)
+        .with_context(|| format!("Cannot preserve the legacy database at {}", backup.display()))?;
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::rename(&backup, path);
+        return Err(error).with_context(|| format!("Cannot install encrypted database at {}", path.display()));
+    }
+    fs::remove_file(&backup)
+        .with_context(|| format!("Encrypted database is installed, but plaintext backup remains at {}", backup.display()))?;
+    Ok(())
+}
+
 pub struct Store {
     connection: Connection,
 }
@@ -50,22 +121,54 @@ pub struct Store {
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)
+            fs::create_dir_all(parent)
                 .with_context(|| format!("Cannot create database directory {}", parent.display()))?;
         }
+        if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            bail!("Refusing to open a database path that is a symbolic link.");
+        }
 
-        let connection = Connection::open(path)
-            .with_context(|| format!("Cannot open local event database {}", path.display()))?;
+        let lock_path = PathBuf::from(format!("{}.key-lock", path.display()));
+        let lock_file = OpenOptions::new().create(true).read(true).write(true).open(&lock_path)
+            .with_context(|| format!("Cannot open database setup lock {}", lock_path.display()))?;
+        FileExt::lock_exclusive(&lock_file).context("Cannot acquire database setup lock")?;
+
+        let exists = path.is_file() && fs::metadata(path)?.len() > 0;
+        let plaintext = if exists { is_plaintext_database(path)? } else { false };
+        let mut key = crate::secrets::existing_database_key(path)?;
+
+        if exists && !plaintext && key.is_none() {
+            bail!("An encrypted database exists but its operating-system key is missing. Refusing to replace the key or initialize a new database.");
+        }
+        if key.is_none() {
+            key = Some(crate::secrets::create_database_key(path)?);
+        }
+        let key = key.expect("database key was initialized");
+
+        if exists && plaintext {
+            migrate_plaintext_database(path, key.as_slice())?;
+        }
+
+        let connection = open_encrypted_connection(path, key.as_slice())?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if path.exists() {
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-                    .with_context(|| format!("Cannot restrict database permissions: {}", path.display()))?;
-            }
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("Cannot restrict database permissions: {}", path.display()))?;
         }
 
+        let store = Self::initialize(connection)?;
+        drop(lock_file);
+        Ok(store)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_for_tests(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
+        let connection = open_encrypted_connection(path, &[0x42_u8; 32])?;
         Self::initialize(connection)
     }
 
@@ -78,7 +181,9 @@ impl Store {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.execute_batch(
             "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=NORMAL;
+             PRAGMA synchronous=FULL;
+             PRAGMA secure_delete=ON;
+             PRAGMA cipher_memory_security=ON;
              PRAGMA foreign_keys=ON;
              CREATE TABLE IF NOT EXISTS events (
                  seq INTEGER PRIMARY KEY AUTOINCREMENT,

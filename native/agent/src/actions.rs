@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn automatic_mode_off_never_executes_a_pending_action() {
         let (config, base) = fixture(false, 3);
-        let mut store = Store::open(&config.database_path).unwrap();
+        let mut store = Store::open_for_tests(&config.database_path).unwrap();
         let id = queue_note(&mut store, 1, "manual-review.md");
 
         assert!(auto_execute_if_enabled(&config, &mut store, &id).unwrap().is_none());
