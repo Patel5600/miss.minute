@@ -38,6 +38,10 @@ pub struct ReasonerConfig {
     pub api_key_env: Option<String>,
     /// Required before a remote endpoint may receive local paths and metadata.
     pub share_local_metadata_with_remote: bool,
+    /// Separate opt-in: owner-authored pinned context is never sent to a remote
+    /// reasoner merely because filesystem metadata sharing was approved.
+    #[serde(default)]
+    pub share_owner_context_with_remote: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
