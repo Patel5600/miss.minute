@@ -44,6 +44,9 @@ pub struct AgentConfig {
     pub capture: CapturePolicy,
     pub database_path: PathBuf,
     pub retention_days: u32,
+    /// Separate write grants. Reading metadata under allowed_roots never implies write permission.
+    #[serde(default)]
+    pub approved_note_roots: Vec<PathBuf>,
     pub reasoner: Option<ReasonerConfig>,
 }
 
@@ -134,6 +137,7 @@ pub fn create_config(config_path: &Path, roots: &[PathBuf], confirmed: bool) -> 
         },
         database_path,
         retention_days: 30,
+        approved_note_roots: Vec::new(),
         reasoner: None,
     };
 
@@ -204,6 +208,31 @@ pub fn validate_config(config: &AgentConfig) -> Result<()> {
         }
     }
 
+    let mut approved_note_roots = HashSet::new();
+    for note_root in &config.approved_note_roots {
+        if !note_root.is_absolute() || !note_root.is_dir() {
+            bail!("An approved note output folder is unavailable or not absolute: {}", note_root.display());
+        }
+        let canonical = fs::canonicalize(note_root)
+            .with_context(|| format!("Cannot verify approved note output folder {}", note_root.display()))?;
+        if canonical != *note_root {
+            bail!("An approved note output folder changed or traverses a symlink: {}", note_root.display());
+        }
+        if !config.consent.allowed_roots.iter().any(|root| canonical.starts_with(root)) {
+            bail!("Note output folders must be inside an owner-authorized metadata root.");
+        }
+        if !approved_note_roots.insert(canonical.clone()) {
+            bail!("Duplicate note output folder: {}", canonical.display());
+        }
+    }
+    for (index, left) in config.approved_note_roots.iter().enumerate() {
+        for right in config.approved_note_roots.iter().skip(index + 1) {
+            if left.starts_with(right) || right.starts_with(left) {
+                bail!("Overlapping note output permissions are not allowed: {} and {}", left.display(), right.display());
+            }
+        }
+    }
+
     if !config.database_path.is_absolute() {
         bail!("The local database path must be absolute.");
     }
@@ -254,6 +283,40 @@ pub fn validate_reasoner_config(reasoner: &ReasonerConfig) -> Result<()> {
         bail!("api_key_env must be an environment-variable name, not a secret value.");
     }
     Ok(())
+}
+
+/// Grants the separate, narrowly scoped permission to create new Markdown notes.
+pub fn authorize_note_root(config_path: &Path, requested_root: &Path, confirmed: bool) -> Result<AgentConfig> {
+    if !confirmed {
+        bail!("A separate write-permission confirmation is required.");
+    }
+    let mut config = load_config(config_path)?;
+    let canonical = canonical_allowed_root(requested_root)?;
+    if !config.consent.allowed_roots.iter().any(|root| canonical.starts_with(root)) {
+        bail!("The note output folder must be inside one of the metadata roots already authorized.");
+    }
+    if config.approved_note_roots.iter().any(|root| root == &canonical) {
+        return Ok(config);
+    }
+    if config.approved_note_roots.iter().any(|root| root.starts_with(&canonical) || canonical.starts_with(root)) {
+        bail!("Overlapping note output permissions are not allowed.");
+    }
+    config.approved_note_roots.push(canonical);
+    save_config(config_path, &config)?;
+    Ok(config)
+}
+
+pub fn revoke_note_root(config_path: &Path, requested_root: &Path) -> Result<AgentConfig> {
+    let mut config = load_config(config_path)?;
+    let canonical = fs::canonicalize(requested_root)
+        .with_context(|| format!("Cannot resolve note output folder {}", requested_root.display()))?;
+    let before = config.approved_note_roots.len();
+    config.approved_note_roots.retain(|root| root != &canonical);
+    if config.approved_note_roots.len() == before {
+        bail!("That folder does not have a note-write permission.");
+    }
+    save_config(config_path, &config)?;
+    Ok(config)
 }
 
 pub fn configure_reasoner(

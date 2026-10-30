@@ -6,6 +6,27 @@ export interface NativeAgentStatus {
   indexedFiles: number;
   decisions: number;
   lastError: string | null;
+  approvedNoteRoots: string[];
+  pendingActions: number;
+}
+
+export interface PendingAction {
+  id: string;
+  throughSeq: number;
+  description: string;
+  payloadJson: string;
+  evidenceEventIdsJson: string;
+  status: string;
+  createdAtUnixMs: number;
+  expiresAtUnixMs: number;
+  resultJson: string | null;
+}
+
+export interface CreateNotePayload {
+  kind: 'create_note';
+  root_index: number;
+  filename: string;
+  content: string;
 }
 
 interface TauriCore {

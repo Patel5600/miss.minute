@@ -3,8 +3,12 @@ use std::{path::PathBuf, process::ExitCode};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use miss_minute_agent::{
+    actions::approve_and_execute,
     collector::{run_agent, run_one_reasoning_cycle, scan_roots},
-    config::{clear_reasoner, configure_reasoner, create_config, load_config},
+    config::{
+        authorize_note_root, clear_reasoner, configure_reasoner, create_config, load_config,
+        revoke_note_root,
+    },
     store::Store,
 };
 
@@ -82,6 +86,45 @@ enum Commands {
         #[arg(long)]
         config: PathBuf,
     },
+    /// Grant a separate permission to create new Markdown notes in one existing subfolder.
+    AuthorizeNoteRoot {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        path: PathBuf,
+        #[arg(long)]
+        confirm_write_permission: bool,
+    },
+    /// Revoke a note-write permission and expire outstanding proposals.
+    RevokeNoteRoot {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        path: PathBuf,
+    },
+    /// Show exact pending action payloads before approving any of them.
+    PendingActions {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Execute one pending, typed action after reviewing its exact payload.
+    ApproveAction {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        action_id: String,
+        #[arg(long)]
+        confirm_exact_action: bool,
+    },
+    /// Reject one pending action.
+    RejectAction {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        action_id: String,
+        #[arg(long)]
+        confirm_rejection: bool,
+    },
     /// Permanently remove the local event history, metadata index and decisions.
     ForgetHistory {
         #[arg(long)]
@@ -137,6 +180,10 @@ fn execute(cli: Cli) -> Result<()> {
             println!("Indexed current files: {resources}");
             println!("Reasoning decisions: {decisions}");
             println!("Retention: {} days", config_data.retention_days);
+            println!("Approved note-write folders: {}", config_data.approved_note_roots.len());
+            for root in &config_data.approved_note_roots {
+                println!("  {}", root.display());
+            }
             println!("Reasoner: {}", if config_data.reasoner.is_some() { "configured" } else { "disabled" });
             println!("Database: {}", config_data.database_path.display());
             println!("Completeness: not guaranteed; event delivery and OS permissions can create gaps.");
@@ -187,6 +234,44 @@ fn execute(cli: Cli) -> Result<()> {
         Commands::DisableReasoner { config } => {
             clear_reasoner(&config)?;
             println!("Reasoner disabled. Local collection remains enabled.");
+        }
+        Commands::AuthorizeNoteRoot { config, path, confirm_write_permission } => {
+            let updated = authorize_note_root(&config, &path, confirm_write_permission)?;
+            println!("Separate Markdown-note write permission granted:");
+            println!("  {}", updated.approved_note_roots.last().map(|value| value.display().to_string()).unwrap_or_default());
+            println!("This does not grant permission to overwrite, move, or delete files.");
+        }
+        Commands::RevokeNoteRoot { config, path } => {
+            let updated = revoke_note_root(&config, &path)?;
+            let mut store = Store::open(&updated.database_path)?;
+            let expired = store.expire_pending_actions("note_write_permission_revoked")?;
+            println!("Note-write permission revoked: {}", path.display());
+            println!("Pending proposals expired: {expired}");
+        }
+        Commands::PendingActions { config } => {
+            let config_data = load_config(&config)?;
+            let mut store = Store::open(&config_data.database_path)?;
+            for action in store.pending_actions(100)? {
+                println!("{}", serde_json::to_string_pretty(&action)?);
+            }
+        }
+        Commands::ApproveAction { config, action_id, confirm_exact_action } => {
+            if !confirm_exact_action {
+                anyhow::bail!("Review the matching pending-actions payload and pass --confirm-exact-action to approve this exact operation.");
+            }
+            let config_data = load_config(&config)?;
+            let mut store = Store::open(&config_data.database_path)?;
+            let outcome = approve_and_execute(&config_data, &mut store, &action_id)?;
+            println!("{}", serde_json::to_string_pretty(&outcome)?);
+        }
+        Commands::RejectAction { config, action_id, confirm_rejection } => {
+            if !confirm_rejection {
+                anyhow::bail!("Pass --confirm-rejection to reject this action.");
+            }
+            let config_data = load_config(&config)?;
+            let mut store = Store::open(&config_data.database_path)?;
+            store.reject_pending_action(&action_id)?;
+            println!("Action rejected: {action_id}");
         }
         Commands::ForgetHistory { config, confirm_permanent_deletion } => {
             if !confirm_permanent_deletion {

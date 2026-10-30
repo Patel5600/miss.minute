@@ -59,3 +59,8 @@ The Tauri config runs the root Vite build and uses the root dist directory. The 
 Open the dashboard in the desktop application. In Desktop Companion, enter one existing absolute directory path per line, review the scope, and explicitly confirm metadata-only monitoring. The app creates its configuration under the OS app-data directory and starts the worker.
 
 The first version intentionally does not provide automatic broad home-directory, drive-root, or profile enrollment.
+
+
+## Typed action approval surface
+
+The dashboard can authorize an exact note-output folder separately from metadata collection. Pending proposals show the full Markdown body and exact target path. The owner can approve once or reject. Revoking the folder permission expires pending proposals. See the agent README for CLI equivalents and strict execution limits.

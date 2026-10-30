@@ -43,3 +43,19 @@
 Filesystem notifications are not a universal audit log. They can be coalesced, missed, unsupported on some filesystems, or unavailable due to OS permissions. Metadata scans observe current files, not deleted historical files. The agent therefore makes no claim to reconstruct all device activity from first boot.
 
 The agent currently observes authorized filesystem metadata only. It does not see active windows, keystrokes, clipboard, screens, web sessions, messages, or application-private data. Mobile background agents and autonomous task execution are not included in this milestone.
+
+
+## Write-capability boundary
+
+The agent metadata allowlist is read-only. Writing requires a second, separately persisted approved_note_roots grant. Each output root must be a canonical existing subfolder of an owner-authorized metadata root. Overlapping write roots are rejected.
+
+The initial capability registry contains only create_note:
+- Root selected by an integer index into the explicit write-root list.
+- Filename constrained to an ASCII slug with a .md suffix; no path separators or nested paths.
+- Body limited to 8192 bytes and rejects NUL.
+- Creation is exclusive and no-overwrite. A temporary file is written and flushed, then hard-linked atomically to the destination. A collision fails closed.
+- Approval records are durable, expire after 24 hours, and can be claimed only once. Approval and execution transitions are audited in action_audit.
+- Revoking any write root expires pending proposals.
+- A process restart marks in-flight executions as uncertain/failed; no automatic retry is attempted.
+
+There is no unrestricted process executor or model-authored code path. This vertical slice is owner-approved execution, not unattended autonomous task execution. Broader autonomy requires separate capability scopes and failure-mode review per action.

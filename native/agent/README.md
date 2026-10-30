@@ -104,3 +104,36 @@ A model may decide to remain silent. A speak decision is stored as a candidate; 
     miss-minute-agent forget-history --config ./miss-minute-agent.json --confirm-permanent-deletion
 
 This deletes the event history, current file metadata index and stored decisions. It retains the configuration and authorized roots.
+
+
+## Typed task proposals and approved note creation
+
+The reasoner can propose one capability: create a new Markdown note in a separately approved output folder. This is deliberately separate from metadata monitoring consent. A monitored folder does not automatically become writable.
+
+Grant write permission only to a specific existing subfolder inside an already authorized metadata root:
+
+    miss-minute-agent authorize-note-root --config ./miss-minute-agent.json --path ./Projects/Notes --confirm-write-permission
+
+Inspect the exact pending payload before approval:
+
+    miss-minute-agent pending-actions --config ./miss-minute-agent.json
+    miss-minute-agent approve-action --config ./miss-minute-agent.json --action-id ACTION_ID --confirm-exact-action
+
+Reject an action:
+
+    miss-minute-agent reject-action --config ./miss-minute-agent.json --action-id ACTION_ID --confirm-rejection
+
+Revoke the output folder permission:
+
+    miss-minute-agent revoke-note-root --config ./miss-minute-agent.json --path ./Projects/Notes
+
+Current execution limits:
+
+- Only one action type exists: create a new top-level Markdown file in an approved note folder.
+- File names are restricted to a short ASCII slug and .md.
+- Note body is limited to 8192 bytes.
+- Existing destinations are never overwritten. Creation uses an exclusive temporary file followed by an atomic hard-link operation.
+- Approval expires after 24 hours and is one-shot. Rejection, expiry, revocation and execution are recorded in the local append-only action audit.
+- A process crash during execution is treated as an uncertain outcome and requires manual inspection. It is never automatically retried.
+- There is no shell, arbitrary script, process-launch, network, file-move or file-delete capability.
+- The model sees metadata and the explicitly approved note-output path, never file contents.

@@ -42,13 +42,27 @@ Exit criteria: tests for source spoofing, duplicate events, stale context, permi
 
 ## Release 3 — Safe task execution
 
+### Delivered vertical slice
+
+- Added a typed create_note capability. The model cannot return an arbitrary command or script.
+- Added a separate approved_note_roots permission set. Metadata read permission never implies write permission.
+- Added exact target/content preview in the desktop dashboard and one-click approve/reject operations.
+- Added a 24-hour durable pending queue, one-shot claim state transition, evidence references, idempotency by decision cursor, and append-only transition audit.
+- Note filenames are restricted to short ASCII slugs with a .md suffix. The body is capped at 8192 bytes.
+- Creation uses a new temporary file and atomic hard-link to the destination. Existing targets are never overwritten.
+- Revoking a note-output permission expires outstanding proposals.
+- An interrupted execution is marked failed/uncertain on worker restart. It is not automatically retried.
+- CLI parity exists for authorizing/revoking note folders, listing proposals, approving, and rejecting.
+
+### Still required for general autonomous task execution
+
 Do not add a shell-command endpoint or allow the model to author arbitrary code. The model chooses from a finite capability registry.
 
-1. Define typed action variants with validated payload schemas (for example: create a note, draft a document, move a file within an approved root, or create a reminder).
-2. Bind each capability to an explicit resource scope and user-granted permission. Default is read-only.
-3. Require a preview/dry-run containing exact target resources and expected before/after state.
-4. Store pending approvals durably, with expiry, idempotency key, origin evidence IDs, and a visible approval surface in the dashboard/tray.
-5. Execute one capability at a time under bounded timeouts and resource limits. Never escalate scopes on model request.
+1. Add more narrowly scoped typed capabilities only when each has a concrete permission model and safe failure semantics.
+2. Bind each capability to an explicit resource scope and user-granted permission. Default remains read-only.
+3. Add a dry-run preview with exact target resources and expected before/after state for every new capability.
+4. Add a user-configurable policy for pre-approved, low-risk operations only after per-action approval has been proven reliable.
+5. Execute under bounded timeouts and resource limits. Never escalate scopes on model request.
 6. Record append-only audit events, result hashes, errors and reversibility status.
 7. Support cancel/revoke and undo where the operation is reversible. Destructive or external side effects always require fresh approval.
 
@@ -87,6 +101,6 @@ Exit criteria: platform permission review, lifecycle tests on physical devices, 
 
 ## Release order
 
-Desktop lifecycle and IPC -> reliable event stream and provenance -> context/attention engine -> typed approved actions -> mobile-native companions -> security hardening and signed distribution.
+Desktop lifecycle and IPC -> typed note creation / owner approval (first action slice) -> reliable event stream and provenance -> context/attention engine -> additional bounded capabilities and policy-controlled automation -> mobile-native companions -> security hardening and signed distribution.
 
 Android/iOS background restrictions are intentional platform limits. The product must communicate them rather than claim the character can live above every app on every phone.

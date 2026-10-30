@@ -17,6 +17,7 @@ use crate::{
     config::AgentConfig,
     reasoner,
     store::{EventRecord, Store},
+
 };
 
 #[derive(Debug, Default)]
@@ -153,7 +154,19 @@ fn evaluate_context(store: &mut Store, config: &AgentConfig) -> Result<bool> {
     }
 
     let through_seq = evidence.last().map(|event| event.seq).unwrap_or(cursor);
-    let decision = reasoner::evaluate(reasoner_config, &evidence)?;
+    let decision = reasoner::evaluate(reasoner_config, &evidence, &config.approved_note_roots)?;
+    
+    if let Some(action) = &decision.proposed_action {
+        let payload = serde_json::to_value(&action.payload)?;
+        let action_id = store.create_pending_action(
+            through_seq,
+            &action.description,
+            &payload,
+            &decision.evidence_event_ids,
+        )?;
+        println!("[MISS MINUTES / APPROVAL REQUIRED] action={action_id}: {}", action.description);
+    }
+
     let decision_json = serde_json::to_value(&decision)?;
     store.record_decision(through_seq, &decision_json)?;
 
@@ -164,9 +177,8 @@ fn evaluate_context(store: &mut Store, config: &AgentConfig) -> Result<bool> {
             }
         }
         reasoner::DecisionKind::ProposeAction => {
-            if let Some(action) = &decision.proposed_action {
-                println!("[MISS MINUTES / APPROVAL REQUIRED] {}: {}", action.kind, action.description);
-            }
+            // The typed proposal is durably queued above. It has no execution path
+            // until an owner approves the exact payload in the desktop UI or CLI.
         }
         reasoner::DecisionKind::Silent => {
             println!("[MISS MINUTES / SILENT] {}", decision.reasoning);
@@ -208,6 +220,7 @@ pub fn run_agent_until(
     }
 
     let mut store = Store::open(&config.database_path)?;
+    let recovered_actions = store.recover_interrupted_actions()?;
     let deleted = store.prune_expired(config.retention_days)?;
     let initial = scan_roots(config, &mut store)?;
     println!(
@@ -220,6 +233,9 @@ pub fn run_agent_until(
         deleted
     );
     println!("[agent] Metadata only. File contents, keystrokes, clipboard, screenshots and private app data are not collected.");
+    if recovered_actions > 0 {
+        eprintln!("[actions] Marked {recovered_actions} interrupted action(s) failed for manual inspection; no automatic retry was attempted.");
+    }
 
     let quiet_window = Duration::from_secs(quiet_window_seconds.clamp(5, 3600));
     let rescan_interval = Duration::from_secs(rescan_seconds.clamp(30, 86_400));

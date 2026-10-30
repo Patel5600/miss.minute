@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -10,8 +10,9 @@ use std::{
 
 use miss_minute_agent::{
     collector::run_agent_until,
-    config::{create_config, load_config},
-    store::Store,
+    actions::{approve_and_execute, ActionExecutionResult},
+    config::{authorize_note_root, create_config, load_config, revoke_note_root},
+    store::{PendingActionRecord, Store},
 };
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -126,6 +127,8 @@ struct AgentStatus {
     indexed_files: i64,
     decisions: i64,
     last_error: Option<String>,
+    approved_note_roots: Vec<String>,
+    pending_actions: i64,
 }
 
 fn agent_status_inner(state: &DesktopState) -> AgentStatus {
@@ -137,6 +140,8 @@ fn agent_status_inner(state: &DesktopState) -> AgentStatus {
         indexed_files: 0,
         decisions: 0,
         last_error: None,
+        approved_note_roots: Vec::new(),
+        pending_actions: 0,
     };
 
     if let Ok(slot) = state.agent.lock() {
@@ -150,12 +155,19 @@ fn agent_status_inner(state: &DesktopState) -> AgentStatus {
             .iter()
             .map(|root| root.display().to_string())
             .collect();
+        status.approved_note_roots = config.approved_note_roots
+            .iter()
+            .map(|root| root.display().to_string())
+            .collect();
 
-        if let Ok(store) = Store::open(&config.database_path) {
+        if let Ok(mut store) = Store::open(&config.database_path) {
             if let Ok((events, files, decisions)) = store.counts() {
                 status.events = events;
                 status.indexed_files = files;
                 status.decisions = decisions;
+            }
+            if let Ok(count) = store.pending_action_count() {
+                status.pending_actions = count;
             }
         }
     }
@@ -187,6 +199,59 @@ fn agent_enroll(
         .map_err(|error| format!("{error:#}"))?;
     state.start_agent()?;
     Ok(agent_status_inner(&state))
+}
+
+#[tauri::command]
+fn authorize_note_root(
+    path: String,
+    confirm_write_permission: bool,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<AgentStatus, String> {
+    authorize_note_root(&state.config_path, Path::new(&path), confirm_write_permission)
+        .map_err(|error| format!("{error:#}"))?;
+    Ok(agent_status_inner(&state))
+}
+
+#[tauri::command]
+fn revoke_note_root(
+    path: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<AgentStatus, String> {
+    let config = revoke_note_root(&state.config_path, Path::new(&path))
+        .map_err(|error| format!("{error:#}"))?;
+    let mut store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
+    store.expire_pending_actions("note_write_permission_revoked")
+        .map_err(|error| format!("{error:#}"))?;
+    Ok(agent_status_inner(&state))
+}
+
+#[tauri::command]
+fn pending_actions(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<PendingActionRecord>, String> {
+    let config = load_config(&state.config_path).map_err(|error| format!("{error:#}"))?;
+    let mut store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
+    store.pending_actions(50).map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+fn approve_action(
+    action_id: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<ActionExecutionResult, String> {
+    let config = load_config(&state.config_path).map_err(|error| format!("{error:#}"))?;
+    let mut store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
+    approve_and_execute(&config, &mut store, &action_id).map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+fn reject_action(
+    action_id: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let config = load_config(&state.config_path).map_err(|error| format!("{error:#}"))?;
+    let mut store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
+    store.reject_pending_action(&action_id).map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -534,6 +599,11 @@ pub fn run() {
             agent_start,
             agent_stop,
             agent_recent_decisions,
+            authorize_note_root,
+            revoke_note_root,
+            pending_actions,
+            approve_action,
+            reject_action,
             set_startup,
             get_startup,
             toggle_avatar,
