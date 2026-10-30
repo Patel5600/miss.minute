@@ -25,6 +25,9 @@ pub struct CapturePolicy {
     pub file_metadata: bool,
     pub file_contents: bool,
     pub follow_symlinks: bool,
+    /// Collect only the foreground window title on Windows, never window content.
+    #[serde(default)]
+    pub foreground_window_title: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -154,6 +157,7 @@ pub fn create_config(config_path: &Path, roots: &[PathBuf], confirmed: bool) -> 
             file_metadata: true,
             file_contents: false,
             follow_symlinks: false,
+            foreground_window_title: false,
         },
         database_path,
         retention_days: 30,
@@ -357,6 +361,18 @@ pub fn configure_auto_note_creation(config_path: &Path, enabled: bool) -> Result
     Ok(config)
 }
 
+pub fn configure_foreground_window_title(config_path: &Path, enabled: bool) -> Result<AgentConfig> {
+    #[cfg(not(windows))]
+    if enabled {
+        bail!("Foreground window-title context is supported only by the Windows desktop host.");
+    }
+
+    let mut config = load_config(config_path)?;
+    config.capture.foreground_window_title = enabled;
+    save_config(config_path, &config)?;
+    Ok(config)
+}
+
 pub fn configure_reasoner(
     config_path: &Path,
     endpoint: String,
@@ -418,6 +434,20 @@ mod tests {
             reasoner: None,
         };
         assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn foreground_window_title_capture_is_disabled_by_default() {
+        let config_json = r#"{
+            "schema_version": 1,
+            "consent": { "confirmed": true, "granted_at_unix_ms": 1, "allowed_roots": ["/tmp"] },
+            "capture": { "file_metadata": true, "file_contents": false, "follow_symlinks": false },
+            "database_path": "/tmp/miss-minute.sqlite3",
+            "retention_days": 30,
+            "reasoner": null
+        }"#;
+        let config: AgentConfig = serde_json::from_str(config_json).unwrap();
+        assert!(!config.capture.foreground_window_title);
     }
 
     #[test]
