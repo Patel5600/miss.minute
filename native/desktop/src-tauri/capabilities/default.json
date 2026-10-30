@@ -22,6 +22,9 @@
     "allow-get_startup",
     "allow-toggle_avatar",
     "allow-show_dashboard",
-    "allow-avatar_speak"
+    "allow-avatar_speak",
+    "allow-agent_stream_open",
+    "allow-agent_events_after",
+    "allow-agent_stream_close"
   ]
 }
