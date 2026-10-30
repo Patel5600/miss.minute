@@ -15,6 +15,7 @@
     "allow-authorize-note-root",
     "allow-revoke-note-root",
     "allow-set-auto-note-creation",
+    "allow-set-foreground-window-context",
     "allow-pending-actions",
     "allow-approve-action",
     "allow-reject-action",
