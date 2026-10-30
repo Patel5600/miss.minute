@@ -122,45 +122,48 @@ public final class MetadataCompanionService extends Service {
         String rootId = DocumentsContract.getTreeDocumentId(tree);
         ContentResolver resolver = getContentResolver();
         MetadataDb db = new MetadataDb(this);
-        ArrayDeque<Node> pending = new ArrayDeque<>();
-        Set<String> visited = new HashSet<>();
-        pending.add(new Node(rootId, 0));
-        int inspected = 0;
+        try {
+            ArrayDeque<Node> pending = new ArrayDeque<>();
+            Set<String> visited = new HashSet<>();
+            pending.add(new Node(rootId, 0));
+            int inspected = 0;
 
-        while (!pending.isEmpty() && inspected < 5000 && isEnabled()) {
-            Node node = pending.removeFirst();
-            if (node.depth > 16 || !visited.add(node.documentId)) continue;
-            Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, node.documentId);
-            String[] columns = {
-                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                    DocumentsContract.Document.COLUMN_MIME_TYPE,
-                    DocumentsContract.Document.COLUMN_SIZE,
-                    DocumentsContract.Document.COLUMN_LAST_MODIFIED
-            };
-            try (Cursor cursor = resolver.query(children, columns, null, null, null)) {
-                if (cursor == null) continue;
-                int idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID);
-                int nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME);
-                int mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE);
-                int sizeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE);
-                int modifiedCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_LAST_MODIFIED);
-                while (cursor.moveToNext() && inspected++ < 5000 && isEnabled()) {
-                    String id = cursor.getString(idCol);
-                    String name = cursor.getString(nameCol);
-                    String mime = cursor.getString(mimeCol);
-                    long size = cursor.isNull(sizeCol) ? -1 : cursor.getLong(sizeCol);
-                    long modified = cursor.isNull(modifiedCol) ? -1 : cursor.getLong(modifiedCol);
-                    if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
-                        pending.addLast(new Node(id, node.depth + 1));
-                    } else {
-                        db.observe(id, name, mime, size, modified);
+            while (!pending.isEmpty() && inspected < 5000 && isEnabled()) {
+                Node node = pending.removeFirst();
+                if (node.depth > 16 || !visited.add(node.documentId)) continue;
+                Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, node.documentId);
+                String[] columns = {
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        DocumentsContract.Document.COLUMN_MIME_TYPE,
+                        DocumentsContract.Document.COLUMN_SIZE,
+                        DocumentsContract.Document.COLUMN_LAST_MODIFIED
+                };
+                try (Cursor cursor = resolver.query(children, columns, null, null, null)) {
+                    if (cursor == null) continue;
+                    int idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID);
+                    int nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME);
+                    int mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE);
+                    int sizeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE);
+                    int modifiedCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_LAST_MODIFIED);
+                    while (cursor.moveToNext() && inspected++ < 5000 && isEnabled()) {
+                        String id = cursor.getString(idCol);
+                        String name = cursor.getString(nameCol);
+                        String mime = cursor.getString(mimeCol);
+                        long size = cursor.isNull(sizeCol) ? -1 : cursor.getLong(sizeCol);
+                        long modified = cursor.isNull(modifiedCol) ? -1 : cursor.getLong(modifiedCol);
+                        if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+                            pending.addLast(new Node(id, node.depth + 1));
+                        } else {
+                            db.observe(id, name, mime, size, modified);
+                        }
                     }
                 }
             }
+            db.trimEvents();
+        } finally {
+            db.close();
         }
-        db.trimEvents();
-        db.close();
     }
 
     @Override
