@@ -50,6 +50,7 @@ export class AIService {
       }
     }
     this.saveSettings(settings);
+    if (!isDesktopRuntime()) return settings;
     return this.resolveCredentials({ ...settings, apiKey: '', elevenLabsKey: '' });
   }
 
