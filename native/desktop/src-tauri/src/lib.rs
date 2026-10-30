@@ -266,6 +266,13 @@ fn agent_stream_open(
     if cursor > latest {
         return Err("Event cursor is ahead of the committed event ledger.".to_owned());
     }
+    let oldest = store.oldest_event_sequence().map_err(|error| format!("{error:#}"))?;
+    if after_seq.is_some() && (
+        oldest.is_some_and(|first| cursor < first.saturating_sub(1))
+        || (oldest.is_none() && cursor < latest)
+    ) {
+        return Err("Event retention gap: requested history has already been pruned. Reopen at the current cursor.".to_owned());
+    }
     let token = Uuid::new_v4().to_string();
     let expires_at = Instant::now() + Duration::from_secs(30 * 60);
     let expires_at_unix_ms = SystemTime::now()
@@ -296,16 +303,23 @@ fn agent_events_after(
     if after_seq < 0 || limit == 0 || limit > 100 {
         return Err("Event cursor must be non-negative and page size must be between 1 and 100.".to_owned());
     }
-    {
-        let session = state.stream_session.lock().map_err(|_| "Event stream state is unavailable.".to_owned())?;
-        let active = session.as_ref().ok_or_else(|| "Open an event stream before reading it.".to_owned())?;
-        if active.expires_at <= Instant::now() || active.token != token {
-            return Err("Event stream token is invalid or expired; open a new session.".to_owned());
-        }
+    // Serialize reads for a stream. A page remains repeatable until its
+    // final sequence is acknowledged, giving the renderer at-least-once delivery.
+    let mut session = state.stream_session.lock().map_err(|_| "Event stream state is unavailable.".to_owned())?;
+    let active = session.as_mut().ok_or_else(|| "Open an event stream before reading it.".to_owned())?;
+    if active.expires_at <= Instant::now() || active.token != token {
+        return Err("Event stream token is invalid or expired; open a new session.".to_owned());
+    }
+    if after_seq != active.acknowledged_cursor {
+        return Err("Event cursor must match the last acknowledged sequence.".to_owned());
     }
     let config = load_config(&state.config_path).map_err(|error| format!("{error:#}"))?;
     let store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
-    store.events_after(after_seq, limit).map_err(|error| format!("{error:#}"))
+    let batch = store.events_after(after_seq, limit).map_err(|error| format!("{error:#}"))?;
+    if let Some(last) = batch.last() {
+        active.issued_cursor = last.seq;
+    }
+    Ok(batch)
 }
 
 #[tauri::command]
