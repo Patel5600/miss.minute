@@ -1,5 +1,6 @@
 import type { AISettings, ChatMessage, Emotion } from '../types';
 import { OFFLINE_LORE_RESPONSES, TVA_SYSTEM_PROMPT } from '../data/tvaLore';
+import { invokeNative, isDesktopRuntime } from '../desktop/bridge';
 
 export class AIService {
   public static getStoredSettings(): AISettings {
@@ -33,8 +34,36 @@ export class AIService {
 
   public static saveSettings(settings: AISettings) {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('miss_minutes_settings', JSON.stringify(settings));
+      localStorage.setItem('miss_minutes_settings', JSON.stringify({ ...settings, apiKey: '', elevenLabsKey: '' }));
     }
+  }
+
+
+  public static async initializeSecureSettings(): Promise<AISettings> {
+    const settings = this.getStoredSettings();
+    if (isDesktopRuntime()) {
+      if (settings.provider !== 'tva-offline' && settings.apiKey.trim()) {
+        await invokeNative<void>('credential_set', { provider: settings.provider, secret: settings.apiKey });
+      }
+      if (settings.elevenLabsKey?.trim()) {
+        await invokeNative<void>('credential_set', { provider: 'elevenlabs', secret: settings.elevenLabsKey });
+      }
+    }
+    this.saveSettings(settings);
+    return this.resolveCredentials({ ...settings, apiKey: '', elevenLabsKey: '' });
+  }
+
+  private static async resolveCredentials(settings: AISettings): Promise<AISettings> {
+    if (!isDesktopRuntime()) return settings;
+    let apiKey = settings.apiKey;
+    let elevenLabsKey = settings.elevenLabsKey;
+    if (settings.provider !== 'tva-offline' && !apiKey.trim()) {
+      apiKey = await invokeNative<string | null>('credential_get', { provider: settings.provider }) ?? '';
+    }
+    if (settings.useElevenLabs && !elevenLabsKey?.trim()) {
+      elevenLabsKey = await invokeNative<string | null>('credential_get', { provider: 'elevenlabs' }) ?? '';
+    }
+    return { ...settings, apiKey, elevenLabsKey };
   }
 
   public static inferEmotion(text: string): Emotion {
@@ -63,19 +92,26 @@ export class AIService {
     settings: AISettings
   ): Promise<{ text: string; emotion: Emotion; isNexusAlert?: boolean }> {
     const lower = userText.toLowerCase().trim();
+    let activeSettings = settings;
+    try {
+      activeSettings = await this.resolveCredentials(settings);
+    } catch (error) {
+      console.warn('OS credential vault unavailable; using offline TVA responses:', error);
+      return this.generateOfflineResponse(lower, userText);
+    }
 
     // If using Built-in Offline TVA Hologram or no API key is supplied
-    if (settings.provider === 'tva-offline' || !settings.apiKey.trim()) {
+    if (activeSettings.provider === 'tva-offline' || !activeSettings.apiKey.trim()) {
       return this.generateOfflineResponse(lower, userText);
     }
 
     try {
-      if (settings.provider === 'gemini') {
-        return await this.callGemini(userText, history, settings);
-      } else if (settings.provider === 'openai' || settings.provider === 'ollama') {
-        return await this.callOpenAICompatible(userText, history, settings);
-      } else if (settings.provider === 'anthropic') {
-        return await this.callAnthropic(userText, history, settings);
+      if (activeSettings.provider === 'gemini') {
+        return await this.callGemini(userText, history, activeSettings);
+      } else if (activeSettings.provider === 'openai' || activeSettings.provider === 'ollama') {
+        return await this.callOpenAICompatible(userText, history, activeSettings);
+      } else if (activeSettings.provider === 'anthropic') {
+        return await this.callAnthropic(userText, history, activeSettings);
       }
     } catch (err: any) {
       console.warn('AI call failed, falling back to offline TVA engine:', err);

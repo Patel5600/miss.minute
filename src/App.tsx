@@ -34,6 +34,14 @@ export function App() {
     },
   ]);
 
+  useEffect(() => {
+    let active = true;
+    void AIService.initializeSecureSettings()
+      .then(next => { if (active) setSettings(next); })
+      .catch(error => console.error('[Miss Minutes] Secure credential migration failed:', error));
+    return () => { active = false; };
+  }, []);
+
   // ── Sync speaking state → face animation ──────────────────────────────────
   useEffect(() => {
     const unsubscribeSpeaking = voiceService.onSpeakingChange(speaking => {
@@ -98,8 +106,9 @@ export function App() {
             emotion: response.emotion,
             pitch: voice.pitch,
             rate: voice.rate,
-            elevenLabsKey: voice.elevenLabsKey,
-            elevenLabsVoiceId: voice.elevenLabsVoiceId,
+            // Native overlay uses OS speech until TTS is proxied through the native credential boundary.
+            elevenLabsKey: undefined,
+            elevenLabsVoiceId: undefined,
           }).catch(error => console.error('[Miss Minutes] Native speech bridge failed:', error));
         } else {
           void voiceService.speak(response.text, voice);

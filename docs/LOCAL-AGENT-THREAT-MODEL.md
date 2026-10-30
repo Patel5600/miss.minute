@@ -65,3 +65,8 @@ Filesystem notifications are not a universal audit log. They can be coalesced, m
 The agent currently observes authorized filesystem metadata only. It does not see active windows, browser sessions, notifications, messages, screen contents, or application-private data. Android/iOS native agents are not included. Precise click-through hit-testing is Windows-only in this milestone.
 
 The SQLite database is not encrypted at rest, and provider credentials used by the web UI remain in browser local storage. OS credential-vault migration, signed installers, update verification, and a complete multi-platform security review remain future work.
+
+
+## Provider credential handling
+
+Desktop provider credentials are stored as binary secrets in the operating-system credential vault (Windows Credential Manager, macOS Keychain or Linux Secret Service/kernel keyutils when available). Startup migrates legacy API keys out of the settings JSON, and settings writes always blank API-key fields before touching localStorage. The dashboard retrieves credentials into its own memory for the existing browser-based provider adapters. This removes long-lived plaintext-at-rest copies but does not protect a credential while the trusted webview is actively using it; a native HTTP proxy is still required to keep provider credentials out of JavaScript entirely. The avatar overlay does not receive the ElevenLabs key and uses OS speech until that proxy exists.

@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { AISettings, AIProvider } from '../types';
 import { AIService } from '../services/aiService';
+import { invokeNative, isDesktopRuntime } from '../desktop/bridge';
 import { soundEffects } from '../utils/audioEffects';
 import { X, Key, Bot, Volume2, Sparkles, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
 
@@ -21,6 +22,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState<string>('');
 
+  useEffect(() => {
+    if (!isOpen || !isDesktopRuntime()) return;
+    let active = true;
+    void Promise.all([
+      settings.provider === 'tva-offline'
+        ? Promise.resolve(null)
+        : invokeNative<string | null>('credential_get', { provider: settings.provider }),
+      invokeNative<string | null>('credential_get', { provider: 'elevenlabs' }),
+    ]).then(([apiKey, elevenLabsKey]) => {
+      if (!active) return;
+      setFormData(previous => ({
+        ...previous,
+        apiKey: previous.apiKey || apiKey || '',
+        elevenLabsKey: previous.elevenLabsKey || elevenLabsKey || '',
+      }));
+    }).catch(error => {
+      if (active) setTestMessage(error instanceof Error ? error.message : 'OS credential vault unavailable.');
+    });
+    return () => { active = false; };
+  }, [isOpen, settings.provider]);
+
   if (!isOpen) return null;
 
   const handleProviderChange = (provider: AIProvider) => {
@@ -33,6 +55,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setFormData(prev => ({
       ...prev,
       provider,
+      apiKey: '',
       model: defaultModel,
     }));
     soundEffects.playKeyClick();
@@ -54,11 +77,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  const handleSaveAndClose = () => {
-    AIService.saveSettings(formData);
-    onSave(formData);
-    soundEffects.playTvaChime();
-    onClose();
+  const handleSaveAndClose = async () => {
+    try {
+      if (isDesktopRuntime()) {
+        if (formData.provider !== 'tva-offline' && formData.apiKey.trim()) {
+          await invokeNative<void>('credential_set', { provider: formData.provider, secret: formData.apiKey });
+        }
+        if (formData.elevenLabsKey?.trim()) {
+          await invokeNative<void>('credential_set', { provider: 'elevenlabs', secret: formData.elevenLabsKey });
+        }
+      }
+      AIService.saveSettings(formData);
+      onSave(formData);
+      soundEffects.playTvaChime();
+      onClose();
+    } catch (error) {
+      setTestStatus('error');
+      setTestMessage(error instanceof Error ? error.message : 'Could not save secure credentials.');
+    }
   };
 
   return (
@@ -245,6 +281,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           )}
         </div>
+
+        <p className="mb-4 text-[10px] leading-relaxed text-amber-500/70">
+          API credentials are excluded from browser storage. Desktop mode uses the operating-system credential vault. Browser mode keeps credentials in memory for this session only.
+        </p>
 
         {/* Audio & Hologram Toggles */}
         <div className="grid grid-cols-2 gap-3 mb-4">
