@@ -216,7 +216,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         <div className="mb-4 p-3.5 bg-black/40 rounded-xl border border-amber-700/30 space-y-3">
           <div className="flex items-center justify-between">
             <div>
-              <span className="text-xs font-bold text-amber-300 block">🎙️ ElevenLabs Realistic Voice</span>
+              <span className="text-xs font-bold text-amber-300 block">🎙️ Licensed Custom Voice</span>
               <span className="text-[10px] text-amber-400/60">Optional expressive TTS using a voice you own or are licensed to use.</span>
             </div>
             <input type="checkbox"

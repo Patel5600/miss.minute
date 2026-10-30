@@ -192,6 +192,19 @@ export const MissMinutesFloating: React.FC<Props> = ({
     return () => clearTimeout(t);
   }, []);
 
+  // ── User activity tracking for non-intrusive chatter ────────────────────────
+  useEffect(() => {
+    const markActivity = () => { lastInteraction.current = Date.now(); };
+    window.addEventListener('pointerdown', markActivity, true);
+    window.addEventListener('keydown', markActivity, true);
+    window.addEventListener('wheel', markActivity, { capture: true, passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', markActivity, true);
+      window.removeEventListener('keydown', markActivity, true);
+      window.removeEventListener('wheel', markActivity, true);
+    };
+  }, []);
+
   // ── Initial "HEY Y'ALL!" Bubble Auto-Dismiss ───────────────────────────────
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -628,20 +641,23 @@ export const MissMinutesFloating: React.FC<Props> = ({
           className="mm-bubble select-none pointer-events-none"
           style={{
             position: 'fixed',
-            left: speechBubble.x,
-            top: speechBubble.y - 65,
+            left: Math.max(160, Math.min(window.innerWidth - 160, speechBubble.x)),
+            top: Math.max(HEADER_H + 8, speechBubble.y - 65),
             zIndex: 10005,
             backgroundColor: '#FBF3DB',
             border: '4px solid #1E0800',
             borderRadius: '26px',
             padding: '10px 24px',
             fontFamily: `'Impact', 'Arial Black', sans-serif`,
-            fontSize: '18px',
-            letterSpacing: '0.08em',
+            fontSize: '16px',
+            lineHeight: 1.2,
+            maxWidth: 'min(320px, calc(100vw - 32px))',
+            textAlign: 'center',
+            letterSpacing: '0.06em',
             color: '#1E0800',
             textTransform: 'uppercase',
             boxShadow: '0 12px 30px rgba(0,0,0,0.65), 0 0 16px rgba(245,158,11,0.3)',
-            whiteSpace: 'nowrap',
+            whiteSpace: 'normal',
           }}
         >
           {speechBubble.text}
