@@ -118,16 +118,19 @@ export function DesktopCompanionPanel() {
           expected = event.seq;
         }
         if (batch.length > 0) {
-          // Acknowledge only after the complete page has passed sequence checks
-          // and has been handed to renderer state. If this call fails, retrying
-          // the same cursor receives the same page (at-least-once semantics).
+          // Hand the page to renderer state before acknowledging it. Sequence
+          // deduplication makes a retry safe if the acknowledgement is lost.
+          setAgentEvents(previous => {
+            const bySequence = new Map(previous.map(event => [event.seq, event]));
+            for (const event of batch) bySequence.set(event.seq, event);
+            return [...bySequence.values()].sort((left, right) => left.seq - right.seq).slice(-12);
+          });
           await invokeNative<void>('agent_stream_ack', {
             token: activeTicket.token,
             sequence: expected,
           });
           if (cancelled) return;
           cursor = expected;
-          setAgentEvents(previous => [...previous, ...batch].slice(-12));
         }
         setStreamState('live');
       } catch (cause) {
