@@ -1,0 +1,64 @@
+name: Mobile companions
+
+on:
+  push:
+    branches:
+      - feat/living-miss-minutes
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v4
+      - name: Install Android SDK platform
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+      - name: Assemble Android companion
+        working-directory: native/mobile/android
+        run: gradle --no-daemon :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: miss-minutes-android-debug
+          path: native/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        working-directory: native/mobile/ios
+        run: xcodegen generate --spec project.yml
+      - name: Build iOS simulator application
+        working-directory: native/mobile/ios
+        run: |
+          xcodebuild \
+            -project MissMinutesCompanion.xcodeproj \
+            -scheme MissMinutesCompanion \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/miss-minutes-ios-build" \
+            CODE_SIGNING_ALLOWED=NO build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: miss-minutes-ios-simulator-build
+          path: ${{ runner.temp }}/miss-minutes-ios-build/Build/Products/Debug-iphonesimulator/MissMinutesCompanion.app
+          if-no-files-found: error
+          retention-days: 14
