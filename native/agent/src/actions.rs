@@ -1,8 +1,11 @@
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
 };
+
+#[cfg(unix)]
+use std::fs::File;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -202,9 +205,13 @@ mod tests {
 
     fn fixture(enabled: bool, daily_limit: u8) -> (AgentConfig, PathBuf) {
         let base = std::env::temp_dir().join(format!("miss-minute-auto-{}", Uuid::new_v4()));
-        let workspace = base.join("workspace");
-        let notes = workspace.join("notes");
-        fs::create_dir_all(&notes).unwrap();
+        let workspace_path = base.join("workspace");
+        let notes_path = workspace_path.join("notes");
+        fs::create_dir_all(&notes_path).unwrap();
+        // Windows temp directories may be reached through a reparse point.
+        // Persist the canonical approved roots exactly as enrollment does.
+        let workspace = fs::canonicalize(workspace_path).unwrap();
+        let notes = fs::canonicalize(notes_path).unwrap();
         let config = AgentConfig {
             schema_version: crate::config::CONFIG_SCHEMA_VERSION,
             consent: crate::config::OwnerConsent {
@@ -313,6 +320,7 @@ mod tests {
     fn create_note_never_overwrites_an_existing_file() {
         let root = std::env::temp_dir().join(format!("miss-minute-actions-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
         let target = root.join("daily.md");
         fs::write(&target, "original").unwrap();
 
@@ -327,6 +335,7 @@ mod tests {
     fn create_note_uses_exclusive_atomic_target_creation() {
         let root = std::env::temp_dir().join(format!("miss-minute-actions-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
 
         let result = create_note(&root, "daily-note.md", "A generated note.").unwrap();
         assert_eq!(fs::read_to_string(&result).unwrap(), "A generated note.");
