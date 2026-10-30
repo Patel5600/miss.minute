@@ -8,12 +8,21 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+  id-token: write
+  attestations: write
 
 jobs:
   windows-desktop:
     runs-on: windows-latest
+    env:
+      WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+      WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up Node.js
@@ -43,6 +52,43 @@ jobs:
           retention-days: 7
       - name: Build release desktop executable
         run: cargo +stable build --release --manifest-path native/desktop/src-tauri/Cargo.toml
+      - name: Sign Windows executable when certificate is configured
+        env:
+          WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+        if: ${{ env.WINDOWS_SIGNING_PFX_BASE64 != '' && env.WINDOWS_SIGNING_PFX_PASSWORD != '' }}
+        shell: pwsh
+        run: |
+          $exe = "native/desktop/target/release/miss-minute-desktop.exe"
+          if (-not (Test-Path $exe)) { throw "Release executable not found: $exe" }
+          $cert = Join-Path $env:RUNNER_TEMP "miss-minutes-signing.pfx"
+          [IO.File]::WriteAllBytes($cert, [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX_BASE64))
+          $kits = Join-Path ${env:ProgramFiles(x86)} "Windows Kits/10/bin"
+          $signTool = Get-ChildItem $kits -Filter signtool.exe -Recurse |
+            Where-Object { $_.FullName -match '\\\\x64\\\\signtool.exe        uses: actions/upload-artifact@v4
+        with:
+          name: miss-minutes-windows-executable
+          path: native/desktop/target/release/miss-minute-desktop.exe
+          if-no-files-found: error
+          retention-days: 14
+ } |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signTool) { throw "Windows SDK signtool.exe was not found." }
+          & $signTool sign /fd SHA256 /f $cert /p $env:WINDOWS_SIGNING_PFX_PASSWORD /tr https://timestamp.digicert.com /td SHA256 $exe
+          if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed with exit code $LASTEXITCODE." }
+          & $signTool verify /pa /v $exe
+          if ($LASTEXITCODE -ne 0) { throw "Authenticode signature verification failed." }
+          Remove-Item -Force $cert
+          "Authenticode: signed and verified." | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Mark executable as unsigned
+        if: ${{ env.WINDOWS_SIGNING_PFX_BASE64 == '' || env.WINDOWS_SIGNING_PFX_PASSWORD == '' }}
+        shell: pwsh
+        run: |
+          "Authenticode: UNSIGNED. Add repository secrets WINDOWS_SIGNING_PFX_BASE64 and WINDOWS_SIGNING_PFX_PASSWORD to enable signing." | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Attest Windows executable provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: native/desktop/target/release/miss-minute-desktop.exe
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4
         with:
