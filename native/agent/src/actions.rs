@@ -17,6 +17,23 @@ use crate::{
     store::{PendingActionRecord, Store},
 };
 
+/// Compare canonical paths without treating Windows' extended-length prefix or
+/// case-insensitive path spelling as a different directory.
+#[cfg(windows)]
+fn same_canonical_path(left: &Path, right: &Path) -> bool {
+    fn normalize(path: &Path) -> String {
+        let value = path.to_string_lossy().replace('/', "\\");
+        let value = value.strip_prefix(r"\\?\\").unwrap_or(&value);
+        value.to_ascii_lowercase()
+    }
+    normalize(left) == normalize(right)
+}
+
+#[cfg(not(windows))]
+fn same_canonical_path(left: &Path, right: &Path) -> bool {
+    left == right
+}
+
 /// The finite native capability set. The model cannot ask for a shell, script,
 /// process launch, network request, overwrite, move, or delete operation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -46,7 +63,7 @@ pub fn validate_payload(payload: &ActionPayload, approved_root_count: usize) -> 
                 bail!("The action refers to a note folder that has not been approved.");
             }
             validate_note_filename(filename)?;
-            if content.trim().is_empty() || content.len() > 8192 || content.contains('\0') {
+            if content.trim().is_empty() || content.len() > 8192 || content.contains('\\0') {
                 bail!("Note content must contain 1 to 8192 bytes and cannot contain NUL.");
             }
         }
@@ -68,13 +85,13 @@ fn validate_note_filename(filename: &str) -> Result<()> {
 
 fn create_note(root: &Path, filename: &str, content: &str) -> Result<PathBuf> {
     validate_note_filename(filename)?;
-    if content.trim().is_empty() || content.len() > 8192 || content.contains('\0') {
+    if content.trim().is_empty() || content.len() > 8192 || content.contains('\\0') {
         bail!("Note content failed size or NUL validation.");
     }
 
     let canonical_root = fs::canonicalize(root)
         .with_context(|| format!("Cannot resolve approved note folder {}", root.display()))?;
-    if canonical_root != root || !canonical_root.is_dir() {
+    if !same_canonical_path(&canonical_root, root) || !canonical_root.is_dir() {
         bail!("Approved note folder changed or is not a canonical directory.");
     }
 
@@ -96,7 +113,6 @@ fn create_note(root: &Path, filename: &str, content: &str) -> Result<PathBuf> {
         drop(file);
 
         // Hard-link creation is atomic and fails when the destination exists.
-        // Unlike rename-on-some-platforms, it cannot silently replace a file.
         fs::hard_link(&temporary, &destination)
             .with_context(|| format!("Cannot create {} without overwriting an existing path", destination.display()))?;
         fs::remove_file(&temporary).context("Note was created, but the temporary hard link could not be removed")?;
@@ -208,10 +224,10 @@ mod tests {
         let workspace_path = base.join("workspace");
         let notes_path = workspace_path.join("notes");
         fs::create_dir_all(&notes_path).unwrap();
-        // Windows temp directories may be reached through a reparse point.
-        // Persist the canonical approved roots exactly as enrollment does.
-        let workspace = fs::canonicalize(workspace_path).unwrap();
-        let notes = fs::canonicalize(notes_path).unwrap();
+        // Persist canonical paths as enrollment does. Windows may return an
+        // extended-length spelling on subsequent canonicalize calls.
+        let workspace = fs::canonicalize(&workspace_path).unwrap();
+        let notes = fs::canonicalize(&notes_path).unwrap();
         let config = AgentConfig {
             schema_version: crate::config::CONFIG_SCHEMA_VERSION,
             consent: crate::config::OwnerConsent {
@@ -241,7 +257,7 @@ mod tests {
             "kind": "create_note",
             "root_index": 0,
             "filename": filename,
-            "content": "# Metadata summary\n\nGenerated from owner-authorized file metadata only."
+            "content": "# Metadata summary\\n\\nGenerated from owner-authorized file metadata only."
         });
         store.create_pending_action(
             through,
@@ -275,7 +291,7 @@ mod tests {
         assert_eq!(outcome.status, "succeeded");
         assert_eq!(
             fs::read_to_string(config.approved_note_roots[0].join("automatic-note.md")).unwrap(),
-            "# Metadata summary\n\nGenerated from owner-authorized file metadata only."
+            "# Metadata summary\\n\\nGenerated from owner-authorized file metadata only."
         );
         assert_eq!(store.pending_action_count().unwrap(), 0);
 
