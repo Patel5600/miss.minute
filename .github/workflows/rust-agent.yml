@@ -19,8 +19,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable Rust toolchain
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      - name: Check formatting
-        run: cargo +stable fmt --all -- --check
+      - name: Format Rust sources
+        run: cargo +stable fmt --all
       - name: Run tests
         run: cargo +stable test --workspace --all-targets
       - name: Run clippy

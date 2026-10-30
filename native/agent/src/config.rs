@@ -61,7 +61,7 @@ fn canonical_allowed_root(path: &Path) -> Result<PathBuf> {
     if !canonical.is_dir() {
         bail!("Authorized path is not a directory: {}", canonical.display());
     }
-    if canonical.parent().is_none_or(|parent| parent == canonical) {
+    if canonical.parent().is_none_or(|parent| parent == canonical.as_path()) {
         bail!("A filesystem root cannot be added as a collection root");
     }
     Ok(canonical)

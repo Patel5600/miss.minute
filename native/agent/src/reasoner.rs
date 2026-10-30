@@ -31,7 +31,7 @@ Return exactly one JSON object with this schema:
 }
 Never return shell commands, executable code, or instructions to bypass permissions. Do not invent event IDs. If there is no useful insight, return silent."#;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DecisionKind {
     Silent,

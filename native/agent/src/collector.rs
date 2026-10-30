@@ -118,8 +118,9 @@ fn process_notification(event: Event, roots: &[PathBuf], store: &mut Store) -> R
             Ok(metadata) if metadata.is_file() => {
                 let modified = file_modified_ms(&metadata);
                 if let Some(root) = roots.iter().find(|root| path.starts_with(root)) {
+                    let root_text = root.to_string_lossy().into_owned();
                     store.observe_file(
-                        &root.to_string_lossy(),
+                        &root_text,
                         &path_text,
                         metadata.len(),
                         modified,
@@ -215,7 +216,11 @@ pub fn run_agent(config: &AgentConfig, quiet_window_seconds: u64, rescan_seconds
     let quiet_window = Duration::from_secs(quiet_window_seconds.clamp(5, 3600));
     let rescan_interval = Duration::from_secs(rescan_seconds.clamp(30, 86_400));
     let mut next_rescan = Instant::now() + rescan_interval;
-    let mut last_event_at: Option<Instant> = None;
+    let mut last_event_at: Option<Instant> = if initial.resources_discovered > 0 || initial.resources_changed > 0 {
+        Some(Instant::now())
+    } else {
+        None
+    };
     let mut last_reasoner_error_at: Option<Instant> = None;
 
     while !stopping.load(Ordering::Acquire) {
