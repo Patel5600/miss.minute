@@ -4,8 +4,6 @@ use std::{
 };
 
 use fs2::FileExt;
-use zeroize::Zeroizing;
-
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -128,14 +126,38 @@ impl Store {
             bail!("Refusing to open a database path that is a symbolic link.");
         }
 
-        let lock_path = PathBuf::from(format!("{}.key-lock", path.display()));
+        let mut lock_path_value = path.as_os_str().to_os_string();
+        lock_path_value.push(".key-lock");
+        let lock_path = PathBuf::from(lock_path_value);
         let lock_file = OpenOptions::new().create(true).read(true).write(true).open(&lock_path)
             .with_context(|| format!("Cannot open database setup lock {}", lock_path.display()))?;
         FileExt::lock_exclusive(&lock_file).context("Cannot acquire database setup lock")?;
 
+        let mut key = crate::secrets::existing_database_key(path)?;
+        let (temporary, backup) = crate::secrets::migration_paths(path);
+        if backup.exists() {
+            if !path.exists() {
+                fs::rename(&backup, path)
+                    .context("Restored the legacy database after an interrupted encryption migration")?;
+            } else {
+                let current_key = key.as_ref().context(
+                    "An encryption migration backup exists but the operating-system database key is missing."
+                )?;
+                if open_encrypted_connection(path, current_key.as_slice()).is_ok() {
+                    fs::remove_file(&backup)
+                        .context("Encrypted database is valid but the old plaintext backup could not be removed")?;
+                } else {
+                    bail!("Both a database and a plaintext migration backup exist, but the database cannot be authenticated. Preserving both files for manual recovery.");
+                }
+            }
+        }
+        if temporary.exists() {
+            fs::remove_file(&temporary)
+                .context("Cannot remove an incomplete encrypted migration staging file")?;
+        }
+
         let exists = path.is_file() && fs::metadata(path)?.len() > 0;
         let plaintext = if exists { is_plaintext_database(path)? } else { false };
-        let mut key = crate::secrets::existing_database_key(path)?;
 
         if exists && !plaintext && key.is_none() {
             bail!("An encrypted database exists but its operating-system key is missing. Refusing to replace the key or initialize a new database.");
@@ -143,7 +165,7 @@ impl Store {
         if key.is_none() {
             key = Some(crate::secrets::create_database_key(path)?);
         }
-        let key = key.expect("database key was initialized");
+        let key = key.context("Database key initialization failed")?;
 
         if exists && plaintext {
             migrate_plaintext_database(path, key.as_slice())?;
