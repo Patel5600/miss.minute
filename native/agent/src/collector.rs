@@ -456,10 +456,10 @@ mod tests {
     #[test]
     fn foreground_title_sanitization_is_bounded_and_drops_control_characters() {
         assert_eq!(
-            sanitize_foreground_title("  Report\\nDraft  "),
+            sanitize_foreground_title("  Report\nDraft  "),
             Some("ReportDraft".to_owned())
         );
-        assert!(sanitize_foreground_title("  \\n  ").is_none());
+        assert!(sanitize_foreground_title("  \n  ").is_none());
         assert!(sanitize_foreground_title(&"x".repeat(600)).unwrap().chars().count() <= 512);
         assert!(sanitize_foreground_title("Miss Minutes • TVA Companion").is_none());
     }
