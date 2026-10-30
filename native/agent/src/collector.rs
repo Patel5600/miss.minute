@@ -198,7 +198,8 @@ fn evaluate_context(store: &mut Store, config: &AgentConfig) -> Result<Option<re
     }
 
     let through_seq = evidence.last().map(|event| event.seq).unwrap_or(cursor);
-    let decision = reasoner::evaluate(reasoner_config, &evidence, &config.approved_note_roots)?;
+    let owner_context = store.enabled_owner_contexts()?;
+    let decision = reasoner::evaluate(reasoner_config, &evidence, &config.approved_note_roots, &owner_context)?;
     
     if let Some(action) = &decision.proposed_action {
         let payload = serde_json::to_value(&action.payload)?;
