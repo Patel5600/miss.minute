@@ -18,7 +18,7 @@
         </activity>
         <service
             android:name=".MetadataCompanionService"
-            android:description="Owner-started metadata monitor for one folder selected by the user"
+            android:description="@string/metadata_service_description"
             android:exported="false"
             android:foregroundServiceType="specialUse">
             <property
