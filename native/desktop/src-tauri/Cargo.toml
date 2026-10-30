@@ -14,6 +14,7 @@ anyhow = "=1.0.104"
 miss-minute-agent = { path = "../../agent" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "1.0"
+uuid = { version = "=1.29.0", features = ["v4"] }
 tauri = { version = "=2.12.5", features = ["tray-icon"] }
 tauri-plugin-autostart = "=2.7.0"
 
