@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace = "com.patel5600.missminute.mobile"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.patel5600.missminute.mobile"
