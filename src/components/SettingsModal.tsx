@@ -173,7 +173,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 className="w-full bg-neutral-950 border border-amber-600/50 rounded-lg px-3 py-2 text-xs text-amber-200 placeholder-amber-700/50 focus:outline-none focus:border-amber-400"
               />
               <span className="text-[10px] text-amber-500/70 mt-1 block">
-                Stored in this browser and sent to the selected provider when you make a request. Avoid shared devices.
+                Stored in the operating-system credential vault on desktop, or held only in this browser session on web. Requests are sent directly to the selected provider.
               </span>
             </div>
 
