@@ -301,6 +301,38 @@ fn agent_stream_close(
     Ok(())
 }
 
+
+#[tauri::command]
+fn credential_set(
+    provider: String,
+    secret: String,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    require_dashboard(&window)?;
+    miss_minute_agent::secrets::set_provider_secret(&provider, &secret)
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+fn credential_get(
+    provider: String,
+    window: tauri::WebviewWindow,
+) -> Result<Option<String>, String> {
+    require_dashboard(&window)?;
+    miss_minute_agent::secrets::get_provider_secret(&provider)
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+fn credential_delete(
+    provider: String,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    require_dashboard(&window)?;
+    miss_minute_agent::secrets::delete_provider_secret(&provider)
+        .map_err(|error| format!("{error:#}"))
+}
+
 #[tauri::command]
 fn agent_status(state: tauri::State<'_, DesktopState>) -> AgentStatus {
     agent_status_inner(&state)
@@ -751,6 +783,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             agent_status,
+            credential_set,
+            credential_get,
+            credential_delete,
             agent_stream_open,
             agent_events_after,
             agent_stream_close,

@@ -1,5 +1,8 @@
 const APP_COMMANDS: &[&str] = &[
     "agent_status",
+    "credential_set",
+    "credential_get",
+    "credential_delete",
     "agent_stream_open",
     "agent_events_after",
     "agent_stream_close",

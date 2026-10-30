@@ -25,6 +25,9 @@
     "allow-avatar-speak",
     "allow-agent-stream-open",
     "allow-agent-events-after",
-    "allow-agent-stream-close"
+    "allow-agent-stream-close",
+    "allow-credential-set",
+    "allow-credential-get",
+    "allow-credential-delete"
   ]
 }

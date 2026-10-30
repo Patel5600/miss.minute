@@ -24,7 +24,7 @@ fn database_account(path: &Path) -> Result<String> {
 
 fn provider_entry(provider: &str) -> Result<Entry> {
     match provider {
-        "openai" | "gemini" | "anthropic" | "elevenlabs" => {}
+        "openai" | "gemini" | "anthropic" | "ollama" | "elevenlabs" => {}
         _ => bail!("Unsupported credential provider."),
     }
     Entry::new(PROVIDER_SERVICE, provider).context("Cannot access the operating-system credential vault")
