@@ -239,6 +239,7 @@ mod tests {
                 file_metadata: true,
                 file_contents: false,
                 follow_symlinks: false,
+                foreground_window_title: false,
             },
             database_path: base.join("agent.sqlite3"),
             retention_days: 30,
