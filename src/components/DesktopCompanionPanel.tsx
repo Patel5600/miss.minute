@@ -83,50 +83,66 @@ export function DesktopCompanionPanel() {
     let cursor = 0;
     let polling = false;
 
+    const closeTicket = async () => {
+      const active = ticket;
+      ticket = undefined;
+      if (active) {
+        await invokeNative('agent_stream_close', { token: active.token }).catch(() => undefined);
+      }
+    };
+
     const poll = async () => {
-      if (cancelled || !ticket || polling) return;
+      if (cancelled || polling) return;
       polling = true;
       try {
+        if (!ticket) {
+          setStreamState(cursor > 0 ? 'connecting' : 'connecting');
+          ticket = await invokeNative<AgentStreamTicket>('agent_stream_open',
+            cursor > 0 ? { afterSeq: cursor } : {});
+          if (cursor === 0) cursor = ticket.cursor;
+        }
+
+        const activeTicket = ticket;
         const batch = await invokeNative<AgentEventRecord[]>('agent_events_after', {
-          token: ticket.token,
+          token: activeTicket.token,
           afterSeq: cursor,
           limit: 50,
         });
         if (cancelled) return;
+
+        let expected = cursor;
+        for (const event of batch) {
+          if (!Number.isSafeInteger(event.seq) || event.seq <= expected) {
+            throw new Error('Event sequence was not strictly increasing.');
+          }
+          expected = event.seq;
+        }
         if (batch.length > 0) {
-          cursor = batch[batch.length - 1].seq;
+          cursor = expected;
           setAgentEvents(previous => [...previous, ...batch].slice(-12));
         }
         setStreamState('live');
       } catch (cause) {
         if (cancelled) return;
         const message = cause instanceof Error ? cause.message : '';
-        setStreamState(message.includes('expired') ? 'expired' : 'offline');
+        if (message.includes('expired') || message.includes('invalid') || message.includes('Open an event stream')) {
+          await closeTicket();
+          setStreamState('expired');
+        } else {
+          setStreamState('offline');
+        }
       } finally {
         polling = false;
       }
     };
 
-    void (async () => {
-      try {
-        ticket = await invokeNative<AgentStreamTicket>('agent_stream_open');
-        cursor = ticket.cursor;
-        if (cancelled) {
-          await invokeNative('agent_stream_close', { token: ticket.token }).catch(() => undefined);
-          return;
-        }
-        setStreamState('live');
-        await poll();
-        timer = window.setInterval(() => void poll(), 1500);
-      } catch {
-        if (!cancelled) setStreamState('offline');
-      }
-    })();
+    void poll();
+    timer = window.setInterval(() => void poll(), 1500);
 
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearInterval(timer);
-      if (ticket) void invokeNative('agent_stream_close', { token: ticket.token }).catch(() => undefined);
+      void closeTicket();
     };
   }, [desktop, status.enrolled]);
 
