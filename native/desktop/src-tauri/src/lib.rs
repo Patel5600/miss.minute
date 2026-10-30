@@ -19,7 +19,9 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
 };
-use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartExt};
+use tauri_plugin_autostart::ManagerExt as AutostartExt;
+#[cfg(target_os = "macos")]
+use tauri_plugin_autostart::MacosLauncher;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -485,14 +487,14 @@ fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
 }
 
 pub fn run() {
+    let autostart_builder = tauri_plugin_autostart::Builder::new()
+        .app_name("Miss Minutes")
+        .args(["--background"]);
+    #[cfg(target_os = "macos")]
+    let autostart_builder = autostart_builder.macos_launcher(MacosLauncher::LaunchAgent);
+
     let app = tauri::Builder::default()
-        .plugin(
-            tauri_plugin_autostart::Builder::new()
-                .app_name("Miss Minutes")
-                .args(["--background"])
-                .macos_launcher(MacosLauncher::LaunchAgent)
-                .build(),
-        )
+        .plugin(autostart_builder.build())
         .setup(|app| {
             let app_data = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data)?;
