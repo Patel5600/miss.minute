@@ -63,7 +63,7 @@ pub fn validate_payload(payload: &ActionPayload, approved_root_count: usize) -> 
                 bail!("The action refers to a note folder that has not been approved.");
             }
             validate_note_filename(filename)?;
-            if content.trim().is_empty() || content.len() > 8192 || content.contains('\\0') {
+            if content.trim().is_empty() || content.len() > 8192 || content.contains('\0') {
                 bail!("Note content must contain 1 to 8192 bytes and cannot contain NUL.");
             }
         }
@@ -85,7 +85,7 @@ fn validate_note_filename(filename: &str) -> Result<()> {
 
 fn create_note(root: &Path, filename: &str, content: &str) -> Result<PathBuf> {
     validate_note_filename(filename)?;
-    if content.trim().is_empty() || content.len() > 8192 || content.contains('\\0') {
+    if content.trim().is_empty() || content.len() > 8192 || content.contains('\0') {
         bail!("Note content failed size or NUL validation.");
     }
 
