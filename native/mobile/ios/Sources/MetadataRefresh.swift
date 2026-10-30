@@ -35,16 +35,15 @@ enum MetadataRefresh {
 
     static func handle(_ task: BGAppRefreshTask) {
         scheduleNext()
-        let operation = Task {
-            let success = await Task.detached(priority: .utility) {
-                do {
-                    try refreshMetadata()
-                    return true
-                } catch {
-                    NSLog("[MissMinutes] Background metadata refresh failed: \(error)")
-                    return false
-                }
-            }.value
+        let operation = Task.detached(priority: .utility) {
+            let success: Bool
+            do {
+                try refreshMetadata()
+                success = true
+            } catch {
+                NSLog("[MissMinutes] Background metadata refresh failed: \(error)")
+                success = false
+            }
             task.setTaskCompleted(success: success)
         }
         task.expirationHandler = {
