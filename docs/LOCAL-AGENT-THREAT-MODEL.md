@@ -21,7 +21,7 @@
 - No arbitrary shell, script, process launch, network request, delete, move or overwrite capability.
 - Metadata timestamps are not treated as proof of human activity.
 - No claim of complete historical reconstruction.
-- The database is local but not encrypted at rest in this milestone.
+- The desktop event store is SQLCipher-encrypted at rest with a random 256-bit key stored in the operating-system credential vault. Android uses SQLCipher with its database key wrapped by an Android Keystore AES-256-GCM key. iOS metadata files use complete file protection; folder bookmarks are stored in Keychain.
 - Avatar hit-testing uses transient cursor coordinates only; they are not stored or sent to the reasoner.
 
 ## Typed action boundary
@@ -62,11 +62,11 @@ This is bounded autonomous execution for one low-risk file-creation capability. 
 
 Filesystem notifications are not a universal audit log. They can be coalesced, missed, unsupported on some filesystems, or unavailable due to OS permissions. Metadata scans observe current files, not deleted historical files. The agent therefore makes no claim to reconstruct all device activity from first boot.
 
-The agent currently observes authorized filesystem metadata only. It does not see active windows, browser sessions, notifications, messages, screen contents, or application-private data. Android/iOS native agents are not included. Precise click-through hit-testing is Windows-only in this milestone.
+The agent currently observes authorized filesystem metadata only. It does not see active windows, browser sessions, notifications, messages, screen contents, or application-private data. Android and iOS companions exist as separate native apps with platform-scoped lifecycle and owner-selected directory access. They do not provide unrestricted background daemons or cross-app floating overlays. Android service execution remains user-started and visible; iOS refresh is opportunistic and system-scheduled. Mobile devices do not yet pair with the desktop or synchronize their event streams. Precise click-through hit-testing is Windows-only in this milestone.
 
-The SQLite database is not encrypted at rest, and provider credentials used by the web UI remain in browser local storage. OS credential-vault migration, signed installers, update verification, and a complete multi-platform security review remain future work.
+The desktop and Android event databases are encrypted at rest. Desktop key material is held by the OS credential vault; Android key material is wrapped by an Android Keystore key. iOS metadata JSON files use complete file protection and its folder bookmark is in Keychain. Key loss is fail-closed: the application does not generate a replacement key for an existing encrypted database. Recovery and key rotation procedures still require platform testing. Signed release artifacts require owner-supplied certificates and secrets; update verification and a complete multi-platform security review remain future work.
 
 
 ## Provider credential handling
 
-Desktop provider credentials are stored as binary secrets in the operating-system credential vault (Windows Credential Manager, macOS Keychain or Linux Secret Service/kernel keyutils when available). Startup migrates legacy API keys out of the settings JSON, and settings writes always blank API-key fields before touching localStorage. The dashboard retrieves credentials into its own memory for the existing browser-based provider adapters. This removes long-lived plaintext-at-rest copies but does not protect a credential while the trusted webview is actively using it; a native HTTP proxy is still required to keep provider credentials out of JavaScript entirely. The avatar overlay does not receive the ElevenLabs key and uses OS speech until that proxy exists.
+Desktop provider credentials are stored as binary secrets in the operating-system credential vault (Windows Credential Manager, macOS Keychain or Linux Secret Service/kernel keyutils when available). Startup migrates legacy API keys out of the settings JSON, and settings writes always blank API-key fields before touching localStorage. The dashboard retrieves credentials into its own memory for the existing browser-based provider adapters. This removes long-lived plaintext-at-rest copies but does not protect a credential while the trusted webview is actively using it; a native HTTP proxy is still required to keep provider credentials out of JavaScript entirely. The avatar overlay does not receive the ElevenLabs key and uses OS speech until that proxy exists. Android stores its SQLCipher database key only as an AES-GCM envelope under a non-exportable Android Keystore key; missing envelopes or Keystore keys fail closed.
