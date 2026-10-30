@@ -40,6 +40,7 @@ struct DesktopState {
     config_path: PathBuf,
     agent: Mutex<Option<AgentRuntime>>,
     avatar_bounds: Arc<Mutex<AvatarBounds>>,
+    avatar_dragging: Arc<AtomicBool>,
 }
 
 impl DesktopState {
@@ -48,6 +49,7 @@ impl DesktopState {
             config_path,
             agent: Mutex::new(None),
             avatar_bounds: Arc::new(Mutex::new(AvatarBounds::default())),
+            avatar_dragging: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -253,6 +255,11 @@ fn set_avatar_bounds(bounds: AvatarBounds, state: tauri::State<'_, DesktopState>
     }
 }
 
+#[tauri::command]
+fn set_avatar_dragging(dragging: bool, state: tauri::State<'_, DesktopState>) {
+    state.avatar_dragging.store(dragging, Ordering::Release);
+}
+
 fn make_tray_icon() -> tauri::image::Image<'static> {
     let mut pixels = vec![0_u8; 32 * 32 * 4];
     for y in 0..32_i32 {
@@ -306,10 +313,10 @@ fn create_avatar_window(app: &tauri::AppHandle) -> tauri::Result<()> {
             let position = monitor.position();
             let size = monitor.size();
             builder = builder
-                .position(tauri::LogicalPosition::new(
+                .position(
                     position.x as f64 / scale,
                     position.y as f64 / scale,
-                ))
+                )
                 .inner_size(
                     size.width as f64 / scale,
                     size.height as f64 / scale,
@@ -335,7 +342,11 @@ fn create_avatar_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-fn start_windows_cursor_gate(app: tauri::AppHandle, bounds: Arc<Mutex<AvatarBounds>>) {
+fn start_windows_cursor_gate(
+    app: tauri::AppHandle,
+    bounds: Arc<Mutex<AvatarBounds>>,
+    dragging: Arc<AtomicBool>,
+) {
     use windows::Win32::{
         Foundation::POINT,
         UI::WindowsAndMessaging::GetCursorPos,
@@ -355,7 +366,7 @@ fn start_windows_cursor_gate(app: tauri::AppHandle, bounds: Arc<Mutex<AvatarBoun
                 let mut cursor = POINT::default();
                 let cursor_available = unsafe { GetCursorPos(&mut cursor).is_ok() };
 
-                let interactive = if let Some(origin) = origin.filter(|_| cursor_available) {
+                let interactive = dragging.load(Ordering::Acquire) || if let Some(origin) = origin.filter(|_| cursor_available) {
                     let left = origin.x as f64 + (bounds.x - 12.0) * scale;
                     let top = origin.y as f64 + (bounds.y - 110.0) * scale;
                     let right = origin.x as f64 + (bounds.x + bounds.width + 12.0) * scale;
@@ -451,16 +462,17 @@ pub fn run() {
             std::fs::create_dir_all(&app_data)?;
             let state = DesktopState::new(app_data.join("miss-minute-agent.json"));
             let bounds = Arc::clone(&state.avatar_bounds);
+            let dragging = Arc::clone(&state.avatar_dragging);
             app.manage(state);
 
             create_avatar_window(app.handle())?;
             create_tray(app)?;
 
             #[cfg(target_os = "windows")]
-            start_windows_cursor_gate(app.handle().clone(), bounds);
+            start_windows_cursor_gate(app.handle().clone(), bounds, dragging);
 
             #[cfg(not(target_os = "windows"))]
-            let _ = bounds;
+            let _ = (bounds, dragging);
 
             if std::env::args().any(|argument| argument == "--background") {
                 if let Some(main) = app.get_webview_window("main") {
@@ -479,7 +491,8 @@ pub fn run() {
             get_startup,
             toggle_avatar,
             show_dashboard,
-            set_avatar_bounds
+            set_avatar_bounds,
+            set_avatar_dragging
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

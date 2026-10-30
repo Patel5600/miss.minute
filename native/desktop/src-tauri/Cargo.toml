@@ -7,7 +7,7 @@ description = "Native desktop shell and companion runtime for Miss Minutes"
 license = "MIT"
 
 [build-dependencies]
-tauri-build = "=2.7.2"
+tauri-build = "=2.7.4"
 
 [dependencies]
 anyhow = "=1.0.104"

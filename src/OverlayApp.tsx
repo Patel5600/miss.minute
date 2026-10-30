@@ -37,6 +37,10 @@ export function OverlayApp() {
     void invokeNative<void>('set_avatar_bounds', { bounds }).catch(() => undefined);
   };
 
+  const updateDragging = (dragging: boolean) => {
+    void invokeNative<void>('set_avatar_dragging', { dragging }).catch(() => undefined);
+  };
+
   return (
     <div className="mm-native-overlay-root" aria-label="Miss Minutes desktop companion">
       <MissMinutesFloating
@@ -48,6 +52,7 @@ export function OverlayApp() {
         isBusy={false}
         onAvatarClick={speak}
         onBoundsChange={updateBounds}
+        onDraggingChange={updateDragging}
       />
     </div>
   );

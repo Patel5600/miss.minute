@@ -50,7 +50,7 @@ For a production package:
 
     cargo tauri build
 
-The Tauri config runs the root Vite build and uses the root dist directory. The Windows GitHub Actions workflow checks the React build and compiles the desktop host.
+The Tauri config runs the root Vite build and uses the root dist directory. The Windows GitHub Actions workflow checks the React build and compiles the desktop host. The Windows bundle uses the TVA clock icon in the Tauri icons directory.
 
 ## Native enrollment
 

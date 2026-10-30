@@ -92,6 +92,7 @@ interface Props {
   autonomousChatter?: boolean;
   isBusy?: boolean;
   onBoundsChange?: (bounds: { x: number; y: number; width: number; height: number }) => void;
+  onDraggingChange?: (dragging: boolean) => void;
 }
 
 type BehaviorMode =
@@ -111,6 +112,7 @@ export const MissMinutesFloating: React.FC<Props> = ({
   autonomousChatter = false,
   isBusy = false,
   onBoundsChange,
+  onDraggingChange,
 }) => {
   // ── High-Level React State ─────────────────────────────────────────────────
   const [blink, setBlink] = useState(false);
@@ -128,6 +130,8 @@ export const MissMinutesFloating: React.FC<Props> = ({
   callbackRef.current = onAvatarClick;
   const boundsCallbackRef = useRef(onBoundsChange);
   boundsCallbackRef.current = onBoundsChange;
+  const draggingCallbackRef = useRef(onDraggingChange);
+  draggingCallbackRef.current = onDraggingChange;
   const isSpeakingRef = useRef(isSpeaking);
   isSpeakingRef.current = isSpeaking;
   const isBusyRef = useRef(isBusy);
@@ -265,6 +269,7 @@ export const MissMinutesFloating: React.FC<Props> = ({
     const handleUp = () => {
       if (!isDragging.current) return;
       isDragging.current = false;
+      draggingCallbackRef.current?.(false);
       behavior.current = 'wave_pose';
       behaviorTimer.current = 0;
       stateDuration.current = 140;
@@ -354,6 +359,7 @@ export const MissMinutesFloating: React.FC<Props> = ({
     dragMoved.current = false;
     dragStart.current = { x: event.clientX, y: event.clientY };
     isDragging.current = true;
+    draggingCallbackRef.current?.(true);
     behavior.current = 'dragged';
     dragOffset.current = { x: event.clientX - pos.current.x, y: event.clientY - pos.current.y };
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* window listeners remain active */ }
