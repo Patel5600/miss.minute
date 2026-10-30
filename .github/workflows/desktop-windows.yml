@@ -21,6 +21,9 @@ permissions:
 jobs:
   windows-desktop:
     runs-on: windows-latest
+    env:
+      WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+      WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -60,11 +63,8 @@ jobs:
         run: cargo +stable build --release --manifest-path native/desktop/src-tauri/Cargo.toml
 
       - name: Sign Windows executable when certificate is configured
-        if: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 != '' && secrets.WINDOWS_SIGNING_PFX_PASSWORD != '' }}
+        if: ${{ env.WINDOWS_SIGNING_PFX_BASE64 != '' && env.WINDOWS_SIGNING_PFX_PASSWORD != '' }}
         shell: pwsh
-        env:
-          WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
-          WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
           $exe = "native/desktop/target/release/miss-minute-desktop.exe"
@@ -95,7 +95,7 @@ jobs:
           }
 
       - name: Mark executable as unsigned
-        if: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 == '' || secrets.WINDOWS_SIGNING_PFX_PASSWORD == '' }}
+        if: ${{ env.WINDOWS_SIGNING_PFX_BASE64 == '' || env.WINDOWS_SIGNING_PFX_PASSWORD == '' }}
         shell: pwsh
         run: |
           "Authenticode: UNSIGNED. Add repository secrets WINDOWS_SIGNING_PFX_BASE64 and WINDOWS_SIGNING_PFX_PASSWORD to enable signing." | Add-Content $env:GITHUB_STEP_SUMMARY
