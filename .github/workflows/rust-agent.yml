@@ -1,0 +1,27 @@
+name: Rust agent CI
+
+on:
+  push:
+    branches:
+      - main
+      - feat/living-miss-minutes
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  rust-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Check formatting
+        run: cargo +stable fmt --all -- --check
+      - name: Run tests
+        run: cargo +stable test --workspace --all-targets
+      - name: Run clippy
+        run: cargo +stable clippy --workspace --all-targets -- -D warnings
