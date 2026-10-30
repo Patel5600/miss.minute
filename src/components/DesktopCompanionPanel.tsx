@@ -44,7 +44,10 @@ export function DesktopCompanionPanel() {
   const [consent, setConsent] = useState(false);
   const [noteRootPath, setNoteRootPath] = useState('');
   const [noteWriteConsent, setNoteWriteConsent] = useState(false);
-  const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);\n  const [ownerContexts, setOwnerContexts] = useState<OwnerContextRecord[]>([]);\n  const [contextTitle, setContextTitle] = useState('');\n  const [contextContent, setContextContent] = useState('');
+  const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
+  const [ownerContexts, setOwnerContexts] = useState<OwnerContextRecord[]>([]);
+  const [contextTitle, setContextTitle] = useState('');
+  const [contextContent, setContextContent] = useState('');
   const [agentEvents, setAgentEvents] = useState<AgentEventRecord[]>([]);
   const [streamState, setStreamState] = useState<'connecting' | 'live' | 'expired' | 'offline'>('connecting');
   const [notice, setNotice] = useState('');
@@ -60,6 +63,8 @@ export function DesktopCompanionPanel() {
       setStartupEnabled(startup);
       const actions = await invokeNative<PendingAction[]>('pending_actions');
       setPendingActions(actions);
+      const contexts = await invokeNative<OwnerContextRecord[]>('owner_context_list');
+      setOwnerContexts(contexts);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Native status is unavailable.');
     }
