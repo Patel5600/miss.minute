@@ -29,6 +29,49 @@ pub struct ScanReport {
     pub inaccessible_entries: u64,
 }
 
+fn sanitize_foreground_title(raw: &str) -> Option<String> {
+    let title = raw.chars()
+        .filter(|character| !character.is_control())
+        .take(512)
+        .collect::<String>()
+        .trim()
+        .to_owned();
+    if title.is_empty() {
+        return None;
+    }
+    let normalized = title.to_ascii_lowercase();
+    if normalized == "miss minutes • tva companion"
+        || normalized == "miss minutes avatar"
+        || normalized == "miss minutes • tva avatar"
+    {
+        return None;
+    }
+    Some(title)
+}
+
+#[cfg(windows)]
+fn sample_foreground_window_title() -> Option<String> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
+
+    unsafe {
+        let window = GetForegroundWindow();
+        if window == Default::default() {
+            return None;
+        }
+        let mut buffer = [0_u16; 513];
+        let length = GetWindowTextW(window, &mut buffer);
+        if length <= 0 {
+            return None;
+        }
+        sanitize_foreground_title(&String::from_utf16_lossy(&buffer[..length as usize]))
+    }
+}
+
+#[cfg(not(windows))]
+fn sample_foreground_window_title() -> Option<String> {
+    None
+}
+
 fn file_modified_ms(metadata: &fs::Metadata) -> Option<i64> {
     metadata
         .modified()
@@ -279,6 +322,8 @@ where
         None
     };
     let mut last_reasoner_error_at: Option<Instant> = None;
+    let mut last_foreground_title: Option<String> = None;
+    let mut next_foreground_sample = Instant::now();
 
     while !stopping.load(Ordering::Acquire) {
         match receiver.recv_timeout(Duration::from_millis(500)) {
@@ -308,6 +353,31 @@ where
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 anyhow::bail!("File-system event channel disconnected; stopping to avoid silent data loss.");
+            }
+        }
+
+        if config.capture.foreground_window_title && Instant::now() >= next_foreground_sample {
+            next_foreground_sample = Instant::now() + Duration::from_secs(10);
+            match sample_foreground_window_title() {
+                Some(title) if last_foreground_title.as_deref() != Some(title.as_str()) => {
+                    let payload = serde_json::json!({
+                        "title": title,
+                        "scope": "foreground_window_title_only",
+                        "sampling_interval_ms": 10_000
+                    });
+                    store.append_event(
+                        "windows_foreground_window",
+                        "context.foreground_window_title_changed",
+                        None,
+                        "agent_observed_at",
+                        None,
+                        &payload,
+                    )?;
+                    last_foreground_title = Some(title);
+                    last_event_at = Some(Instant::now());
+                }
+                Some(_) => {}
+                None => last_foreground_title = None,
             }
         }
 
@@ -381,6 +451,17 @@ pub fn run_one_reasoning_cycle(config: &AgentConfig) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foreground_title_sanitization_is_bounded_and_drops_control_characters() {
+        assert_eq!(
+            sanitize_foreground_title("  Report\\nDraft  "),
+            Some("ReportDraft".to_owned())
+        );
+        assert!(sanitize_foreground_title("  \\n  ").is_none());
+        assert!(sanitize_foreground_title(&"x".repeat(600)).unwrap().chars().count() <= 512);
+        assert!(sanitize_foreground_title("Miss Minutes • TVA Companion").is_none());
+    }
 
     #[test]
     fn authorization_is_path_scoped() {
