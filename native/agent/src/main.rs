@@ -6,8 +6,8 @@ use miss_minute_agent::{
     actions::approve_and_execute,
     collector::{run_agent, run_one_reasoning_cycle, scan_roots},
     config::{
-        authorize_note_root, clear_reasoner, configure_reasoner, create_config, load_config,
-        revoke_note_root,
+        authorize_note_root, clear_reasoner, configure_auto_note_creation, configure_reasoner,
+        create_config, load_config, revoke_note_root,
     },
     store::Store,
 };
@@ -85,6 +85,13 @@ enum Commands {
     DisableReasoner {
         #[arg(long)]
         config: PathBuf,
+    },
+    /// Enable or disable opt-in automatic Markdown note creation (maximum three successful notes per UTC day).
+    SetAutoNoteCreation {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long, action = clap::ArgAction::Set)]
+        enabled: bool,
     },
     /// Grant a separate permission to create new Markdown notes in one existing subfolder.
     AuthorizeNoteRoot {
@@ -181,6 +188,8 @@ fn execute(cli: Cli) -> Result<()> {
             println!("Reasoning decisions: {decisions}");
             println!("Retention: {} days", config_data.retention_days);
             println!("Approved note-write folders: {}", config_data.approved_note_roots.len());
+            println!("Automatic note creation: {}", config_data.automation.auto_create_notes);
+            println!("Automatic daily quota: {} notes (UTC)", config_data.automation.max_notes_per_utc_day);
             for root in &config_data.approved_note_roots {
                 println!("  {}", root.display());
             }
@@ -234,6 +243,13 @@ fn execute(cli: Cli) -> Result<()> {
         Commands::DisableReasoner { config } => {
             clear_reasoner(&config)?;
             println!("Reasoner disabled. Local collection remains enabled.");
+        }
+        Commands::SetAutoNoteCreation { config, enabled } => {
+            let updated = configure_auto_note_creation(&config, enabled)?;
+            println!("Automatic note creation: {}", if updated.automation.auto_create_notes { "enabled" } else { "disabled" });
+            println!("Daily quota: {} successful note(s) per UTC day.", updated.automation.max_notes_per_utc_day);
+            println!("Only the typed create_note capability is eligible. No overwrite, shell, script, move, or delete actions are available.");
+            println!("Restart a running standalone agent after changing this policy.");
         }
         Commands::AuthorizeNoteRoot { config, path, confirm_write_permission } => {
             let updated = authorize_note_root(&config, &path, confirm_write_permission)?;

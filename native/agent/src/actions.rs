@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
 };
@@ -8,9 +8,6 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
-
-#[cfg(unix)]
-use std::fs::File;
 
 use crate::{
     config::AgentConfig,
@@ -116,12 +113,13 @@ fn create_note(root: &Path, filename: &str, content: &str) -> Result<PathBuf> {
     Ok(destination)
 }
 
-pub fn approve_and_execute(
+fn approve_and_execute_with_source(
     config: &AgentConfig,
     store: &mut Store,
     action_id: &str,
+    approval_source: &str,
 ) -> Result<ActionExecutionResult> {
-    let pending: PendingActionRecord = store.claim_pending_action(action_id)?;
+    let pending: PendingActionRecord = store.claim_pending_action(action_id, approval_source)?;
     let result = (|| -> Result<(PathBuf, usize)> {
         let payload: ActionPayload = serde_json::from_str(&pending.payload_json)
             .context("Stored action payload is malformed; refusing execution")?;
@@ -163,9 +161,134 @@ pub fn approve_and_execute(
     }
 }
 
+pub fn approve_and_execute(
+    config: &AgentConfig,
+    store: &mut Store,
+    action_id: &str,
+) -> Result<ActionExecutionResult> {
+    approve_and_execute_with_source(config, store, action_id, "owner")
+}
+
+/// Executes a pending create_note proposal only when the owner has enabled the
+/// single-capability automatic policy and the hard UTC daily quota is not spent.
+pub fn auto_execute_if_enabled(
+    config: &AgentConfig,
+    store: &mut Store,
+    action_id: &str,
+) -> Result<Option<ActionExecutionResult>> {
+    if !config.automation.auto_create_notes {
+        return Ok(None);
+    }
+    if config.approved_note_roots.is_empty() {
+        bail!("Automatic note creation is enabled without an approved output folder; refusing execution.");
+    }
+
+    let now = crate::config::now_unix_ms();
+    const DAY_MS: i64 = 86_400_000;
+    let utc_day_start = now.div_euclid(DAY_MS) * DAY_MS;
+    let executed_today = store.successful_actions_since(utc_day_start)?;
+    if executed_today >= i64::from(config.automation.max_notes_per_utc_day) {
+        return Ok(None);
+    }
+
+    approve_and_execute_with_source(config, store, action_id, "automatic_policy").map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture(enabled: bool, daily_limit: u8) -> (AgentConfig, PathBuf) {
+        let base = std::env::temp_dir().join(format!("miss-minute-auto-{}", Uuid::new_v4()));
+        let workspace = base.join("workspace");
+        let notes = workspace.join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        let config = AgentConfig {
+            schema_version: crate::config::CONFIG_SCHEMA_VERSION,
+            consent: crate::config::OwnerConsent {
+                confirmed: true,
+                granted_at_unix_ms: crate::config::now_unix_ms(),
+                allowed_roots: vec![workspace],
+            },
+            capture: crate::config::CapturePolicy {
+                file_metadata: true,
+                file_contents: false,
+                follow_symlinks: false,
+            },
+            database_path: base.join("agent.sqlite3"),
+            retention_days: 30,
+            approved_note_roots: vec![notes],
+            automation: crate::config::AutomationPolicy {
+                auto_create_notes: enabled,
+                max_notes_per_utc_day: daily_limit,
+            },
+            reasoner: None,
+        };
+        (config, base)
+    }
+
+    fn queue_note(store: &mut Store, through: i64, filename: &str) -> String {
+        let payload = serde_json::json!({
+            "kind": "create_note",
+            "root_index": 0,
+            "filename": filename,
+            "content": "# Metadata summary\n\nGenerated from owner-authorized file metadata only."
+        });
+        store.create_pending_action(
+            through,
+            "Create a metadata summary note",
+            &payload,
+            &["evidence-event".to_owned()],
+        ).unwrap()
+    }
+
+    #[test]
+    fn automatic_mode_off_never_executes_a_pending_action() {
+        let (config, base) = fixture(false, 3);
+        let mut store = Store::open(&config.database_path).unwrap();
+        let id = queue_note(&mut store, 1, "manual-review.md");
+
+        assert!(auto_execute_if_enabled(&config, &mut store, &id).unwrap().is_none());
+        assert!(!config.approved_note_roots[0].join("manual-review.md").exists());
+        assert_eq!(store.pending_action_count().unwrap(), 1);
+
+        drop(store);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn explicit_automatic_policy_executes_only_the_typed_note_capability() {
+        let (config, base) = fixture(true, 3);
+        let mut store = Store::open(&config.database_path).unwrap();
+        let id = queue_note(&mut store, 2, "automatic-note.md");
+
+        let outcome = auto_execute_if_enabled(&config, &mut store, &id).unwrap().unwrap();
+        assert_eq!(outcome.status, "succeeded");
+        assert_eq!(
+            fs::read_to_string(config.approved_note_roots[0].join("automatic-note.md")).unwrap(),
+            "# Metadata summary\n\nGenerated from owner-authorized file metadata only."
+        );
+        assert_eq!(store.pending_action_count().unwrap(), 0);
+
+        drop(store);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn automatic_policy_stops_after_its_utc_daily_quota() {
+        let (config, base) = fixture(true, 1);
+        let mut store = Store::open(&config.database_path).unwrap();
+        let first = queue_note(&mut store, 3, "first.md");
+        assert!(auto_execute_if_enabled(&config, &mut store, &first).unwrap().is_some());
+
+        let second = queue_note(&mut store, 4, "second.md");
+        assert!(auto_execute_if_enabled(&config, &mut store, &second).unwrap().is_none());
+        assert!(!config.approved_note_roots[0].join("second.md").exists());
+        assert_eq!(store.pending_action_count().unwrap(), 1);
+
+        drop(store);
+        fs::remove_dir_all(base).unwrap();
+    }
 
     #[test]
     fn payload_rejects_unapproved_root() {
@@ -202,7 +325,6 @@ mod tests {
     fn create_note_uses_exclusive_atomic_target_creation() {
         let root = std::env::temp_dir().join(format!("miss-minute-actions-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
-        let root = fs::canonicalize(root).unwrap();
 
         let result = create_note(&root, "daily-note.md", "A generated note.").unwrap();
         assert_eq!(fs::read_to_string(&result).unwrap(), "A generated note.");

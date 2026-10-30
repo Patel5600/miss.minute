@@ -38,6 +38,24 @@ pub struct ReasonerConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutomationPolicy {
+    /// Explicit opt-in for the single low-risk create_note capability.
+    pub auto_create_notes: bool,
+    /// Hard ceiling enforced by code; owner configuration cannot raise it above three.
+    pub max_notes_per_utc_day: u8,
+}
+
+impl Default for AutomationPolicy {
+    fn default() -> Self {
+        Self {
+            auto_create_notes: false,
+            max_notes_per_utc_day: 3,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub schema_version: u32,
     pub consent: OwnerConsent,
@@ -47,6 +65,8 @@ pub struct AgentConfig {
     /// Separate write grants. Reading metadata under allowed_roots never implies write permission.
     #[serde(default)]
     pub approved_note_roots: Vec<PathBuf>,
+    #[serde(default)]
+    pub automation: AutomationPolicy,
     pub reasoner: Option<ReasonerConfig>,
 }
 
@@ -138,6 +158,7 @@ pub fn create_config(config_path: &Path, roots: &[PathBuf], confirmed: bool) -> 
         database_path,
         retention_days: 30,
         approved_note_roots: Vec::new(),
+        automation: AutomationPolicy::default(),
         reasoner: None,
     };
 
@@ -218,8 +239,8 @@ pub fn validate_config(config: &AgentConfig) -> Result<()> {
         if canonical != *note_root {
             bail!("An approved note output folder changed or traverses a symlink: {}", note_root.display());
         }
-        if !config.consent.allowed_roots.iter().any(|root| canonical.starts_with(root)) {
-            bail!("Note output folders must be inside an owner-authorized metadata root.");
+        if !config.consent.allowed_roots.iter().any(|root| canonical.starts_with(root) && canonical != *root) {
+            bail!("Note output folders must be strict subfolders of an owner-authorized metadata root.");
         }
         if !approved_note_roots.insert(canonical.clone()) {
             bail!("Duplicate note output folder: {}", canonical.display());
@@ -231,6 +252,12 @@ pub fn validate_config(config: &AgentConfig) -> Result<()> {
                 bail!("Overlapping note output permissions are not allowed: {} and {}", left.display(), right.display());
             }
         }
+    }
+    if !(1..=3).contains(&config.automation.max_notes_per_utc_day) {
+        bail!("max_notes_per_utc_day must be between 1 and 3.");
+    }
+    if config.automation.auto_create_notes && config.approved_note_roots.is_empty() {
+        bail!("Automatic note creation requires at least one separately approved output folder.");
     }
 
     if !config.database_path.is_absolute() {
@@ -292,8 +319,8 @@ pub fn authorize_note_root(config_path: &Path, requested_root: &Path, confirmed:
     }
     let mut config = load_config(config_path)?;
     let canonical = canonical_allowed_root(requested_root)?;
-    if !config.consent.allowed_roots.iter().any(|root| canonical.starts_with(root)) {
-        bail!("The note output folder must be inside one of the metadata roots already authorized.");
+    if !config.consent.allowed_roots.iter().any(|root| canonical.starts_with(root) && canonical != *root) {
+        bail!("The note output folder must be a strict subfolder of one metadata root already authorized.");
     }
     if config.approved_note_roots.iter().any(|root| root == &canonical) {
         return Ok(config);
@@ -315,6 +342,17 @@ pub fn revoke_note_root(config_path: &Path, requested_root: &Path) -> Result<Age
     if config.approved_note_roots.len() == before {
         bail!("That folder does not have a note-write permission.");
     }
+    save_config(config_path, &config)?;
+    Ok(config)
+}
+
+pub fn configure_auto_note_creation(config_path: &Path, enabled: bool) -> Result<AgentConfig> {
+    let mut config = load_config(config_path)?;
+    if enabled && config.approved_note_roots.is_empty() {
+        bail!("Authorize at least one separate note-output folder before enabling automatic note creation.");
+    }
+    config.automation.auto_create_notes = enabled;
+    config.automation.max_notes_per_utc_day = 3;
     save_config(config_path, &config)?;
     Ok(config)
 }
@@ -349,6 +387,38 @@ pub fn clear_reasoner(config_path: &Path) -> Result<AgentConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_note_creation_is_disabled_by_default() {
+        assert!(!AutomationPolicy::default().auto_create_notes);
+        assert_eq!(AutomationPolicy::default().max_notes_per_utc_day, 3);
+    }
+
+    #[test]
+    fn automatic_note_creation_quota_cannot_be_raised_above_three() {
+        let config = AgentConfig {
+            schema_version: CONFIG_SCHEMA_VERSION,
+            consent: OwnerConsent {
+                confirmed: true,
+                granted_at_unix_ms: 1,
+                allowed_roots: vec![std::env::temp_dir()],
+            },
+            capture: CapturePolicy {
+                file_metadata: true,
+                file_contents: false,
+                follow_symlinks: false,
+            },
+            database_path: std::env::temp_dir().join("miss-minute-policy-test.sqlite3"),
+            retention_days: 30,
+            approved_note_roots: vec![],
+            automation: AutomationPolicy {
+                auto_create_notes: false,
+                max_notes_per_utc_day: 4,
+            },
+            reasoner: None,
+        };
+        assert!(validate_config(&config).is_err());
+    }
 
     #[test]
     fn remote_reasoner_requires_explicit_egress_consent() {

@@ -14,6 +14,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use walkdir::WalkDir;
 
 use crate::{
+    actions::auto_execute_if_enabled,
     config::AgentConfig,
     reasoner,
     store::{EventRecord, Store},
@@ -164,7 +165,24 @@ fn evaluate_context(store: &mut Store, config: &AgentConfig) -> Result<Option<re
             &payload,
             &decision.evidence_event_ids,
         )?;
-        println!("[MISS MINUTES / APPROVAL REQUIRED] action={action_id}: {}", action.description);
+        match auto_execute_if_enabled(config, store, &action_id) {
+            Ok(Some(outcome)) => {
+                println!(
+                    "[MISS MINUTES / AUTO NOTE CREATED] {} ({} bytes)",
+                    outcome.created_path.as_deref().unwrap_or("output path unavailable"),
+                    outcome.bytes_written
+                );
+            }
+            Ok(None) => {
+                println!("[MISS MINUTES / APPROVAL REQUIRED] action={action_id}: {}", action.description);
+            }
+            Err(error) => {
+                // The executor records a failed/uncertain state before returning.
+                // Consume this evidence decision so the same action is not proposed
+                // and retried on every quiet-window cycle.
+                eprintln!("[actions] Automatic note creation failed and was not retried: {error:#}");
+            }
+        }
     }
 
     let decision_json = serde_json::to_value(&decision)?;

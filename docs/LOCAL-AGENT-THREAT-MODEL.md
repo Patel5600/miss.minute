@@ -59,3 +59,10 @@ The initial capability registry contains only create_note:
 - A process restart marks in-flight executions as uncertain/failed; no automatic retry is attempted.
 
 There is no unrestricted process executor or model-authored code path. This vertical slice is owner-approved execution, not unattended autonomous task execution. Broader autonomy requires separate capability scopes and failure-mode review per action.
+
+
+## Bounded automatic mode
+
+Automatic note creation is a separate explicit owner policy, disabled by default. It is available only after a separate note-output folder grant exists. The single capability remains create_note, the daily successful-operation quota is hard-capped at three per UTC day, and quota exhaustion leaves proposals pending for manual review. It does not enable a general agent tool runtime.
+
+When the desktop UI changes this policy or the note-write grants, the host stops and joins the current worker before starting a new worker from the updated config. This prevents a stale in-memory policy from surviving a completed revoke/disable operation.

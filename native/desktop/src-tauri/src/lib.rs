@@ -12,7 +12,7 @@ use miss_minute_agent::{
     collector::run_agent_until_with_callback,
     actions::{approve_and_execute, ActionExecutionResult},
     config::{
-        authorize_note_root as grant_note_root, create_config, load_config,
+        authorize_note_root as grant_note_root, configure_auto_note_creation, create_config, load_config,
         revoke_note_root as drop_note_root,
     },
     reasoner::DecisionKind,
@@ -122,7 +122,7 @@ impl DesktopState {
                 );
                 if let Err(error) = result {
                     if let Ok(mut slot) = worker_error.lock() {
-                        *slot = Some(format!("{error:#}"));
+                        *slot = Some(format!("${error:#}"));
                     }
                 }
             })
@@ -159,6 +159,9 @@ struct AgentStatus {
     last_error: Option<String>,
     approved_note_roots: Vec<String>,
     pending_actions: i64,
+    auto_create_notes: bool,
+    notes_created_today: i64,
+    daily_note_limit: u8,
 }
 
 fn agent_status_inner(state: &DesktopState) -> AgentStatus {
@@ -172,6 +175,9 @@ fn agent_status_inner(state: &DesktopState) -> AgentStatus {
         last_error: None,
         approved_note_roots: Vec::new(),
         pending_actions: 0,
+        auto_create_notes: false,
+        notes_created_today: 0,
+        daily_note_limit: 3,
     };
 
     if let Ok(slot) = state.agent.lock() {
@@ -189,8 +195,16 @@ fn agent_status_inner(state: &DesktopState) -> AgentStatus {
             .iter()
             .map(|root| root.display().to_string())
             .collect();
+        status.auto_create_notes = config.automation.auto_create_notes;
+        status.daily_note_limit = config.automation.max_notes_per_utc_day;
 
         if let Ok(mut store) = Store::open(&config.database_path) {
+            const DAY_MS: i64 = 86_400_000;
+            let now = miss_minute_agent::config::now_unix_ms();
+            let day_start = now.div_euclid(DAY_MS) * DAY_MS;
+            if let Ok(count) = store.successful_actions_since(day_start) {
+                status.notes_created_today = count;
+            }
             if let Ok((events, files, decisions)) = store.counts() {
                 status.events = events;
                 status.indexed_files = files;
@@ -237,9 +251,12 @@ fn authorize_note_root(
     path: String,
     confirm_write_permission: bool,
     state: tauri::State<'_, DesktopState>,
+    app: tauri::AppHandle,
 ) -> Result<AgentStatus, String> {
     grant_note_root(&state.config_path, Path::new(&path), confirm_write_permission)
         .map_err(|error| format!("{error:#}"))?;
+    state.stop_agent();
+    state.start_agent(app)?;
     Ok(agent_status_inner(&state))
 }
 
@@ -247,12 +264,28 @@ fn authorize_note_root(
 fn revoke_note_root(
     path: String,
     state: tauri::State<'_, DesktopState>,
+    app: tauri::AppHandle,
 ) -> Result<AgentStatus, String> {
+    state.stop_agent();
     let config = drop_note_root(&state.config_path, Path::new(&path))
         .map_err(|error| format!("{error:#}"))?;
     let mut store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
     store.expire_pending_actions("note_write_permission_revoked")
         .map_err(|error| format!("{error:#}"))?;
+    state.start_agent(app)?;
+    Ok(agent_status_inner(&state))
+}
+
+#[tauri::command]
+fn set_auto_note_creation(
+    enabled: bool,
+    state: tauri::State<'_, DesktopState>,
+    app: tauri::AppHandle,
+) -> Result<AgentStatus, String> {
+    configure_auto_note_creation(&state.config_path, enabled)
+        .map_err(|error| format!("{error:#}"))?;
+    state.stop_agent();
+    state.start_agent(app)?;
     Ok(agent_status_inner(&state))
 }
 
@@ -502,7 +535,7 @@ fn start_windows_cursor_gate(
 
                 let interactive = dragging.load(Ordering::Acquire) || if let Some(origin) = origin.filter(|_| cursor_available) {
                     let left = origin.x as f64 + (bounds.x - 12.0) * scale;
-                    let top = origin.y as f64 + (bounds.y - 12.0) * scale;
+                    let top = origin.y as f64 + (bounds.y - 110.0) * scale;
                     let right = origin.x as f64 + (bounds.x + bounds.width + 12.0) * scale;
                     let bottom = origin.y as f64 + (bounds.y + bounds.height + 20.0) * scale;
                     (cursor.x as f64) >= left
@@ -632,6 +665,7 @@ pub fn run() {
             agent_recent_decisions,
             authorize_note_root,
             revoke_note_root,
+            set_auto_note_creation,
             pending_actions,
             approve_action,
             reject_action,

@@ -79,3 +79,8 @@ The Tauri desktop build adds a persistent Windows avatar overlay, a native syste
 ## Native task actions
 
 The Rust agent can propose a typed Markdown-note creation action, but it cannot write merely because a folder is monitored. Grant a separate write permission to one exact subfolder, inspect the full proposed content and destination in the desktop panel, and approve or reject the one-shot action. The only implemented write capability creates new .md files without overwriting existing files. General unattended execution, mobile background agents and unrestricted machine control are not claimed. See the implementation roadmap and native agent README.
+
+
+## Controlled automatic execution
+
+A single opt-in policy can automatically create new Markdown notes inside a separately authorized output subfolder, with a hard limit of three successful notes per UTC day. It is off by default. It cannot execute shell commands, move/delete files, overwrite existing files, or expand its granted folder scope. Every action is stored in the local action queue and audit trail.

@@ -428,7 +428,23 @@ impl Store {
         Ok(rows)
     }
 
-    pub fn claim_pending_action(&mut self, id: &str) -> Result<PendingActionRecord> {
+    pub fn successful_actions_since(&self, since_unix_ms: i64) -> Result<i64> {
+        self.connection.query_row(
+            "SELECT COUNT(*) FROM action_queue
+             WHERE status = 'succeeded' AND completed_at_unix_ms >= ?1",
+            [since_unix_ms],
+            |row| row.get(0),
+        ).context("Cannot count completed actions for the automation quota")
+    }
+
+    pub fn claim_pending_action(
+        &mut self,
+        id: &str,
+        approval_source: &str,
+    ) -> Result<PendingActionRecord> {
+        if approval_source != "owner" && approval_source != "automatic_policy" {
+            anyhow::bail!("Unknown action approval source.");
+        }
         let now = now_unix_ms();
         let tx = self.connection.transaction()?;
         let record = tx.query_row(
@@ -458,8 +474,10 @@ impl Store {
         if changed != 1 {
             anyhow::bail!("Action approval lost a concurrent state transition.");
         }
-        Self::audit_action(&tx, id, "owner_approved", &serde_json::json!({
+        let audit_type = if approval_source == "owner" { "owner_approved" } else { "automatic_policy_approved" };
+        Self::audit_action(&tx, id, audit_type, &serde_json::json!({
             "approved_at_unix_ms": now,
+            "approval_source": approval_source,
             "through_seq": record.through_seq
         }))?;
         tx.commit()?;
@@ -660,11 +678,11 @@ mod tests {
             "content": "Metadata-only note."
         });
         let id = store.create_pending_action(7, "Create note", &payload, &["event-a".to_owned()]).unwrap();
-        let claimed = store.claim_pending_action(&id).unwrap();
+        let claimed = store.claim_pending_action(&id, "owner").unwrap();
         assert_eq!(claimed.status, "pending");
-        assert!(store.claim_pending_action(&id).is_err());
+        assert!(store.claim_pending_action(&id, "owner").is_err());
         store.complete_action(&id, true, &serde_json::json!({"created": true})).unwrap();
-        assert!(store.claim_pending_action(&id).is_err());
+        assert!(store.claim_pending_action(&id, "owner").is_err());
         assert_eq!(store.pending_action_count().unwrap(), 0);
     }
 
@@ -678,10 +696,27 @@ mod tests {
             "content": "Metadata-only note."
         });
         let id = store.create_pending_action(9, "Create note", &payload, &["event-b".to_owned()]).unwrap();
-        store.claim_pending_action(&id).unwrap();
+        store.claim_pending_action(&id, "owner").unwrap();
         assert_eq!(store.recover_interrupted_actions().unwrap(), 1);
-        assert!(store.claim_pending_action(&id).is_err());
+        assert!(store.claim_pending_action(&id, "owner").is_err());
         assert_eq!(store.pending_action_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn daily_success_count_ignores_failed_and_pending_actions() {
+        let mut store = Store::open_memory().unwrap();
+        let payload = serde_json::json!({"kind":"create_note","root_index":0,"filename":"daily.md","content":"Body"});
+        let successful = store.create_pending_action(20, "success", &payload, &["event-a".to_owned()]).unwrap();
+        store.claim_pending_action(&successful, "owner").unwrap();
+        store.complete_action(&successful, true, &serde_json::json!({"ok":true})).unwrap();
+
+        let failed = store.create_pending_action(21, "failure", &payload, &["event-b".to_owned()]).unwrap();
+        store.claim_pending_action(&failed, "owner").unwrap();
+        store.complete_action(&failed, false, &serde_json::json!({"ok":false})).unwrap();
+
+        let pending = store.create_pending_action(22, "pending", &payload, &["event-c".to_owned()]).unwrap();
+        assert_eq!(store.successful_actions_since(0).unwrap(), 1);
+        assert!(store.claim_pending_action(&pending, "automatic_policy").is_ok());
     }
 
     #[test]
@@ -695,7 +730,7 @@ mod tests {
         });
         let id = store.create_pending_action(11, "Create note", &payload, &["event-c".to_owned()]).unwrap();
         store.reject_pending_action(&id).unwrap();
-        assert!(store.claim_pending_action(&id).is_err());
+        assert!(store.claim_pending_action(&id, "owner").is_err());
     }
 
     #[test]

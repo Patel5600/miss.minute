@@ -53,6 +53,7 @@ Exit criteria: tests for source spoofing, duplicate events, stale context, permi
 - Revoking a note-output permission expires outstanding proposals.
 - An interrupted execution is marked failed/uncertain on worker restart. It is not automatically retried.
 - CLI parity exists for authorizing/revoking note folders, listing proposals, approving, and rejecting.
+- Added an opt-in automatic policy for this one capability only. It is disabled by default and capped at three successful note creations per UTC day. The dashboard displays the quota and restarts the worker after policy/permission changes.
 
 ### Still required for general autonomous task execution
 

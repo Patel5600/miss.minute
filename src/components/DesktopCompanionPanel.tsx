@@ -12,6 +12,9 @@ const emptyStatus: NativeAgentStatus = {
   lastError: null,
   approvedNoteRoots: [],
   pendingActions: 0,
+  autoCreateNotes: false,
+  notesCreatedToday: 0,
+  dailyNoteLimit: 3,
 };
 
 function readCreateNotePayload(json: string): CreateNotePayload | null {
@@ -234,6 +237,31 @@ export function DesktopCompanionPanel() {
             <span className="flex items-center gap-2"><TimerReset className="h-3.5 w-3.5 text-amber-400" /> Launch Miss Minutes at login</span>
             <span className={startupEnabled ? 'font-bold text-emerald-300' : 'text-amber-500'}>{startupEnabled ? 'Enabled' : 'Disabled'}</span>
           </button>
+          <div className="mt-3 rounded-xl border border-amber-700/30 bg-black/25 p-3">
+            <label className="flex cursor-pointer items-start justify-between gap-3">
+              <span>
+                <span className="block text-[10px] font-bold uppercase tracking-wider text-amber-200">Automatic note creation</span>
+                <span className="mt-1 block text-[10px] leading-relaxed text-amber-500/80">
+                  Explicit opt-in for create_note only. It may create new Markdown notes in approved folders without asking each time. No overwrites, no other file actions, maximum {status.dailyNoteLimit} per UTC day.
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                checked={status.autoCreateNotes}
+                disabled={busy || status.approvedNoteRoots.length === 0}
+                onChange={event => void run(async () => {
+                  const next = await invokeNative<NativeAgentStatus>('set_auto_note_creation', { enabled: event.target.checked });
+                  setStatus(next);
+                })}
+                className="mt-1 h-4 w-4 shrink-0 accent-amber-500 disabled:opacity-40"
+                aria-label="Enable automatic Markdown note creation"
+              />
+            </label>
+            <p className="mt-2 border-t border-amber-800/30 pt-2 text-[9px] text-amber-500/70">
+              Created today: {status.notesCreatedToday} / {status.dailyNoteLimit} (UTC)
+            </p>
+          </div>
+
           <div className="mt-3 rounded-xl border border-amber-700/30 bg-black/25 p-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">

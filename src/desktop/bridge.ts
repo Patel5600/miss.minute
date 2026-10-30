@@ -8,6 +8,9 @@ export interface NativeAgentStatus {
   lastError: string | null;
   approvedNoteRoots: string[];
   pendingActions: number;
+  autoCreateNotes: boolean;
+  notesCreatedToday: number;
+  dailyNoteLimit: number;
 }
 
 export interface PendingAction {

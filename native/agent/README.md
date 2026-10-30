@@ -137,3 +137,18 @@ Current execution limits:
 - A process crash during execution is treated as an uncertain outcome and requires manual inspection. It is never automatically retried.
 - There is no shell, arbitrary script, process-launch, network, file-move or file-delete capability.
 - The model sees metadata and the explicitly approved note-output path, never file contents.
+
+
+### Explicit automatic mode (single capability, hard quota)
+
+The owner can explicitly opt into automatic execution for the one supported `create_note` capability:
+
+    miss-minute-agent set-auto-note-creation --config ./miss-minute-agent.json --enabled true
+
+Disable it:
+
+    miss-minute-agent set-auto-note-creation --config ./miss-minute-agent.json --enabled false
+
+The policy is disabled by default. It cannot be enabled until at least one separate note-output folder is authorized. It is hard-limited to three successful note creations per UTC day. If the quota is exhausted, new proposals remain pending for manual review. Manual approvals remain available when automatic mode is disabled. The policy never adds a new capability or expands an output folder's scope.
+
+The desktop panel has the same opt-in switch and displays the daily count. The native host stops and joins the worker, persists the new policy, then restarts the worker from the updated config so a stale in-memory policy cannot remain active after the setting operation returns.

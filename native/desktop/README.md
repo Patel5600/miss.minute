@@ -69,3 +69,8 @@ The dashboard can authorize an exact note-output folder separately from metadata
 ## Background reasoner speech
 
 When the local reasoner returns a validated speak decision, the Rust worker forwards the text to the separate avatar webview using a Tauri event. The same voice-reactive SVG renderer animates the mouth from the overlay playback analyser or speech-boundary callbacks. Silent decisions remain silent; action proposals stay in the dashboard approval queue.
+
+
+## Bounded automatic note creation
+
+The dashboard exposes an explicit Automatic note creation switch. It is off by default, requires an approved note-output folder, and only enables the typed create_note capability. The hard quota is three successful note creations per UTC day. The UI displays the quota count. Disabling or enabling the policy restarts the worker with the updated config; revoking a note folder also stops the worker, expires pending proposals, and restarts with the revoked scope.
