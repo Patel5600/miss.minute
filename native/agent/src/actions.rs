@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
 };
@@ -8,9 +8,6 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
-
-#[cfg(unix)]
-use std::fs::File;
 
 use crate::{
     config::AgentConfig,
@@ -116,13 +113,11 @@ fn create_note(root: &Path, filename: &str, content: &str) -> Result<PathBuf> {
     Ok(destination)
 }
 
-fn approve_and_execute_with_source(
+fn execute_claimed_action(
     config: &AgentConfig,
     store: &mut Store,
-    action_id: &str,
-    approval_source: &str,
+    pending: PendingActionRecord,
 ) -> Result<ActionExecutionResult> {
-    let pending: PendingActionRecord = store.claim_pending_action(action_id, approval_source)?;
     let result = (|| -> Result<(PathBuf, usize)> {
         let payload: ActionPayload = serde_json::from_str(&pending.payload_json)
             .context("Stored action payload is malformed; refusing execution")?;
@@ -169,7 +164,8 @@ pub fn approve_and_execute(
     store: &mut Store,
     action_id: &str,
 ) -> Result<ActionExecutionResult> {
-    approve_and_execute_with_source(config, store, action_id, "owner")
+    let pending = store.claim_pending_action(action_id)?;
+    execute_claimed_action(config, store, pending)
 }
 
 /// Executes a pending create_note proposal only when the owner has enabled the
@@ -189,12 +185,15 @@ pub fn auto_execute_if_enabled(
     let now = crate::config::now_unix_ms();
     const DAY_MS: i64 = 86_400_000;
     let utc_day_start = now.div_euclid(DAY_MS) * DAY_MS;
-    let executed_today = store.successful_actions_since(utc_day_start)?;
-    if executed_today >= i64::from(config.automation.max_notes_per_utc_day) {
+    let Some(pending) = store.claim_automatic_pending_action(
+        action_id,
+        utc_day_start,
+        config.automation.max_notes_per_utc_day,
+    )? else {
         return Ok(None);
-    }
+    };
 
-    approve_and_execute_with_source(config, store, action_id, "automatic_policy").map(Some)
+    execute_claimed_action(config, store, pending).map(Some)
 }
 
 #[cfg(test)]
@@ -328,7 +327,6 @@ mod tests {
     fn create_note_uses_exclusive_atomic_target_creation() {
         let root = std::env::temp_dir().join(format!("miss-minute-actions-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
-        let root = fs::canonicalize(root).unwrap();
 
         let result = create_note(&root, "daily-note.md", "A generated note.").unwrap();
         assert_eq!(fs::read_to_string(&result).unwrap(), "A generated note.");

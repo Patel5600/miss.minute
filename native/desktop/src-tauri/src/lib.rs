@@ -160,7 +160,7 @@ struct AgentStatus {
     approved_note_roots: Vec<String>,
     pending_actions: i64,
     auto_create_notes: bool,
-    notes_created_today: i64,
+    automatic_actions_today: i64,
     daily_note_limit: u8,
 }
 
@@ -202,7 +202,7 @@ fn agent_status_inner(state: &DesktopState) -> AgentStatus {
             const DAY_MS: i64 = 86_400_000;
             let now = miss_minute_agent::config::now_unix_ms();
             let day_start = now.div_euclid(DAY_MS) * DAY_MS;
-            if let Ok(count) = store.successful_actions_since(day_start) {
+            if let Ok(count) = store.automatic_actions_since(day_start) {
                 status.notes_created_today = count;
             }
             if let Ok((events, files, decisions)) = store.counts() {
@@ -282,9 +282,18 @@ fn set_auto_note_creation(
     state: tauri::State<'_, DesktopState>,
     app: tauri::AppHandle,
 ) -> Result<AgentStatus, String> {
-    configure_auto_note_creation(&state.config_path, enabled)
-        .map_err(|error| format!("{error:#}"))?;
-    state.stop_agent();
+    if enabled {
+        // The previous worker is still running with automatic mode disabled.
+        configure_auto_note_creation(&state.config_path, true)
+            .map_err(|error| format!("{error:#}"))?;
+        state.stop_agent();
+    } else {
+        // Join the worker before disabling so the old in-memory policy cannot
+        // execute after this command returns.
+        state.stop_agent();
+        configure_auto_note_creation(&state.config_path, false)
+            .map_err(|error| format!("{error:#}"))?;
+    }
     state.start_agent(app)?;
     Ok(agent_status_inner(&state))
 }

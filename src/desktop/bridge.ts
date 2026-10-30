@@ -9,7 +9,7 @@ export interface NativeAgentStatus {
   approvedNoteRoots: string[];
   pendingActions: number;
   autoCreateNotes: boolean;
-  notesCreatedToday: number;
+  automaticActionsToday: number;
   dailyNoteLimit: number;
 }
 

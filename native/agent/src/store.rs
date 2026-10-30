@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -428,23 +428,86 @@ impl Store {
         Ok(rows)
     }
 
-    pub fn successful_actions_since(&self, since_unix_ms: i64) -> Result<i64> {
+    pub fn automatic_actions_since(&self, since_unix_ms: i64) -> Result<i64> {
         self.connection.query_row(
-            "SELECT COUNT(*) FROM action_queue
-             WHERE status = 'succeeded' AND completed_at_unix_ms >= ?1",
+            "SELECT COUNT(DISTINCT action_id)
+             FROM action_audit
+             WHERE event_type = 'automatic_policy_approved'
+               AND occurred_at_unix_ms >= ?1",
             [since_unix_ms],
             |row| row.get(0),
-        ).context("Cannot count completed actions for the automation quota")
+        ).context("Cannot count completed automatic actions")
     }
 
-    pub fn claim_pending_action(
+    pub fn claim_pending_action(&mut self, id: &str) -> Result<PendingActionRecord> {
+        self.claim_pending_action_inner(id)
+    }
+
+    /// Atomically checks the automatic-action quota and claims the pending
+    /// action in one IMMEDIATE SQLite transaction. Quota exhaustion leaves
+    /// the proposal pending for manual review.
+    pub fn claim_automatic_pending_action(
         &mut self,
         id: &str,
-        approval_source: &str,
-    ) -> Result<PendingActionRecord> {
-        if approval_source != "owner" && approval_source != "automatic_policy" {
-            anyhow::bail!("Unknown action approval source.");
+        day_start_unix_ms: i64,
+        daily_limit: u8,
+    ) -> Result<Option<PendingActionRecord>> {
+        if !(1..=3).contains(&daily_limit) {
+            anyhow::bail!("Automatic note quota is outside the hard-coded limit.");
         }
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let completed: i64 = tx.query_row(
+            "SELECT COUNT(DISTINCT action_id)
+             FROM action_audit
+             WHERE event_type = 'automatic_policy_approved'
+               AND occurred_at_unix_ms >= ?1",
+            [day_start_unix_ms],
+            |row| row.get(0),
+        )?;
+        if completed >= i64::from(daily_limit) {
+            tx.rollback()?;
+            return Ok(None);
+        }
+
+        let now = now_unix_ms();
+        let record = tx.query_row(
+            "SELECT id, through_seq, description, payload_json, evidence_event_ids_json,
+                    status, created_at_unix_ms, expires_at_unix_ms, result_json
+             FROM action_queue WHERE id = ?1 AND status = 'pending' AND expires_at_unix_ms > ?2",
+            params![id, now],
+            |row| {
+                Ok(PendingActionRecord {
+                    id: row.get(0)?,
+                    through_seq: row.get(1)?,
+                    description: row.get(2)?,
+                    payload_json: row.get(3)?,
+                    evidence_event_ids_json: row.get(4)?,
+                    status: row.get(5)?,
+                    created_at_unix_ms: row.get(6)?,
+                    expires_at_unix_ms: row.get(7)?,
+                    result_json: row.get(8)?,
+                })
+            },
+        ).optional()?.context("Automatic action is missing, expired, already handled, or currently executing")?;
+        let changed = tx.execute(
+            "UPDATE action_queue SET status = 'executing', approved_at_unix_ms = ?2
+             WHERE id = ?1 AND status = 'pending' AND expires_at_unix_ms > ?2",
+            params![id, now],
+        )?;
+        if changed != 1 {
+            anyhow::bail!("Automatic action claim lost a concurrent state transition.");
+        }
+        Self::audit_action(&tx, id, "automatic_policy_approved", &serde_json::json!({
+            "approved_at_unix_ms": now,
+            "approval_source": "automatic_policy",
+            "daily_limit": daily_limit,
+            "through_seq": record.through_seq
+        }))?;
+        tx.commit()?;
+        Ok(Some(record))
+    }
+
+    fn claim_pending_action_inner(&mut self, id: &str) -> Result<PendingActionRecord> {
         let now = now_unix_ms();
         let tx = self.connection.transaction()?;
         let record = tx.query_row(
@@ -474,10 +537,9 @@ impl Store {
         if changed != 1 {
             anyhow::bail!("Action approval lost a concurrent state transition.");
         }
-        let audit_type = if approval_source == "owner" { "owner_approved" } else { "automatic_policy_approved" };
-        Self::audit_action(&tx, id, audit_type, &serde_json::json!({
+        Self::audit_action(&tx, id, "owner_approved", &serde_json::json!({
             "approved_at_unix_ms": now,
-            "approval_source": approval_source,
+            "approval_source": "owner",
             "through_seq": record.through_seq
         }))?;
         tx.commit()?;
@@ -678,11 +740,11 @@ mod tests {
             "content": "Metadata-only note."
         });
         let id = store.create_pending_action(7, "Create note", &payload, &["event-a".to_owned()]).unwrap();
-        let claimed = store.claim_pending_action(&id, "owner").unwrap();
+        let claimed = store.claim_pending_action(&id).unwrap();
         assert_eq!(claimed.status, "pending");
-        assert!(store.claim_pending_action(&id, "owner").is_err());
+        assert!(store.claim_pending_action(&id).is_err());
         store.complete_action(&id, true, &serde_json::json!({"created": true})).unwrap();
-        assert!(store.claim_pending_action(&id, "owner").is_err());
+        assert!(store.claim_pending_action(&id).is_err());
         assert_eq!(store.pending_action_count().unwrap(), 0);
     }
 
@@ -696,27 +758,31 @@ mod tests {
             "content": "Metadata-only note."
         });
         let id = store.create_pending_action(9, "Create note", &payload, &["event-b".to_owned()]).unwrap();
-        store.claim_pending_action(&id, "owner").unwrap();
+        store.claim_pending_action(&id).unwrap();
         assert_eq!(store.recover_interrupted_actions().unwrap(), 1);
-        assert!(store.claim_pending_action(&id, "owner").is_err());
+        assert!(store.claim_pending_action(&id).is_err());
         assert_eq!(store.pending_action_count().unwrap(), 0);
     }
 
     #[test]
-    fn daily_success_count_ignores_failed_and_pending_actions() {
+    fn automatic_quota_counts_claims_including_failed_attempts() {
         let mut store = Store::open_memory().unwrap();
         let payload = serde_json::json!({"kind":"create_note","root_index":0,"filename":"daily.md","content":"Body"});
-        let successful = store.create_pending_action(20, "success", &payload, &["event-a".to_owned()]).unwrap();
-        store.claim_pending_action(&successful, "owner").unwrap();
-        store.complete_action(&successful, true, &serde_json::json!({"ok":true})).unwrap();
+        let first = store.create_pending_action(20, "automatic one", &payload, &["event-a".to_owned()]).unwrap();
+        let claimed = store.claim_automatic_pending_action(&first, 0, 3).unwrap().unwrap();
+        assert_eq!(claimed.status, "pending");
+        assert_eq!(store.automatic_actions_since(0).unwrap(), 1);
 
-        let failed = store.create_pending_action(21, "failure", &payload, &["event-b".to_owned()]).unwrap();
-        store.claim_pending_action(&failed, "owner").unwrap();
-        store.complete_action(&failed, false, &serde_json::json!({"ok":false})).unwrap();
+        store.complete_action(&first, false, &serde_json::json!({"outcome":"uncertain"})).unwrap();
 
-        let pending = store.create_pending_action(22, "pending", &payload, &["event-c".to_owned()]).unwrap();
-        assert_eq!(store.successful_actions_since(0).unwrap(), 1);
-        assert!(store.claim_pending_action(&pending, "automatic_policy").is_ok());
+        let manual = store.create_pending_action(21, "manual", &payload, &["event-b".to_owned()]).unwrap();
+        store.claim_pending_action(&manual).unwrap();
+        store.complete_action(&manual, true, &serde_json::json!({"ok":true})).unwrap();
+        assert_eq!(store.automatic_actions_since(0).unwrap(), 1);
+
+        let second = store.create_pending_action(22, "automatic two", &payload, &["event-c".to_owned()]).unwrap();
+        assert!(store.claim_automatic_pending_action(&second, 0, 3).unwrap().is_some());
+        assert_eq!(store.automatic_actions_since(0).unwrap(), 2);
     }
 
     #[test]
@@ -730,7 +796,7 @@ mod tests {
         });
         let id = store.create_pending_action(11, "Create note", &payload, &["event-c".to_owned()]).unwrap();
         store.reject_pending_action(&id).unwrap();
-        assert!(store.claim_pending_action(&id, "owner").is_err());
+        assert!(store.claim_pending_action(&id).is_err());
     }
 
     #[test]

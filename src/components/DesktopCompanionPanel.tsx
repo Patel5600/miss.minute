@@ -258,7 +258,7 @@ export function DesktopCompanionPanel() {
               />
             </label>
             <p className="mt-2 border-t border-amber-800/30 pt-2 text-[9px] text-amber-500/70">
-              Created today: {status.notesCreatedToday} / {status.dailyNoteLimit} (UTC)
+              Automatically created today: {status.notesCreatedToday} / {status.dailyNoteLimit} (UTC)
             </p>
           </div>
 

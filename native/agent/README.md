@@ -149,6 +149,6 @@ Disable it:
 
     miss-minute-agent set-auto-note-creation --config ./miss-minute-agent.json --enabled false
 
-The policy is disabled by default. It cannot be enabled until at least one separate note-output folder is authorized. It is hard-limited to three successful note creations per UTC day. If the quota is exhausted, new proposals remain pending for manual review. Manual approvals remain available when automatic mode is disabled. The policy never adds a new capability or expands an output folder's scope.
+The policy is disabled by default. It cannot be enabled until at least one separate note-output folder is authorized. It is hard-limited to three automatic note-creation attempts per UTC day. A claimed attempt consumes quota even if execution fails or is interrupted, preventing repeated side effects. If the quota is exhausted, new proposals remain pending for manual review. Manual approvals remain available when automatic mode is disabled. The policy never adds a new capability or expands an output folder's scope.
 
 The desktop panel has the same opt-in switch and displays the daily count. The native host stops and joins the worker, persists the new policy, then restarts the worker from the updated config so a stale in-memory policy cannot remain active after the setting operation returns.

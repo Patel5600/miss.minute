@@ -83,4 +83,4 @@ The Rust agent can propose a typed Markdown-note creation action, but it cannot 
 
 ## Controlled automatic execution
 
-A single opt-in policy can automatically create new Markdown notes inside a separately authorized output subfolder, with a hard limit of three successful notes per UTC day. It is off by default. It cannot execute shell commands, move/delete files, overwrite existing files, or expand its granted folder scope. Every action is stored in the local action queue and audit trail.
+A single opt-in policy can automatically create new Markdown notes inside a separately authorized output subfolder, with a hard limit of three automatic attempts per UTC day. It is off by default. It cannot execute shell commands, move/delete files, overwrite existing files, or expand its granted folder scope. Every action is stored in the local action queue and audit trail.
