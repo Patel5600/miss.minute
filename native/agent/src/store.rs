@@ -262,6 +262,14 @@ impl Store {
         Ok(())
     }
 
+    pub fn last_event_sequence(&self) -> Result<i64> {
+        self.connection.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM events",
+            [],
+            |row| row.get(0),
+        ).context("Cannot read the current event cursor")
+    }
+
     pub fn events_after(&self, sequence: i64, limit: usize) -> Result<Vec<EventRecord>> {
         let mut statement = self.connection.prepare(
             "SELECT seq, id, source, event_type, observed_at_unix_ms,
