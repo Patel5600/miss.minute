@@ -1,107 +1,104 @@
 # Miss Minutes implementation roadmap
 
-This roadmap replaces the old checklist with dependency-ordered releases. It distinguishes code that exists from behavior that still needs platform validation.
+This roadmap distinguishes implemented code from release validation and unfinished capabilities. It does not treat a successful compile as proof of runtime behavior.
 
-## Release 1 — Persistent desktop shell (current branch)
+## Release 1 — Persistent desktop shell
 
-### Delivered in code
-- Tauri 2 host around the existing React/Vite UI.
-- Typed Tauri command IPC for agent enrollment, status, lifecycle and desktop controls; event IPC for dashboard speech to the avatar.
-- Windows transparent, always-on-top avatar window.
-- Windows native cursor hit-testing so clicks pass through outside the character, with drag-state handling.
-- Windows system tray with dashboard, avatar, agent-stop and quit actions.
-- Opt-in login startup; an enrolled agent restarts when the host launches.
-- Managed Rust agent worker with explicit shutdown.
-- Existing custom SVG movement and speech-reactive mouth renderer reused in the overlay rather than rebuilt as a lower-quality static sprite.
+### Implemented in code
 
-### Release gates
-- Frontend production build and lint.
-- Root Rust tests and clippy.
-- Windows Tauri compile.
-- Windows agent tests.
-- Release Windows executable build and artifact upload.
-- Manual Windows smoke test: launch, close dashboard, click through on other apps, drag the character, play dashboard speech, stop/restart worker, logout/login, multiple display scaling and sleep/resume.
+- Tauri 2 host around the React/Vite interface.
+- Windows transparent, always-on-top avatar overlay with pointer pass-through outside the animated character and drag-state handling.
+- Windows tray controls and opt-in login startup.
+- Managed Rust worker with explicit shutdown and restart on policy changes.
+- Typed Tauri command IPC. The dashboard receives the full local control surface; the avatar receives only its bounds and drag-state commands.
+- Native speech events to the overlay renderer, including mouth animation tied to speech playback.
+- Windows release executable build and artifact workflow, with optional certificate signing and provenance attestation.
 
-### Known platform limits
-- Windows receives the full-screen pass-through overlay path in this milestone.
-- macOS/Linux use the compact overlay path and do not yet have equivalent precise click-through hit-testing.
-- This branch is a native desktop development milestone; a successful CI build is not a signed installer or proof of runtime behavior on every GPU/display driver.
+### Release gates still open
 
-## Release 2 — Living intelligence and event stream
+- Successful Windows Tauri compilation, native-agent tests and release executable artifact upload on the latest branch revision.
+- Real Windows desktop smoke testing: pointer pass-through, character hit-testing, dragging, speech, tray, login startup, multi-monitor DPI and sleep/resume.
+- Certificate-backed signing with owner-provided signing material. Without it, artifacts are unsigned and must be labeled as such.
 
-This must come before broad, general-purpose autonomous execution. The current create_note auto mode is a deliberately narrow exception: it acts only on filesystem metadata evidence, one separately granted folder capability, and a hard daily quota. A general decision engine cannot safely act on incomplete and ambiguous observations.
+A hosted CI runner cannot substitute for testing the actual user's display drivers, DPI settings, audio devices and login environment.
 
-1. Define a versioned evidence envelope for every connector: source, owner consent grant, timestamp semantics, confidence, event ID, collection gap, and retention class.
-2. Add an authenticated internal event stream from the Rust worker to Tauri. Push only newly committed events and decisions; reconnect by durable event cursor.
-3. Add owner-approved context sources one by one: active app/window title, selected browser tabs through an explicit extension/native messaging bridge, and user-created tasks. Do not add keylogging, silent screen capture or clipboard collection.
-4. Maintain context as claims with provenance, freshness, and confidence. User corrections must override inference. Old context decays and can be deleted.
-5. Give the reasoner an interrupt budget and an attention policy. It can silently defer, ask one useful question, or propose a next step. It must never pretend to know facts not present in evidence.
-6. Route reasoner-approved speech events to the avatar event bus. The avatar only animates; it does not invent device observations.
+## Release 2 — Local context and event delivery
 
-Exit criteria: tests for source spoofing, duplicate events, stale context, permission revocation, reconnect/replay, and fabricated observations. No actions execute in this release.
+### Implemented in code
 
-## Release 3 — Safe task execution
+- A versioned local evidence ledger with event IDs, source, event type, observed timestamp, source timestamp semantics, path and payload.
+- Authenticated local Tauri event reads using a random per-session token, 30-minute expiry, bounded pages, durable cursor and explicit acknowledgements.
+- Repeatable unacknowledged pages, renderer sequence deduplication and explicit retention-gap errors.
+- Owner-approved Windows foreground-window-title capture, disabled by default and recording title changes only.
+- Owner-pinned context notes, encrypted with the local evidence database, with 20-note and 64 KiB aggregate bounds. The owner can add, enable, disable and delete notes.
+- The reasoner receives pinned notes as untrusted background context, separate from observed event evidence.
 
-### Delivered vertical slice
+### Still required
 
-- Added a typed create_note capability. The model cannot return an arbitrary command or script.
-- Added a separate approved_note_roots permission set. Metadata read permission never implies write permission.
-- Added exact target/content preview in the desktop dashboard and one-click approve/reject operations.
-- Added a 24-hour durable pending queue, one-shot claim state transition, evidence references, idempotency by decision cursor, and append-only transition audit.
-- Note filenames are restricted to short ASCII slugs with a .md suffix. The body is capped at 8192 bytes.
-- Creation uses a new temporary file and atomic hard-link to the destination. Existing targets are never overwritten.
-- Revoking a note-output permission expires outstanding proposals.
-- An interrupted execution is marked failed/uncertain on worker restart. It is not automatically retried.
-- CLI parity exists for authorizing/revoking note folders, listing proposals, approving, and rejecting.
-- Added an opt-in automatic policy for this one capability only. It is disabled by default and capped at three automatic note-creation attempts per UTC day. The dashboard displays the quota and restarts the worker after policy/permission changes.
+1. Cross-device authenticated pairing and event synchronization for Android/iOS.
+2. A formal versioned transport envelope with device identity, replay protection, per-device revocation and explicit source grants.
+3. More context connectors only after their data scope, provenance, freshness, retention and revocation behavior are specified. Browser tabs should use an explicit extension/native-messaging bridge; no keylogging or silent screen capture.
+4. Automated tests for token expiry, duplicate pages, acknowledgement misuse, cursor rollback, retention gaps and source revocation.
 
-### Still required for general autonomous task execution
+The current stream is local authenticated IPC polling, not a remote push service or mobile sync channel.
 
-Do not add a shell-command endpoint or allow the model to author arbitrary code. The model chooses from a finite capability registry.
+## Release 3 — Native mobile companions
 
-1. Add more narrowly scoped typed capabilities only when each has a concrete permission model and safe failure semantics.
-2. Bind each capability to an explicit resource scope and user-granted permission. Default remains read-only.
-3. Add a dry-run preview with exact target resources and expected before/after state for every new capability.
-4. Add a user-configurable policy for pre-approved, low-risk operations only after per-action approval has been proven reliable.
-5. Execute under bounded timeouts and resource limits. Never escalate scopes on model request.
-6. Record append-only audit events, result hashes, errors and reversibility status.
-7. Support cancel/revoke and undo where the operation is reversible. Destructive or external side effects always require fresh approval.
+### Android implemented in code
 
-Exit criteria: property tests for payload validation, permission boundaries, idempotency, stale approvals, path traversal, race conditions and failure recovery; end-to-end tests with a fake capability provider; no unrestricted process execution.
+- Owner-selected Storage Access Framework document tree and persisted URI permission.
+- User-started visible foreground service with an ongoing Stop action.
+- Bounded metadata traversal (5,000 documents per pass, depth 16).
+- SQLCipher-encrypted local snapshots/events with a random database key wrapped by a non-exportable Android Keystore AES-GCM key.
+- Event history capped at 10,000 records.
 
-## Release 4 — Mobile companions
+### iOS implemented in code
 
-Mobile is a separate product target, not a compile flag on the desktop daemon.
+- SwiftUI companion with owner-selected security-scoped folder.
+- Folder bookmark stored in Keychain.
+- Opportunistic BackgroundTasks refresh, metadata-only snapshots and events.
+- iOS complete file protection for snapshot/event files.
 
-### Android
-- Kotlin foreground service with a persistent user-visible notification when the OS requires it.
-- Explicit runtime permissions, battery/background restrictions surfaced to the user, bounded WorkManager jobs for deferred work.
-- Compose companion UI and a lightweight avatar that remains inside the app or OS-approved surfaces.
-- Rust core shared through JNI only for deterministic local logic and validated evidence envelopes.
+### Still required
 
-### iOS
-- SwiftUI companion UI with Rust core through UniFFI/FFI where it is worth the maintenance cost.
-- Use only OS-permitted background modes and background tasks. Do not promise an always-running daemon or an unrestricted floating avatar over other apps.
-- Use notifications/Live Activities only where the product and OS lifecycle permit them.
+- Successful Android API 36 debug APK build and physical device validation.
+- Signed iOS device build and physical device validation.
+- Android battery/background restrictions and service restart behavior testing.
+- iOS background refresh scheduling, stale bookmark recovery and file-protection testing.
+- Authenticated mobile-to-desktop pairing and replay-safe synchronization. No mobile data is currently sent to desktop.
 
-### Cross-device trust
-- Pairing with explicit user action, device identity, revocation and end-to-end authenticated transport.
-- Per-device consent and source scopes; no silent mirroring of all metadata.
-- No sync until the local privacy and deletion model is defined.
+iOS cannot provide a continuously running daemon or a floating overlay over unrelated apps. Android foreground service behavior is subject to OS and distribution policy.
 
-Exit criteria: platform permission review, lifecycle tests on physical devices, battery impact budget, offline behavior, device revocation and data deletion tests.
+## Release 4 — Secure storage and distribution
 
-## Release 5 — Security and reliability hardening
+### Implemented in code
 
-- Encrypt the local event store at rest with keys held in the OS credential store.
-- Move provider credentials out of browser local storage into the platform credential vault; provide migration and rotation.
-- Tighten Tauri capabilities per window and command. The avatar window should receive only the events and controls it needs.
-- Commit Cargo.lock files for each workspace and use --locked in CI and release builds.
-- Add signed installers, update verification, crash recovery, schema migration and backup/deletion semantics.
-- Test multiple monitors, high-DPI scaling, sleep/resume, display topology changes and accessibility/reduced-motion behavior.
+- Desktop and Android SQLCipher databases.
+- Desktop database keys in the OS credential vault; Android database key wrapped by Android Keystore AES-256-GCM.
+- iOS snapshots/events protected by platform file protection; folder bookmarks in Keychain.
+- Desktop provider credentials in the OS credential vault. Persisted web settings omit key values. Gemini API keys are sent in a request header rather than a URL.
+- Tauri command permissions are generated from an explicit command registry and assigned by window capability.
 
-## Release order
+### Still required
 
-Desktop lifecycle and IPC -> typed note creation with owner approval plus narrowly bounded auto mode -> reliable event stream and provenance -> context/attention engine -> additional bounded capabilities and policy-controlled automation -> mobile-native companions -> security hardening and signed distribution.
+- Physical migration and recovery testing for existing plaintext desktop databases on Windows/macOS/Linux.
+- Key loss, vault unavailability, device restore and database corruption tests on all platforms.
+- OS-specific IPC/capability audit, credential redaction and secret-lifetime review.
+- Signed Windows and macOS distribution with owner-controlled certificates, protected CI secrets, provenance verification and release checksums.
+- Mobile signing, app-store privacy disclosures and platform policy review.
 
-Android/iOS background restrictions are intentional platform limits. The product must communicate them rather than claim the character can live above every app on every phone.
+## Release 5 — Safe task execution
+
+### Implemented vertical slice
+
+- One typed create_note capability; no arbitrary commands or scripts.
+- Separate owner-approved output folders, exact target/content preview and manual approval.
+- Durable one-shot queue, 24-hour expiry, evidence references and append-only audit transitions.
+- Exclusive atomic creation; existing files are never overwritten.
+- Optional automatic note mode, disabled by default and capped at three successful notes per UTC day.
+
+### Still required for broader execution
+
+- Add narrowly scoped typed capabilities only with a concrete owner permission model, dry-run preview, idempotency, revocation, audit and safe failure semantics.
+- No general shell endpoint, arbitrary script execution or unrestricted desktop control.
+- Model output remains untrusted and cannot grant itself permissions.
