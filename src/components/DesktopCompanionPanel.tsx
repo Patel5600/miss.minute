@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Activity, Check, FilePlus2, FileText, Monitor, Power, RefreshCw, Rocket, ShieldCheck, Square, TimerReset, X } from 'lucide-react';
-import { invokeNative, isDesktopRuntime, type AgentEventRecord, type AgentStreamTicket, type CreateNotePayload, type NativeAgentStatus, type PendingAction } from '../desktop/bridge';
+import { invokeNative, isDesktopRuntime, type AgentEventRecord, type AgentStreamTicket, type CreateNotePayload, type NativeAgentStatus, type OwnerContextRecord, type PendingAction } from '../desktop/bridge';
 
 const emptyStatus: NativeAgentStatus = {
   enrolled: false,
@@ -44,7 +44,7 @@ export function DesktopCompanionPanel() {
   const [consent, setConsent] = useState(false);
   const [noteRootPath, setNoteRootPath] = useState('');
   const [noteWriteConsent, setNoteWriteConsent] = useState(false);
-  const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
+  const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);\n  const [ownerContexts, setOwnerContexts] = useState<OwnerContextRecord[]>([]);\n  const [contextTitle, setContextTitle] = useState('');\n  const [contextContent, setContextContent] = useState('');
   const [agentEvents, setAgentEvents] = useState<AgentEventRecord[]>([]);
   const [streamState, setStreamState] = useState<'connecting' | 'live' | 'expired' | 'offline'>('connecting');
   const [notice, setNotice] = useState('');
@@ -176,6 +176,36 @@ export function DesktopCompanionPanel() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const saveOwnerContext = async () => {
+    await run(async () => {
+      await invokeNative<OwnerContextRecord>('owner_context_upsert', {
+        id: null,
+        title: contextTitle,
+        content: contextContent,
+        enabled: true,
+      });
+      setContextTitle('');
+      setContextContent('');
+    });
+  };
+
+  const toggleOwnerContext = async (context: OwnerContextRecord) => {
+    await run(async () => {
+      await invokeNative<OwnerContextRecord>('owner_context_upsert', {
+        id: context.id,
+        title: context.title,
+        content: context.content,
+        enabled: !context.enabled,
+      });
+    });
+  };
+
+  const deleteOwnerContext = async (id: string) => {
+    await run(async () => {
+      await invokeNative<boolean>('owner_context_delete', { id });
+    });
   };
 
   const enroll = async () => {
@@ -360,6 +390,53 @@ export function DesktopCompanionPanel() {
                 This source is available only in the Windows desktop build.
               </p>
             )}
+          </div>
+
+          <div className="mt-3 rounded-xl border border-amber-700/30 bg-black/25 p-3">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-amber-200">Owner-pinned context</p>
+            <p className="mt-1 text-[9px] leading-relaxed text-amber-500/80">
+              Add background notes or preferences Miss Minutes may use when evaluating events. These are encrypted in the local evidence database, never treated as observed activity, and remain editable or removable here. Maximum 20 notes and 64 KiB total.
+            </p>
+            <input
+              value={contextTitle}
+              onChange={event => setContextTitle(event.target.value)}
+              maxLength={80}
+              placeholder="Short title"
+              className="mt-2 w-full rounded-lg border border-amber-700/40 bg-[#0D0906] px-3 py-2 text-[10px] text-amber-100 outline-none placeholder:text-amber-800 focus:border-amber-400"
+            />
+            <textarea
+              value={contextContent}
+              onChange={event => setContextContent(event.target.value)}
+              maxLength={16384}
+              rows={3}
+              placeholder="Owner-written background context, constraints or preferences"
+              className="mt-2 w-full resize-y rounded-lg border border-amber-700/40 bg-[#0D0906] px-3 py-2 text-[10px] text-amber-100 outline-none placeholder:text-amber-800 focus:border-amber-400"
+            />
+            <button
+              type="button"
+              disabled={busy || !contextTitle.trim() || !contextContent.trim()}
+              onClick={() => void saveOwnerContext()}
+              className="mt-2 w-full rounded-lg border border-amber-500/40 bg-amber-600/20 px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-amber-200 disabled:opacity-40"
+            >
+              Save owner context
+            </button>
+            <div className="mt-2 space-y-2">
+              {ownerContexts.map(context => (
+                <div key={context.id} className="rounded-lg border border-amber-900/40 bg-black/30 p-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-semibold text-amber-100">{context.title}</span>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-1 text-[9px] text-amber-400">
+                        <input type="checkbox" checked={context.enabled} disabled={busy} onChange={() => void toggleOwnerContext(context)} />
+                        Use
+                      </label>
+                      <button type="button" disabled={busy} onClick={() => void deleteOwnerContext(context.id)} className="text-[9px] text-red-300 disabled:opacity-40">Delete</button>
+                    </div>
+                  </div>
+                  <p className="mt-1 whitespace-pre-wrap text-[9px] leading-relaxed text-amber-500/80">{context.content}</p>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="mt-3 rounded-xl border border-amber-700/30 bg-black/25 p-3">
