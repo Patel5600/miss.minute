@@ -1,10 +1,8 @@
 # Miss Minutes native local agent
 
-This is the first real native component of Miss Minutes. It runs as a process independent of the React/browser interface, so closing a browser tab does not stop the agent process.
+The Rust agent is the local evidence and reasoning core. It can run as a standalone CLI process, or as a managed worker thread inside the Tauri desktop host. In desktop mode, closing the dashboard hides its window; the Tauri process, tray and worker continue until stopped or the app exits.
 
-## Current scope (truthful)
-
-Implemented:
+## Implemented
 
 - Owner-confirmed, explicit directory allowlists.
 - Initial recursive inventory of regular files in those roots.
@@ -12,26 +10,40 @@ Implemented:
 - Periodic metadata reconciliation.
 - Local SQLite event ledger with event IDs, observation timestamps, source timestamps and provenance labels.
 - Retention pruning for events and decisions.
-- Local reasoning through an OpenAI-compatible endpoint (for example, local Ollama).
+- Optional local or explicitly approved remote reasoning through an OpenAI-compatible endpoint.
 - Evidence-ID validation for model decisions.
 - Action proposals always require owner approval; no action executor exists.
 - Permanent local-history deletion command.
+- Tauri desktop host integration through a managed worker and explicit shutdown token.
 
-Not implemented yet:
+## Desktop host integration
 
-- Native system-tray character or desktop overlay.
-- Automatic login startup/service installation.
-- Screen reading, active-window tracking, keyboard/clipboard capture, notifications, browser history, email or application-private databases.
+See [../desktop/README.md](../desktop/README.md) for the Tauri 2 desktop shell.
+
+The desktop host provides:
+- Browser-to-native command and event IPC through Tauri. It does not expose an unauthenticated localhost TCP listener.
+- Windows tray controls and opt-in login startup.
+- A separate transparent, always-on-top avatar window with pointer pass-through outside the animated character.
+- A native worker lifecycle that starts an enrolled agent on app launch and shuts it down cleanly on quit.
+- Dashboard-to-avatar speech events, allowing the overlay renderer to animate the mouth against actual TTS playback.
+
+The CLI binary remains useful for local administration and standalone operation. It is not itself registered as a Windows login service; desktop auto-start belongs to the Tauri host.
+
+## Not implemented
+
+- Android or iOS native background agents.
+- Active-window, notification, browser-session, screen, audio, microphone, clipboard or keyboard context capture.
 - File-content indexing.
 - Cross-device sync or cloud task execution.
 - Automatic execution of model-proposed actions.
-- A browser-to-agent IPC/API bridge.
+- Streaming all filesystem observations directly into the dashboard or avatar. The current desktop panel reads agent status; the reasoner still writes decisions to its local store/stdout.
+- Database encryption at rest.
 
-The UI can be closed while the separately launched native process continues. The visible animated character cannot appear over other applications until the desktop shell and tray/overlay renderer are implemented.
+The current action proposal contains a free-form kind and description. It is deliberately not passed to a shell or arbitrary command runner. Autonomous execution requires a typed capability registry, scoped permissions, durable action queue, dry-run previews, idempotency, approval policies, revocation, and audit records.
 
 ## Privacy contract
 
-The agent only accesses directory roots explicitly added with init.
+The agent only accesses directory roots explicitly added with init or confirmed through desktop enrollment.
 
 It reads filesystem metadata (path, size, regular-file status and filesystem modification time). It never opens a file to read its contents. It does not capture keystrokes, clipboard contents, screenshots, audio or private application data. Symlinks are not followed.
 
@@ -39,14 +51,16 @@ The filesystem modification timestamp is not a creation timestamp and is not pro
 
 The collector reports inaccessible entries, watcher failures and queue-overflow coverage gaps. It does not promise complete historical reconstruction. Historical inventory only shows files that exist and are accessible when the scan runs.
 
-The SQLite event store is local but is not encrypted at rest in this milestone. The database contains file paths and metadata, so protect the device account and database directory. API keys are read from environment variables and never written to the config file.
+The SQLite event store is local but is not encrypted at rest in this milestone. The database contains file paths and metadata, so protect the device account and database directory. API keys are read from environment variables in the agent configuration path and never written to the agent JSON file.
 
 ## Build
 
-Install the Rust stable toolchain (Rust 2024 edition; workspace MSRV 1.89):
+Install the Rust stable toolchain (Rust 2024 edition; agent MSRV 1.89; desktop host MSRV 1.90):
 
     cargo test --workspace
     cargo build --release -p miss-minute-agent
+
+For the desktop app, see [native/desktop/README.md](../desktop/README.md).
 
 ## Initial enrollment
 
@@ -56,11 +70,11 @@ Review every directory before granting access:
 
 The command rejects filesystem roots and overlapping allowlisted directories. It does not silently add home directories or drives.
 
-## Collect independently of the UI
+## Standalone collection
 
     miss-minute-agent run --config ./miss-minute-agent.json
 
-This process remains active when the browser UI closes. Stop it with Ctrl+C or the platform termination signal. A future desktop shell must launch and supervise this process in the background and provide a visible tray/quit control. This release does not yet install a startup service.
+This CLI process continues independently of a browser tab. Stop it with Ctrl+C or the platform termination signal. In the Tauri app, the same collector runs as a managed worker thread and is stopped from the tray or on app exit.
 
 ## Inspect collected evidence
 
@@ -83,7 +97,7 @@ Inspect decisions:
     miss-minute-agent think --config ./miss-minute-agent.json
     miss-minute-agent decisions --config ./miss-minute-agent.json
 
-A model may decide to remain silent. A speak decision is stored as a candidate for the future desktop UI; this command-line milestone does not synthesize speech. A proposed action is only a proposal and cannot execute.
+A model may decide to remain silent. A speak decision is stored as a candidate; the CLI does not synthesize speech. The desktop UI currently routes dashboard responses to the avatar, but the local filesystem reasoner is not yet wired into the avatar event stream. A proposed action remains a proposal and cannot execute.
 
 ## Delete local history
 

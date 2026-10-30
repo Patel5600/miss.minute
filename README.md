@@ -61,7 +61,7 @@ An interactive retro-futuristic AI companion inspired by Marvel's *Loki*. Miss M
 
 1. Click the **Pair AI** button in the top header.
 2. Select your provider (**Gemini**, **OpenAI**, **Claude**, **Ollama**, or **TVA Offline**).
-3. Paste your API key (stored securely in your local browser storage; never transmitted elsewhere).
+3. Paste your API key. It is stored in this browser's local storage and sent to the provider you selected when you make a request. It is not stored in the desktop OS credential vault in this version.
 4. Click **Test Connection** to verify your temporal neural link, then click **Save & Connect Link**!
 
 ---

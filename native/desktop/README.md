@@ -6,10 +6,11 @@ The desktop host is a Tauri 2 application. It embeds the existing React interfac
 
 - The avatar is a separate desktop-sized transparent window, not an element trapped inside the dashboard.
 - The SVG character continues its 60 FPS delta-time movement, eye tracking, blinking, rubber-hose limb animation, drag physics, and speech-reactive mouth animation.
-- A native hit-test loop checks the global pointer against the character's current bounds. Windows receives pointer events only around the character; the transparent overlay passes clicks through elsewhere.
+- A native hit-test loop checks the global pointer against the character's current bounds. Windows receives pointer events only around the character; the transparent overlay passes clicks through elsewhere. While dragging, the overlay remains interactive even when the pointer moves outside the last published avatar rectangle.
 - The dashboard can be closed while the companion, tray icon and enrolled local agent stay alive.
 - The tray can reopen the dashboard, show or hide the avatar, stop the local agent, or quit.
-- Login startup is opt-in and uses the Tauri autostart plugin. Startup launches in background mode.
+- Login startup is opt-in and uses the Tauri autostart plugin. Startup launches in background mode, restores the avatar and restarts an existing enrolled worker.
+- Dashboard responses are sent to the avatar using a native Tauri event. The overlay performs TTS and drives the mouth animation from its own audio analyser or speech-boundary events. Native mode does not run the old random spoken chatter timer.
 
 ## Browser-to-agent IPC
 
@@ -20,9 +21,10 @@ The bridge exposes:
 - agent_status: read the enrolled roots and local store counters.
 - agent_start / agent_stop: supervise the Rust collector in a managed worker thread.
 - agent_recent_decisions: read stored model decisions.
+- avatar_speak: send a typed speech event, emotion, and voice parameters to the avatar window.
+- set_avatar_bounds / set_avatar_dragging: report the animated character's current bounds and drag state to Windows hit-testing.
 - set_startup / get_startup: configure and inspect login startup.
 - toggle_avatar / show_dashboard: native window controls.
-- set_avatar_bounds: report the animated avatar's current screen bounds to Windows hit-testing.
 
 The Rust collector accepts an external shutdown token. The Tauri host does not install a process-global Ctrl+C handler.
 
@@ -30,7 +32,7 @@ The Rust collector accepts an external shutdown token. The Tauri host does not i
 
 The existing agent's scope is unchanged: explicit directory allowlists, filesystem metadata only, no file content reads, no symlink traversal, no keystrokes, clipboard, screenshots, browser history, or private application databases. Remote reasoning stays disabled until explicitly configured and approved in the agent configuration.
 
-The task executor is NOT enabled in this milestone. The current model proposal schema contains only a free-form kind and description, not a typed, validated tool payload. The next phase must add a typed capability registry, durable pending-action queue, per-capability scopes, idempotency, dry-run previews, revocation, and audit records before any action can execute. There is no shell-command executor.
+The task executor is NOT enabled in this milestone. The current model proposal schema contains only a free-form kind and description, not a typed, validated tool payload. The next phase must add a typed capability registry, durable pending-action queue, per-capability scopes, idempotency, dry-run previews, revocation, and audit records before any action can execute. There is no shell-command executor. The local filesystem reasoner's speak candidates are not yet forwarded into the avatar event stream.
 
 ## Platform status
 
