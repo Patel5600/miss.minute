@@ -106,3 +106,10 @@ svg { overflow: visible !important; }
 .timedoor-portal {
   animation: timeDoorShimmer 0.8s ease-in-out infinite;
 }
+
+
+/* ─── Living Miss Minutes: restrained hologram shimmer ─────────────── */
+.mm-avatar-shell { transform-origin: center bottom; -webkit-user-select: none; user-select: none; touch-action: none; }
+.mm-avatar-hologram { animation: mmHologramFlicker 7.2s steps(1, end) infinite; }
+@keyframes mmHologramFlicker { 0%, 91%, 93%, 97%, 100% { opacity: 1; } 92% { opacity: .94; } 96% { opacity: .97; } }
+@media (prefers-reduced-motion: reduce) { .mm-avatar-hologram, .mm-bubble, .glass-tap-ripple, .timedoor-portal { animation: none !important; } }

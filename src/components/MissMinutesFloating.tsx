@@ -69,6 +69,16 @@ const DRAG_QUOTES = [
   "Golly, what a ride!",
 ];
 
+const AUTONOMOUS_QUOTES = [
+  "Well, look who remembered the clock is here.",
+  "I had a perfectly good joke queued up. The suspense is just about unbearable.",
+  "Sugar, you know this screen works both ways, don't you? I can see you looking.",
+  "I was going to file a complaint about the silence. Then I remembered I am the complaint department.",
+  "Tick-tock. I do hope you are making excellent decisions. For my paperwork's sake.",
+  "You keep me waiting like this and I'll start charging by the timeline.",
+  "Just checking in, darlin'. No emergency. I simply enjoy being dramatically present.",
+];
+
 // ── Math Helpers ─────────────────────────────────────────────────────────────
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
@@ -78,6 +88,9 @@ interface Props {
   isSpeaking: boolean;
   hologramMode: boolean;
   onAvatarClick?: (quote: string) => void;
+  mouthFrame?: 0 | 1 | 2 | 3 | 4;
+  autonomousChatter?: boolean;
+  isBusy?: boolean;
 }
 
 type BehaviorMode =
@@ -93,10 +106,12 @@ export const MissMinutesFloating: React.FC<Props> = ({
   isSpeaking,
   hologramMode,
   onAvatarClick,
+  mouthFrame = 0,
+  autonomousChatter = false,
+  isBusy = false,
 }) => {
   // ── High-Level React State ─────────────────────────────────────────────────
   const [blink, setBlink] = useState(false);
-  const [mouthFrame, setMouthFrame] = useState(0);
   const [speechBubble, setSpeechBubble] = useState<{ text: string; x: number; y: number } | null>({
     text: "HEY Y'ALL!",
     x: 120 + AVATAR_W / 2,
@@ -105,8 +120,14 @@ export const MissMinutesFloating: React.FC<Props> = ({
   const [glassRipples, setGlassRipples] = useState<{ id: number; x: number; y: number }[]>([]);
   const [isKnocking, setIsKnocking] = useState(false);
 
-  // ── DOM References (Direct 60fps RAF Mutation for Zero Jitter) ─────────────
+  // ── DOM References (RAF mutation keeps character motion smooth) ────────────
   const wrapRef = useRef<HTMLDivElement>(null);
+  const callbackRef = useRef(onAvatarClick);
+  callbackRef.current = onAvatarClick;
+  const isSpeakingRef = useRef(isSpeaking);
+  isSpeakingRef.current = isSpeaking;
+  const isBusyRef = useRef(isBusy);
+  isBusyRef.current = isBusy;
 
   // Arm & Hand Path Elements
   const lArmRef = useRef<SVGPathElement>(null);
@@ -149,7 +170,10 @@ export const MissMinutesFloating: React.FC<Props> = ({
 
   // Dragging
   const isDragging = useRef(false);
+  const dragMoved = useRef(false);
+  const dragStart = useRef({ x: 0, y: 0 });
   const dragOffset = useRef({ x: 0, y: 0 });
+  const lastInteraction = useRef(Date.now());
   const mousePos = useRef({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
 
   // ── Eye Blinking Loop ──────────────────────────────────────────────────────
@@ -168,18 +192,6 @@ export const MissMinutesFloating: React.FC<Props> = ({
     return () => clearTimeout(t);
   }, []);
 
-  // ── Lip-Sync Animation Loop (when speaking) ────────────────────────────────
-  useEffect(() => {
-    if (!isSpeaking) {
-      setMouthFrame(0);
-      return;
-    }
-    const iv = setInterval(() => {
-      setMouthFrame(p => (p + 1) % 5);
-    }, 85);
-    return () => clearInterval(iv);
-  }, [isSpeaking]);
-
   // ── Initial "HEY Y'ALL!" Bubble Auto-Dismiss ───────────────────────────────
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -189,40 +201,70 @@ export const MissMinutesFloating: React.FC<Props> = ({
     return () => clearTimeout(timer);
   }, []);
 
-  // ── Mouse Tracking (Eye Tracking & Drag Handling) ──────────────────────────
+  // ── Fourth-wall chatter ─────────────────────────────────────────────────────
+  // Speak only when the page is visible, the user is idle, and no field is focused.
   useEffect(() => {
-    const handleMove = (e: MouseEvent) => {
-      mousePos.current = { x: e.clientX, y: e.clientY };
+    if (!autonomousChatter) return;
+    let timer: ReturnType<typeof setTimeout>;
+    let active = true;
+    const schedule = () => {
+      timer = setTimeout(() => {
+        if (!active) return;
+        const element = document.activeElement as HTMLElement | null;
+        const tag = element?.tagName.toLowerCase();
+        const isTyping = tag === 'input' || tag === 'textarea' || !!element?.isContentEditable;
+        const idleLongEnough = Date.now() - lastInteraction.current > 35_000;
+        const maySpeak = document.visibilityState === 'visible' && document.hasFocus() &&
+          !isSpeakingRef.current && !isBusyRef.current && !isTyping && idleLongEnough;
+        if (maySpeak) {
+          const line = AUTONOMOUS_QUOTES[Math.floor(Math.random() * AUTONOMOUS_QUOTES.length)];
+          behavior.current = 'wave_pose';
+          waveCycle.current = 0;
+          behaviorTimer.current = 0;
+          stateDuration.current = 150;
+          lastInteraction.current = Date.now();
+          setSpeechBubble({ text: line, x: pos.current.x + AVATAR_W / 2, y: pos.current.y - 25 });
+          callbackRef.current?.(line);
+        }
+        schedule();
+      }, 60_000 + Math.random() * 45_000);
+    };
+    schedule();
+    return () => { active = false; clearTimeout(timer); };
+  }, [autonomousChatter]);
 
+  // ── Pointer Tracking (mouse, pen and touch) ─────────────────────────────────
+  useEffect(() => {
+    const handleMove = (event: PointerEvent) => {
+      mousePos.current = { x: event.clientX, y: event.clientY };
       if (isDragging.current && wrapRef.current) {
-        targetPos.current.x = e.clientX - dragOffset.current.x;
-        targetPos.current.y = e.clientY - dragOffset.current.y;
+        if (Math.hypot(event.clientX - dragStart.current.x, event.clientY - dragStart.current.y) > 6) dragMoved.current = true;
+        targetPos.current.x = event.clientX - dragOffset.current.x;
+        targetPos.current.y = event.clientY - dragOffset.current.y;
         pos.current.x = targetPos.current.x;
         pos.current.y = targetPos.current.y;
       }
     };
-
     const handleUp = () => {
-      if (isDragging.current) {
-        isDragging.current = false;
-        behavior.current = 'wave_pose';
-        behaviorTimer.current = 0;
-        stateDuration.current = 140;
-
-        // Elastic cartoon landing bounce
+      if (!isDragging.current) return;
+      isDragging.current = false;
+      behavior.current = 'wave_pose';
+      behaviorTimer.current = 0;
+      stateDuration.current = 140;
+      if (dragMoved.current) {
         squash.current = { sx: 1.35, sy: 0.70 };
         soundEffects.playClockTick(true);
-
-        targetPos.current.x = clamp(pos.current.x, 20, window.innerWidth - AVATAR_W - 20);
-        targetPos.current.y = clamp(pos.current.y, HEADER_H + 10, window.innerHeight - AVATAR_H - 15);
       }
+      targetPos.current.x = clamp(pos.current.x, 20, Math.max(20, window.innerWidth - AVATAR_W - 20));
+      targetPos.current.y = clamp(pos.current.y, HEADER_H + 10, Math.max(HEADER_H + 10, window.innerHeight - AVATAR_H - 15));
     };
-
-    window.addEventListener('mousemove', handleMove);
-    window.addEventListener('mouseup', handleUp);
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+    window.addEventListener('pointercancel', handleUp);
     return () => {
-      window.removeEventListener('mousemove', handleMove);
-      window.removeEventListener('mouseup', handleUp);
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+      window.removeEventListener('pointercancel', handleUp);
     };
   }, []);
 
@@ -288,26 +330,26 @@ export const MissMinutesFloating: React.FC<Props> = ({
   }, []);
 
   // ── Drag & Click Handling ──────────────────────────────────────────────────
-  const handleMouseDown = (e: React.MouseEvent) => {
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    lastInteraction.current = Date.now();
+    dragMoved.current = false;
+    dragStart.current = { x: event.clientX, y: event.clientY };
     isDragging.current = true;
     behavior.current = 'dragged';
-    dragOffset.current = {
-      x: e.clientX - pos.current.x,
-      y: e.clientY - pos.current.y,
-    };
+    dragOffset.current = { x: event.clientX - pos.current.x, y: event.clientY - pos.current.y };
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* window listeners remain active */ }
     soundEffects.playCartoonHop();
-
     const quote = DRAG_QUOTES[Math.floor(Math.random() * DRAG_QUOTES.length)];
-    setSpeechBubble({
-      text: quote,
-      x: pos.current.x + AVATAR_W / 2,
-      y: pos.current.y - 25,
-    });
+    setSpeechBubble({ text: quote, x: pos.current.x + AVATAR_W / 2, y: pos.current.y - 25 });
     setTimeout(() => setSpeechBubble(null), 2000);
   };
 
   const handleClick = (e: React.MouseEvent) => {
+    if (dragMoved.current) { dragMoved.current = false; return; }
     if (isDragging.current) return;
+    lastInteraction.current = Date.now();
     e.stopPropagation();
 
     soundEffects.playClockTick(false);
@@ -334,9 +376,16 @@ export const MissMinutesFloating: React.FC<Props> = ({
   useEffect(() => {
     let rafId: number;
 
-    const animate = () => {
+    let previousFrameTime = 0;
+    const animate = (timestamp: number) => {
+      const frameScale = previousFrameTime === 0 ? 1 : Math.min((timestamp - previousFrameTime) / 16.6667, 3);
+      previousFrameTime = timestamp;
+      if (document.visibilityState === 'hidden') {
+        rafId = requestAnimationFrame(animate);
+        return;
+      }
       const curState = behavior.current;
-      behaviorTimer.current++;
+      behaviorTimer.current += frameScale;
 
       if (curState !== 'dragged' && behaviorTimer.current >= stateDuration.current) {
         behaviorTimer.current = 0;
@@ -350,10 +399,10 @@ export const MissMinutesFloating: React.FC<Props> = ({
         const dist = Math.hypot(dx, dy);
 
         if (dist > 6) {
-          const speed = 1.8;
+          const speed = 1.8 * frameScale;
           pos.current.x += (dx / dist) * speed;
           pos.current.y += (dy / dist) * speed;
-          stepCycle.current += 0.12;
+          stepCycle.current += 0.12 * frameScale;
           facing.current = dx >= 0 ? 1 : -1;
         } else {
           behavior.current = 'wave_pose';
@@ -366,9 +415,11 @@ export const MissMinutesFloating: React.FC<Props> = ({
 
       // Smooth 3D turning & elastic recovery
       const targetFacing = facing.current;
-      smoothFacing.current += (targetFacing - smoothFacing.current) * 0.18;
-      squash.current.sx += (1 - squash.current.sx) * 0.14;
-      squash.current.sy += (1 - squash.current.sy) * 0.14;
+      const ease = 1 - Math.pow(0.82, frameScale);
+      const squashEase = 1 - Math.pow(0.86, frameScale);
+      smoothFacing.current += (targetFacing - smoothFacing.current) * ease;
+      squash.current.sx += (1 - squash.current.sx) * squashEase;
+      squash.current.sy += (1 - squash.current.sy) * squashEase;
 
       // ── Eye Tracking & Head Tilt ─────────────────────────────────────────
       const avatarCenterX = pos.current.x + AVATAR_W / 2;
@@ -468,7 +519,7 @@ export const MissMinutesFloating: React.FC<Props> = ({
 
       } else if (curState === 'knock_glass') {
         // Fourth-wall break: steps forward, raps on screen glass!
-        knockCycle.current += 0.32;
+        knockCycle.current += 0.32 * frameScale;
         const tapWave = Math.sin(knockCycle.current);
 
         // Legs planted
@@ -491,7 +542,7 @@ export const MissMinutesFloating: React.FC<Props> = ({
         rGloveGroupRef.current?.setAttribute('transform', `translate(${tapReachX}, ${tapReachY}) rotate(-35)`);
 
         // Impact detection
-        if (tapWave > 0.94 && behaviorTimer.current % 14 === 0) {
+        if (tapWave > 0.94 && Math.floor(behaviorTimer.current) % 14 === 0) {
           soundEffects.playGlassTap((behaviorTimer.current % 28 === 0) ? 1 : 0);
           setGlassRipples(prev => [
             ...prev.slice(-3),
@@ -501,7 +552,7 @@ export const MissMinutesFloating: React.FC<Props> = ({
 
       } else {
         // ── ICONIC IMAGE 1 & 3 POSE: HAND ON HIP + WAVING HIGH! ───────────
-        waveCycle.current += 0.18;
+        waveCycle.current += 0.18 * frameScale;
         const waveSway = Math.sin(waveCycle.current) * 14;
         bodyBob = Math.sin(behaviorTimer.current * 0.06) * 2;
 
@@ -613,7 +664,8 @@ export const MissMinutesFloating: React.FC<Props> = ({
       {/* ── Miss Minutes Container ─────────────────────────────────────────── */}
       <div
         ref={wrapRef}
-        onMouseDown={handleMouseDown}
+        className={hologramMode ? 'mm-avatar-shell mm-avatar-hologram' : 'mm-avatar-shell'}
+        onPointerDown={handlePointerDown}
         onClick={handleClick}
         style={{
           position: 'fixed',
@@ -624,6 +676,7 @@ export const MissMinutesFloating: React.FC<Props> = ({
           zIndex: isKnocking ? 10004 : 9999,
           cursor: isDragging.current ? 'grabbing' : 'grab',
           userSelect: 'none',
+          touchAction: 'none',
           transformOrigin: 'center bottom',
           willChange: 'left, top, transform',
           filter: hologramMode

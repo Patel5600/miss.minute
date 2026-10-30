@@ -137,7 +137,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 className="w-full bg-neutral-950 border border-amber-600/50 rounded-lg px-3 py-2 text-xs text-amber-200 placeholder-amber-700/50 focus:outline-none focus:border-amber-400"
               />
               <span className="text-[10px] text-amber-500/70 mt-1 block">
-                Keys are stored only in your local browser storage and never uploaded to any third party.
+                Stored in this browser and sent to the selected provider when you make a request. Avoid shared devices.
               </span>
             </div>
 
@@ -217,7 +217,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="flex items-center justify-between">
             <div>
               <span className="text-xs font-bold text-amber-300 block">🎙️ ElevenLabs Realistic Voice</span>
-              <span className="text-[10px] text-amber-400/60">High-quality, natural AI voice (optional). Get a free key at elevenlabs.io</span>
+              <span className="text-[10px] text-amber-400/60">Optional expressive TTS using a voice you own or are licensed to use.</span>
             </div>
             <input type="checkbox"
               checked={!!formData.useElevenLabs}
@@ -235,16 +235,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-full bg-neutral-950 border border-amber-600/50 rounded-lg px-3 py-1.5 text-xs text-amber-200 focus:outline-none focus:border-amber-400"/>
               </div>
               <div>
-                <label className="block text-[10px] text-amber-500 uppercase font-bold mb-1">Voice Character</label>
-                <select
-                  value={formData.elevenLabsVoiceId || 'EXAVITQu4vr4xnSDxMaL'}
-                  onChange={e => setFormData({ ...formData, elevenLabsVoiceId: e.target.value })}
-                  className="w-full bg-neutral-950 border border-amber-600/50 rounded-lg px-3 py-1.5 text-xs text-amber-200 focus:outline-none">
-                  <option value="EXAVITQu4vr4xnSDxMaL">Bella – Warm & Expressive (Recommended)</option>
-                  <option value="ThT5KcBeYPX3keUQqHPh">Dorothy – Sweet Southern Charm</option>
-                  <option value="MF3mGyEYCl7XYWbV9V6O">Elli – Friendly & Animated</option>
-                  <option value="21m00Tcm4TlvDq8ikWAM">Rachel – Clear & Professional</option>
-                </select>
+                <label className="block text-[10px] text-amber-500 uppercase font-bold mb-1">Your licensed voice ID</label>
+                <input type="text" value={formData.elevenLabsVoiceId || ''}
+                  onChange={e => setFormData({ ...formData, elevenLabsVoiceId: e.target.value.trim() })}
+                  placeholder="Paste a voice ID from your account" autoComplete="off"
+                  className="w-full bg-neutral-950 border border-amber-600/50 rounded-lg px-3 py-1.5 text-xs text-amber-200 focus:outline-none" />
+                <p className="text-[10px] text-amber-500/70">Use only a voice you own or have permission to use. This does not reproduce the actor's original performance.</p>
               </div>
             </div>
           )}
@@ -283,6 +279,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
             />
           </div>
+        </div>
+
+        <div className="mb-4 p-3 bg-black/40 rounded-xl border border-amber-700/30 flex items-center justify-between gap-3">
+          <div>
+            <span className="text-xs font-bold text-amber-200 block">Fourth-wall chatter</span>
+            <span className="text-[10px] text-amber-400/60">Allow occasional remarks while this page is visible and idle.</span>
+          </div>
+          <input type="checkbox" checked={formData.ambientChatter ?? true}
+            onChange={e => setFormData({ ...formData, ambientChatter: e.target.checked })}
+            className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
+            aria-label="Enable fourth-wall chatter" />
         </div>
 
         {/* System Prompt Customization */}

@@ -1,3 +1,5 @@
+export type MouthFrame = 0 | 1 | 2 | 3 | 4;
+
 export type Emotion = 
   | 'cheerful' 
   | 'talking' 
@@ -20,6 +22,8 @@ export interface AISettings {
   voiceRate: number;
   soundEffects: boolean;
   hologramMode: boolean;
+  /** Occasional in-character remarks while the app is visible and idle. */
+  ambientChatter?: boolean;
   // Voice engine
   elevenLabsKey?: string;
   elevenLabsVoiceId?: string;

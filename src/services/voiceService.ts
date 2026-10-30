@@ -1,3 +1,5 @@
+import type { MouthFrame } from '../types';
+
 /**
  * VoiceService – Multi-Engine TTS for Miss Minutes
  *
@@ -20,6 +22,8 @@ export class VoiceService {
   private voice: SpeechSynthesisVoice | null = null;
   private _isSpeaking = false;
   private callbacks: ((s: boolean) => void)[] = [];
+  private visemeCallbacks: ((frame: MouthFrame) => void)[] = [];
+  private mouthTimer: ReturnType<typeof setInterval> | null = null;
   private currentAudio: HTMLAudioElement | null = null;
   private recognition: any = null;
 
@@ -49,11 +53,24 @@ export class VoiceService {
     this.voice = found ?? voices[0] ?? null;
   }
 
-  onSpeakingChange(cb: (s: boolean) => void) { this.callbacks.push(cb); }
+  onSpeakingChange(cb: (s: boolean) => void) {
+    this.callbacks.push(cb);
+    return () => { this.callbacks = this.callbacks.filter(listener => listener !== cb); };
+  }
+
+  onVisemeChange(cb: (frame: MouthFrame) => void) {
+    this.visemeCallbacks.push(cb);
+    return () => { this.visemeCallbacks = this.visemeCallbacks.filter(listener => listener !== cb); };
+  }
+
+  private _notifyViseme(frame: MouthFrame) {
+    this.visemeCallbacks.forEach(cb => cb(frame));
+  }
 
   private _notify(s: boolean) {
     this._isSpeaking = s;
     this.callbacks.forEach(cb => cb(s));
+    if (!s) this._notifyViseme(0);
   }
 
   get isSpeaking() { return this._isSpeaking; }
@@ -101,10 +118,23 @@ export class VoiceService {
     this.currentAudio = audio;
 
     return new Promise((resolve) => {
-      audio.onplay = () => this._notify(true);
-      audio.onended = () => { this._notify(false); URL.revokeObjectURL(audioUrl); this.currentAudio = null; resolve(); };
-      audio.onerror = () => { this._notify(false); URL.revokeObjectURL(audioUrl); this.currentAudio = null; resolve(); };
-      audio.play().catch(() => resolve());
+      const cleanup = () => {
+        if (this.mouthTimer) clearInterval(this.mouthTimer);
+        this.mouthTimer = null;
+        this._notify(false);
+        URL.revokeObjectURL(audioUrl);
+        this.currentAudio = null;
+        resolve();
+      };
+      audio.onplay = () => {
+        this._notify(true);
+        const frames: MouthFrame[] = [1, 3, 2, 4, 1, 0, 3, 2, 0];
+        let index = 0;
+        this.mouthTimer = setInterval(() => this._notifyViseme(frames[index++ % frames.length]), 92);
+      };
+      audio.onended = cleanup;
+      audio.onerror = cleanup;
+      audio.play().catch(cleanup);
     });
   }
 
@@ -123,13 +153,19 @@ export class VoiceService {
       let i = 0;
       const speakNext = () => {
         if (i >= sentences.length) { this._notify(false); resolve(); return; }
-        const utt = new SpeechSynthesisUtterance(sentences[i++]);
+        const sentence = sentences[i++];
+        const utt = new SpeechSynthesisUtterance(sentence);
         if (this.voice) utt.voice = this.voice;
         utt.pitch = pitch;
         utt.rate = rate;
         utt.volume = 1.0;
         if (i === 1) utt.onstart = () => this._notify(true);
-        utt.onend = speakNext;
+        utt.onboundary = event => {
+          const fragment = sentence.slice(event.charIndex, event.charIndex + Math.max(1, event.charLength || 2)).toLowerCase();
+          const frame: MouthFrame = /[wuy]/.test(fragment) ? 4 : /o/.test(fragment) ? 2 : /a/.test(fragment) ? 3 : /[ei]/.test(fragment) ? 1 : 0;
+          this._notifyViseme(frame);
+        };
+        utt.onend = () => { this._notifyViseme(0); speakNext(); };
         utt.onerror = () => { this._notify(false); resolve(); };
         this.synth!.speak(utt);
       };
@@ -154,6 +190,8 @@ export class VoiceService {
 
   stop() {
     if (this.synth) this.synth.cancel();
+    if (this.mouthTimer) clearInterval(this.mouthTimer);
+    this.mouthTimer = null;
     if (this.currentAudio) { this.currentAudio.pause(); this.currentAudio = null; }
     this._notify(false);
   }

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import type { AISettings, ChatMessage, Emotion, TimelineBranch } from './types';
+import type { AISettings, ChatMessage, Emotion, MouthFrame, TimelineBranch } from './types';
 import { AIService } from './services/aiService';
 import { voiceService } from './services/voiceService';
 import { soundEffects } from './utils/audioEffects';
@@ -17,6 +17,7 @@ export function App() {
   const [soundMuted,     setSoundMuted]     = useState(false);
   const [emotion,        setEmotion]        = useState<Emotion>('cheerful');
   const [isSpeaking,     setIsSpeaking]     = useState(false);
+  const [mouthFrame,     setMouthFrame]     = useState<MouthFrame>(0);
   const [isLoading,      setIsLoading]      = useState(false);
   const [timeDoorActive, setTimeDoorActive] = useState(false);
 
@@ -32,10 +33,16 @@ export function App() {
 
   // ── Sync speaking state → face animation ──────────────────────────────────
   useEffect(() => {
-    voiceService.onSpeakingChange(speaking => {
+    const unsubscribeSpeaking = voiceService.onSpeakingChange(speaking => {
       setIsSpeaking(speaking);
       if (!speaking) setEmotion('cheerful');
     });
+    const unsubscribeViseme = voiceService.onVisemeChange(setMouthFrame);
+    return () => {
+      unsubscribeSpeaking();
+      unsubscribeViseme();
+      voiceService.stop();
+    };
   }, []);
 
   // ── Boot chime on first interaction ───────────────────────────────────────
@@ -49,7 +56,7 @@ export function App() {
     pitch:              settings.voicePitch,
     rate:               settings.voiceRate,
     elevenLabsKey:      settings.useElevenLabs ? settings.elevenLabsKey      : undefined,
-    elevenLabsVoiceId:  settings.useElevenLabs ? (settings.elevenLabsVoiceId || 'EXAVITQu4vr4xnSDxMaL') : undefined,
+    elevenLabsVoiceId:  settings.useElevenLabs ? settings.elevenLabsVoiceId : undefined,
   });
 
   // ── Message sending ───────────────────────────────────────────────────────
@@ -180,6 +187,9 @@ export function App() {
       <MissMinutesFloating
         emotion={emotion}
         isSpeaking={isSpeaking}
+        mouthFrame={mouthFrame}
+        autonomousChatter={settings.ambientChatter ?? true}
+        isBusy={isLoading}
         hologramMode={settings.hologramMode}
         onAvatarClick={handleAvatarClick}
       />

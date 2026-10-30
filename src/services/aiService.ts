@@ -10,10 +10,11 @@ export class AIService {
       customEndpoint: 'http://localhost:11434/v1',
       systemPrompt: TVA_SYSTEM_PROMPT,
       voiceEnabled: true,
-      voicePitch: 1.25,
-      voiceRate: 1.05,
+      voicePitch: 1.12,
+      voiceRate: 1.0,
       soundEffects: true,
       hologramMode: true,
+      ambientChatter: true,
     };
 
     if (typeof window === 'undefined') return defaultSettings;
