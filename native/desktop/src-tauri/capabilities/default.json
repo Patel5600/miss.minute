@@ -1,12 +1,27 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Local Miss Minutes desktop windows and native command bridge.",
+  "identifier": "main-dashboard",
+  "description": "Full local companion controls are restricted to the trusted dashboard window.",
   "windows": [
-    "main",
-    "avatar"
+    "main"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "allow-agent_status",
+    "allow-agent_enroll",
+    "allow-agent_start",
+    "allow-agent_stop",
+    "allow-agent_recent_decisions",
+    "allow-authorize_note_root",
+    "allow-revoke_note_root",
+    "allow-set_auto_note_creation",
+    "allow-pending_actions",
+    "allow-approve_action",
+    "allow-reject_action",
+    "allow-set_startup",
+    "allow-get_startup",
+    "allow-toggle_avatar",
+    "allow-show_dashboard",
+    "allow-avatar_speak"
   ]
 }
