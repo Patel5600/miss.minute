@@ -106,10 +106,12 @@ enum MetadataRefresh {
         let base = try supportDirectory()
         let snapshotURL = base.appendingPathComponent("metadata-snapshot.json")
         let eventsURL = base.appendingPathComponent("metadata-events.json")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
         let previous = (try? Data(contentsOf: snapshotURL))
-            .flatMap { try? JSONDecoder().decode([String: MetadataSnapshot].self, from: $0) } ?? [:]
+            .flatMap { try? decoder.decode([String: MetadataSnapshot].self, from: $0) } ?? [:]
         var events = (try? Data(contentsOf: eventsURL))
-            .flatMap { try? JSONDecoder().decode([MetadataEvent].self, from: $0) } ?? []
+            .flatMap { try? decoder.decode([MetadataEvent].self, from: $0) } ?? []
 
         for (path, snapshot) in current {
             if previous[path] != snapshot {
