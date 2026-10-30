@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Activity, Check, FilePlus2, FileText, Monitor, Power, RefreshCw, Rocket, ShieldCheck, Square, TimerReset, X } from 'lucide-react';
-import { invokeNative, isDesktopRuntime, type CreateNotePayload, type NativeAgentStatus, type PendingAction } from '../desktop/bridge';
+import { invokeNative, isDesktopRuntime, type AgentEventRecord, type AgentStreamTicket, type CreateNotePayload, type NativeAgentStatus, type PendingAction } from '../desktop/bridge';
 
 const emptyStatus: NativeAgentStatus = {
   enrolled: false,
@@ -43,6 +43,8 @@ export function DesktopCompanionPanel() {
   const [noteRootPath, setNoteRootPath] = useState('');
   const [noteWriteConsent, setNoteWriteConsent] = useState(false);
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
+  const [agentEvents, setAgentEvents] = useState<AgentEventRecord[]>([]);
+  const [streamState, setStreamState] = useState<'connecting' | 'live' | 'expired' | 'offline'>('connecting');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -67,6 +69,64 @@ export function DesktopCompanionPanel() {
     const timer = window.setInterval(() => void refresh(), 5000);
     return () => window.clearInterval(timer);
   }, [desktop, refresh]);
+
+  useEffect(() => {
+    if (!desktop || !status.enrolled) {
+      setStreamState('offline');
+      return;
+    }
+    let cancelled = false;
+    let timer: number | undefined;
+    let ticket: AgentStreamTicket | undefined;
+    let cursor = 0;
+    let polling = false;
+
+    const poll = async () => {
+      if (cancelled || !ticket || polling) return;
+      polling = true;
+      try {
+        const batch = await invokeNative<AgentEventRecord[]>('agent_events_after', {
+          token: ticket.token,
+          afterSeq: cursor,
+          limit: 50,
+        });
+        if (cancelled) return;
+        if (batch.length > 0) {
+          cursor = batch[batch.length - 1].seq;
+          setAgentEvents(previous => [...previous, ...batch].slice(-12));
+        }
+        setStreamState('live');
+      } catch (cause) {
+        if (cancelled) return;
+        const message = cause instanceof Error ? cause.message : '';
+        setStreamState(message.includes('expired') ? 'expired' : 'offline');
+      } finally {
+        polling = false;
+      }
+    };
+
+    void (async () => {
+      try {
+        ticket = await invokeNative<AgentStreamTicket>('agent_stream_open');
+        cursor = ticket.cursor;
+        if (cancelled) {
+          await invokeNative('agent_stream_close', { token: ticket.token }).catch(() => undefined);
+          return;
+        }
+        setStreamState('live');
+        await poll();
+        timer = window.setInterval(() => void poll(), 1500);
+      } catch {
+        if (!cancelled) setStreamState('offline');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearInterval(timer);
+      if (ticket) void invokeNative('agent_stream_close', { token: ticket.token }).catch(() => undefined);
+    };
+  }, [desktop, status.enrolled]);
 
   if (!desktop) return null;
 
@@ -260,6 +320,26 @@ export function DesktopCompanionPanel() {
             <p className="mt-2 border-t border-amber-800/30 pt-2 text-[9px] text-amber-500/70">
               Automatically created today: {status.automaticActionsToday} / {status.dailyNoteLimit} (UTC)
             </p>
+          </div>
+
+          <div className="mt-3 rounded-xl border border-amber-700/30 bg-black/25 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-amber-200">Live local event feed</p>
+              <span className={streamState === 'live' ? 'text-[9px] text-emerald-300' : 'text-[9px] text-amber-500'}>{streamState}</span>
+            </div>
+            {agentEvents.length === 0 ? (
+              <p className="mt-2 text-[10px] text-amber-500/70">No new events since this dashboard session opened.</p>
+            ) : (
+              <div className="mt-2 max-h-40 space-y-2 overflow-y-auto">
+                {agentEvents.slice().reverse().map(event => (
+                  <div key={event.seq} className="border-t border-amber-900/30 pt-2">
+                    <p className="text-[10px] text-amber-200">{event.event_type.replaceAll('_', ' ')}</p>
+                    <p className="break-all text-[9px] text-amber-500/70">{event.resource_path ?? event.source}</p>
+                    <p className="text-[9px] text-amber-700">{new Date(event.observed_at_unix_ms).toLocaleTimeString()}</p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="mt-3 rounded-xl border border-amber-700/30 bg-black/25 p-3">
