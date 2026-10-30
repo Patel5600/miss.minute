@@ -1069,6 +1069,86 @@ mod tests {
         assert_eq!(store.counts().unwrap(), (0, 0, 0));
     }
     #[test]
+    fn owner_context_is_bounded_toggleable_and_audited() {
+        let mut store = Store::open_memory().unwrap();
+        let created = store.upsert_owner_context(
+            None,
+            "Current project",
+            "The owner is building a local-first companion.",
+            true,
+        ).unwrap();
+        assert!(created.enabled);
+        assert_eq!(store.enabled_owner_contexts().unwrap().len(), 1);
+
+        let disabled = store.upsert_owner_context(
+            Some(&created.id),
+            "Current project",
+            "The owner is building a local-first companion.",
+            false,
+        ).unwrap();
+        assert!(!disabled.enabled);
+        assert!(store.enabled_owner_contexts().unwrap().is_empty());
+        assert_eq!(store.owner_contexts().unwrap().len(), 1);
+
+        assert!(store.upsert_owner_context(None, " ", "invalid", true).is_err());
+        assert!(store.delete_owner_context(&created.id).unwrap());
+        assert!(store.owner_contexts().unwrap().is_empty());
+        assert!(store.counts().unwrap().0 >= 3);
+    }
+
+    #[test]
+    fn owner_context_aggregate_storage_limit_is_enforced() {
+        let mut store = Store::open_memory().unwrap();
+        let body = "x".repeat(16 * 1024);
+        for index in 0..4 {
+            store.upsert_owner_context(
+                None,
+                &format!("Context {index}"),
+                &body,
+                true,
+            ).unwrap();
+        }
+        assert!(store.upsert_owner_context(
+            None,
+            "Overflow",
+            &body,
+            true,
+        ).is_err());
+    }
+
+    #[test]
+    fn event_cursor_high_water_survives_retention_pruning() {
+        let mut store = Store::open_memory().unwrap();
+        let payload = serde_json::json!({"test": true});
+        let first = store.append_event(
+            "test",
+            "test.observed",
+            None,
+            "agent_observed_at",
+            None,
+            &payload,
+        ).unwrap();
+        store.connection.execute(
+            "UPDATE events SET observed_at_unix_ms = 1 WHERE seq = ?1",
+            [first],
+        ).unwrap();
+        assert_eq!(store.prune_expired(1).unwrap(), 1);
+        assert_eq!(store.oldest_event_sequence().unwrap(), None);
+        assert_eq!(store.last_event_sequence().unwrap(), first);
+
+        let second = store.append_event(
+            "test",
+            "test.observed",
+            None,
+            "agent_observed_at",
+            None,
+            &payload,
+        ).unwrap();
+        assert!(second > first);
+        assert_eq!(store.last_event_sequence().unwrap(), second);
+    }
+
+    #[test]
     fn sqlcipher_encrypts_and_rejects_wrong_key() {
         let path = std::env::temp_dir().join(format!("miss-minutes-encrypted-{}.db", Uuid::new_v4()));
         {
