@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="metadata_service_description">Owner-started metadata-only monitor for one folder selected by the user</string>
+</resources>
