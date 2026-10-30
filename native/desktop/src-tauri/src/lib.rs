@@ -823,6 +823,7 @@ pub fn run() {
             authorize_note_root,
             revoke_note_root,
             set_auto_note_creation,
+            set_foreground_window_context,
             pending_actions,
             approve_action,
             reject_action,
