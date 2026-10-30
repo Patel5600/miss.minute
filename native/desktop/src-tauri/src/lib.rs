@@ -249,13 +249,21 @@ fn require_dashboard(window: &tauri::WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 fn agent_stream_open(
+    after_seq: Option<i64>,
     window: tauri::WebviewWindow,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<AgentStreamTicket, String> {
     require_dashboard(&window)?;
+    if after_seq.is_some_and(|cursor| cursor < 0) {
+        return Err("Event cursor must be non-negative.".to_owned());
+    }
     let config = load_config(&state.config_path).map_err(|error| format!("{error:#}"))?;
     let store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
-    let cursor = store.last_event_sequence().map_err(|error| format!("{error:#}"))?;
+    let latest = store.last_event_sequence().map_err(|error| format!("{error:#}"))?;
+    let cursor = after_seq.unwrap_or(latest);
+    if cursor > latest {
+        return Err("Event cursor is ahead of the committed event ledger.".to_owned());
+    }
     let token = Uuid::new_v4().to_string();
     let expires_at = Instant::now() + Duration::from_secs(30 * 60);
     let expires_at_unix_ms = SystemTime::now()
