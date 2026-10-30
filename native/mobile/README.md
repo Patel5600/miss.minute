@@ -4,7 +4,7 @@ These are deliberately separate native companions. They do not pretend that iOS 
 
 ## Android
 
-Build from `native/mobile/android` with Gradle 8.10.2, JDK 17 and Android SDK 35:
+Build from `native/mobile/android` with Gradle 8.11.1, JDK 17 and Android SDK 36:
 
 ```sh
 gradle --no-daemon :app:assembleDebug
