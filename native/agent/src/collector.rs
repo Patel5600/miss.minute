@@ -331,9 +331,15 @@ mod tests {
 
     #[test]
     fn authorization_is_path_scoped() {
-        let roots = vec![PathBuf::from("/tmp/approved")];
-        assert!(path_is_authorized(Path::new("/tmp/approved/file.txt"), &roots));
-        assert!(!path_is_authorized(Path::new("/tmp/approved-sibling/file.txt"), &roots));
+        let approved_root = std::env::temp_dir().join("miss-minute-authorization-approved");
+        let approved_file = approved_root.join("file.txt");
+        let sibling_file = std::env::temp_dir()
+            .join("miss-minute-authorization-approved-sibling")
+            .join("file.txt");
+        let roots = vec![approved_root];
+
+        assert!(path_is_authorized(&approved_file, &roots));
+        assert!(!path_is_authorized(&sibling_file, &roots));
         assert!(!path_is_authorized(Path::new("relative/file.txt"), &roots));
     }
 }
