@@ -1,0 +1,38 @@
+name: iOS Companion
+
+on:
+  push:
+    branches:
+      - feat/living-miss-minutes
+    paths:
+      - "native/mobile/ios/**"
+      - ".github/workflows/ios-companion.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "native/mobile/ios/**"
+      - ".github/workflows/ios-companion.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ios-simulator-build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        working-directory: native/mobile/ios
+        run: xcodegen generate --spec project.yml
+      - name: Build iOS simulator app without signing
+        run: |
+          xcodebuild \
+            -project native/mobile/ios/MissMinutesCompanion.xcodeproj \
+            -scheme MissMinutesCompanion \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build
