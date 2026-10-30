@@ -941,4 +941,36 @@ mod tests {
         store.forget_history().unwrap();
         assert_eq!(store.counts().unwrap(), (0, 0, 0));
     }
+    #[test]
+    fn sqlcipher_encrypts_and_rejects_wrong_key() {
+        let path = std::env::temp_dir().join(format!("miss-minutes-encrypted-{}.db", Uuid::new_v4()));
+        {
+            let connection = open_encrypted_connection(&path, &[0x11; 32]).unwrap();
+            connection.execute_batch("CREATE TABLE secret(value TEXT); INSERT INTO secret VALUES('private');").unwrap();
+        }
+        let reopened = open_encrypted_connection(&path, &[0x11; 32]).unwrap();
+        let value: String = reopened.query_row("SELECT value FROM secret", [], |row| row.get(0)).unwrap();
+        assert_eq!(value, "private");
+        drop(reopened);
+        assert!(open_encrypted_connection(&path, &[0x22; 32]).is_err());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn plaintext_ledger_migration_preserves_rows_and_removes_plaintext() {
+        let path = std::env::temp_dir().join(format!("miss-minutes-legacy-{}.db", Uuid::new_v4()));
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch("CREATE TABLE legacy(value TEXT); INSERT INTO legacy VALUES('keep-me');").unwrap();
+        }
+        let key = [0x33; 32];
+        migrate_plaintext_database(&path, &key).unwrap();
+        let encrypted = open_encrypted_connection(&path, &key).unwrap();
+        let value: String = encrypted.query_row("SELECT value FROM legacy", [], |row| row.get(0)).unwrap();
+        assert_eq!(value, "keep-me");
+        drop(encrypted);
+        assert!(!is_plaintext_database(&path).unwrap());
+        let _ = fs::remove_file(&path);
+    }
+
 }
