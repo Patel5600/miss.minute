@@ -1,5 +1,6 @@
 import BackgroundTasks
 import SwiftUI
+import UIKit
 
 @main
 struct MissMinutesCompanionApp: App {
