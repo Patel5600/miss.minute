@@ -238,6 +238,7 @@ struct AgentStreamTicket {
 struct AgentStreamSession {
     token: String,
     expires_at: Instant,
+    last_cursor: i64,
 }
 
 fn require_dashboard(window: &tauri::WebviewWindow) -> Result<(), String> {
@@ -273,7 +274,7 @@ fn agent_stream_open(
         .saturating_add(30 * 60 * 1000)
         .min(u64::MAX as u128) as u64;
     let mut session = state.stream_session.lock().map_err(|_| "Event stream state is unavailable.".to_owned())?;
-    *session = Some(AgentStreamSession { token: token.clone(), expires_at });
+    *session = Some(AgentStreamSession { token: token.clone(), expires_at, last_cursor: cursor });
     Ok(AgentStreamTicket { token, cursor, expires_at_unix_ms })
 }
 
