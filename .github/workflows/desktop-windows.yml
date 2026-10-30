@@ -32,3 +32,12 @@ jobs:
         run: cargo +stable check --manifest-path native/desktop/src-tauri/Cargo.toml
       - name: Check native agent workspace
         run: cargo +stable test --workspace --all-targets
+      - name: Build release desktop executable
+        run: cargo +stable build --release --manifest-path native/desktop/src-tauri/Cargo.toml
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: miss-minutes-windows-executable
+          path: native/desktop/target/release/miss-minute-desktop.exe
+          if-no-files-found: error
+          retention-days: 14
