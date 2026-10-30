@@ -7,7 +7,7 @@
   ],
   "permissions": [
     "core:default",
-    "allow-set_avatar_bounds",
-    "allow-set_avatar_dragging"
+    "allow-set-avatar-bounds",
+    "allow-set-avatar-dragging"
   ]
 }
