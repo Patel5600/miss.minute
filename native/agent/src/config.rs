@@ -248,10 +248,10 @@ pub fn validate_reasoner_config(reasoner: &ReasonerConfig) -> Result<()> {
     if !loopback && url.scheme() != "https" {
         bail!("Remote reasoners must use HTTPS.");
     }
-    if let Some(name) = &reasoner.api_key_env {
-        if name.is_empty() || !name.chars().all(|character| character.is_ascii_alphanumeric() || character == '_') {
-            bail!("api_key_env must be an environment-variable name, not a secret value.");
-        }
+    if let Some(name) = &reasoner.api_key_env
+        && (name.is_empty() || !name.chars().all(|character| character.is_ascii_alphanumeric() || character == '_'))
+    {
+        bail!("api_key_env must be an environment-variable name, not a secret value.");
     }
     Ok(())
 }

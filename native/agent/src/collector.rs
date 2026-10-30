@@ -92,10 +92,8 @@ fn enqueue_notification(
     overflowed: &AtomicBool,
     notification: notify::Result<Event>,
 ) {
-    if let Err(error) = sender.try_send(notification) {
-        if matches!(error, TrySendError::Full(_)) {
-            overflowed.store(true, Ordering::Release);
-        }
+    if let Err(TrySendError::Full(_)) = sender.try_send(notification) {
+        overflowed.store(true, Ordering::Release);
     }
 }
 
