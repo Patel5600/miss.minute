@@ -33,7 +33,7 @@ jobs:
           gradle-version: "8.10.2"
       - name: Assemble Android companion
         working-directory: native/mobile/android
-        run: gradle --no-daemon :app:assembleDebug
+        run: gradle --no-daemon -Pandroid.useAndroidX=true -Pandroid.nonTransitiveRClass=true :app:assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: miss-minutes-android-debug
