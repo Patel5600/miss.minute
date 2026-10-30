@@ -9,6 +9,8 @@ export interface NativeAgentStatus {
   approvedNoteRoots: string[];
   pendingActions: number;
   autoCreateNotes: boolean;
+  foregroundWindowContextEnabled: boolean;
+  foregroundWindowContextSupported: boolean;
   automaticActionsToday: number;
   dailyNoteLimit: number;
 }
