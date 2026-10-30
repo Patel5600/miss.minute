@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn explicit_automatic_policy_executes_only_the_typed_note_capability() {
         let (config, base) = fixture(true, 3);
-        let mut store = Store::open(&config.database_path).unwrap();
+        let mut store = Store::open_for_tests(&config.database_path).unwrap();
         let id = queue_note(&mut store, 2, "automatic-note.md");
 
         let outcome = auto_execute_if_enabled(&config, &mut store, &id).unwrap().unwrap();
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn automatic_policy_stops_after_its_utc_daily_quota() {
         let (config, base) = fixture(true, 1);
-        let mut store = Store::open(&config.database_path).unwrap();
+        let mut store = Store::open_for_tests(&config.database_path).unwrap();
         let first = queue_note(&mut store, 3, "first.md");
         assert!(auto_execute_if_enabled(&config, &mut store, &first).unwrap().is_some());
 
