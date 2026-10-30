@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "avatar-overlay",
+  "description": "The transparent avatar may only update its own hit-test bounds and drag state. It cannot inspect or mutate the local agent.",
+  "windows": [
+    "avatar"
+  ],
+  "permissions": [
+    "core:default",
+    "allow-set_avatar_bounds",
+    "allow-set_avatar_dragging"
+  ]
+}
