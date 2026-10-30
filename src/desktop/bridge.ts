@@ -33,7 +33,7 @@ export interface AgentEventRecord {
   payload_json: string;
 }
 
-export interface PendingAction {
+export interface OwnerContextRecord {\n  id: string;\n  title: string;\n  content: string;\n  enabled: boolean;\n  createdAtUnixMs: number;\n  updatedAtUnixMs: number;\n}\n\nexport interface PendingAction {
   id: string;
   throughSeq: number;
   description: string;
