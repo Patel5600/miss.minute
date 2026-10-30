@@ -23,7 +23,7 @@ use crate::{
 fn same_canonical_path(left: &Path, right: &Path) -> bool {
     fn normalize(path: &Path) -> String {
         let value = path.to_string_lossy().replace('/', "\\");
-        let value = value.strip_prefix(r"\\?\\").unwrap_or(&value);
+        let value = value.strip_prefix(r"\\?\").unwrap_or(&value);
         value.to_ascii_lowercase()
     }
     normalize(left) == normalize(right)
