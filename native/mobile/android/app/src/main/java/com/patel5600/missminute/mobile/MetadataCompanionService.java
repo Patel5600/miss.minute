@@ -115,7 +115,7 @@ public final class MetadataCompanionService extends Service {
         return getSharedPreferences("miss_minutes_companion", MODE_PRIVATE);
     }
 
-    private void scanAuthorizedTree() {
+    private void scanAuthorizedTree() throws Exception {
         String saved = getPreferences().getString("tree_uri", null);
         if (saved == null) return;
         Uri tree = Uri.parse(saved);
@@ -184,53 +184,4 @@ public final class MetadataCompanionService extends Service {
         Node(String id, int depth) { this.documentId = id; this.depth = depth; }
     }
 
-    private static final class MetadataDb extends android.database.sqlite.SQLiteOpenHelper {
-        MetadataDb(Context context) { super(context, "miss-minutes-mobile.db", null, 1); }
-        @Override public void onCreate(android.database.sqlite.SQLiteDatabase db) {
-            db.execSQL("CREATE TABLE snapshots(document_id TEXT PRIMARY KEY, name TEXT, mime TEXT, size INTEGER, modified INTEGER)");
-            db.execSQL("CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT, document_id TEXT, event_type TEXT, observed_at INTEGER, details TEXT)");
-        }
-        @Override public void onUpgrade(android.database.sqlite.SQLiteDatabase db, int oldVersion, int newVersion) {
-            throw new IllegalStateException("A migration is required before upgrading mobile evidence storage.");
-        }
-        synchronized void observe(String id, String name, String mime, long size, long modified) {
-            android.database.sqlite.SQLiteDatabase db = getWritableDatabase();
-            android.content.ContentValues old = null;
-            try (Cursor c = db.query("snapshots", new String[]{"name","mime","size","modified"},
-                    "document_id=?", new String[]{id}, null, null, null)) {
-                if (c.moveToFirst()) {
-                    old = new android.content.ContentValues();
-                    old.put("name", c.getString(0));
-                    old.put("mime", c.getString(1));
-                    old.put("size", c.getLong(2));
-                    old.put("modified", c.getLong(3));
-                }
-            }
-            String kind = old == null ? "document.discovered" : "document.metadata_checked";
-            boolean changed = old == null || !name.equals(old.getAsString("name"))
-                    || !mime.equals(old.getAsString("mime"))
-                    || size != old.getAsLong("size") || modified != old.getAsLong("modified");
-            android.content.ContentValues values = new android.content.ContentValues();
-            values.put("name", name); values.put("mime", mime);
-            values.put("size", size); values.put("modified", modified);
-            db.insertWithOnConflict("snapshots", null, valuesWithId(id, values),
-                    android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE);
-            if (changed) {
-                android.content.ContentValues event = new android.content.ContentValues();
-                event.put("document_id", id);
-                event.put("event_type", kind);
-                event.put("observed_at", System.currentTimeMillis());
-                event.put("details", "Metadata only; document contents were not opened.");
-                db.insert("events", null, event);
-            }
-        }
-        private android.content.ContentValues valuesWithId(String id, android.content.ContentValues values) {
-            android.content.ContentValues copy = new android.content.ContentValues(values);
-            copy.put("document_id", id);
-            return copy;
-        }
-        synchronized void trimEvents() {
-            getWritableDatabase().execSQL("DELETE FROM events WHERE seq NOT IN (SELECT seq FROM events ORDER BY seq DESC LIMIT 10000)");
-        }
-    }
 }
