@@ -496,6 +496,45 @@ fn set_foreground_window_context(
 }
 
 #[tauri::command]
+fn owner_context_list(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<miss_minute_agent::store::OwnerContextRecord>, String> {
+    require_dashboard(&window)?;
+    let config = load_config(&state.config_path).map_err(|error| format!("{error:#}"))?;
+    let store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
+    store.owner_contexts().map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+fn owner_context_upsert(
+    id: Option<String>,
+    title: String,
+    content: String,
+    enabled: bool,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<miss_minute_agent::store::OwnerContextRecord, String> {
+    require_dashboard(&window)?;
+    let config = load_config(&state.config_path).map_err(|error| format!("{error:#}"))?;
+    let mut store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
+    store.upsert_owner_context(id.as_deref(), &title, &content, enabled)
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+fn owner_context_delete(
+    id: String,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<bool, String> {
+    require_dashboard(&window)?;
+    let config = load_config(&state.config_path).map_err(|error| format!("{error:#}"))?;
+    let mut store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
+    store.delete_owner_context(&id).map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
 fn pending_actions(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<Vec<PendingActionRecord>, String> {
@@ -880,6 +919,9 @@ pub fn run() {
             revoke_note_root,
             set_auto_note_creation,
             set_foreground_window_context,
+            owner_context_list,
+            owner_context_upsert,
+            owner_context_delete,
             pending_actions,
             approve_action,
             reject_action,
