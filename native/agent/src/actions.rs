@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
 };
@@ -8,6 +8,9 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
+
+#[cfg(unix)]
+use std::fs::File;
 
 use crate::{
     config::AgentConfig,
@@ -199,6 +202,7 @@ mod tests {
     fn create_note_uses_exclusive_atomic_target_creation() {
         let root = std::env::temp_dir().join(format!("miss-minute-actions-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
 
         let result = create_note(&root, "daily-note.md", "A generated note.").unwrap();
         assert_eq!(fs::read_to_string(&result).unwrap(), "A generated note.");
