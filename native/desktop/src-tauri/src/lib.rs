@@ -856,6 +856,7 @@ pub fn run() {
             credential_delete,
             agent_stream_open,
             agent_events_after,
+            agent_stream_ack,
             agent_stream_close,
             agent_enroll,
             agent_start,
