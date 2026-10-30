@@ -238,7 +238,8 @@ struct AgentStreamTicket {
 struct AgentStreamSession {
     token: String,
     expires_at: Instant,
-    last_cursor: i64,
+    acknowledged_cursor: i64,
+    issued_cursor: i64,
 }
 
 fn require_dashboard(window: &tauri::WebviewWindow) -> Result<(), String> {
@@ -274,7 +275,12 @@ fn agent_stream_open(
         .saturating_add(30 * 60 * 1000)
         .min(u64::MAX as u128) as u64;
     let mut session = state.stream_session.lock().map_err(|_| "Event stream state is unavailable.".to_owned())?;
-    *session = Some(AgentStreamSession { token: token.clone(), expires_at, last_cursor: cursor });
+    *session = Some(AgentStreamSession {
+        token: token.clone(),
+        expires_at,
+        acknowledged_cursor: cursor,
+        issued_cursor: cursor,
+    });
     Ok(AgentStreamTicket { token, cursor, expires_at_unix_ms })
 }
 
@@ -300,6 +306,32 @@ fn agent_events_after(
     let config = load_config(&state.config_path).map_err(|error| format!("{error:#}"))?;
     let store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
     store.events_after(after_seq, limit).map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+fn agent_stream_ack(
+    token: String,
+    sequence: i64,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    require_dashboard(&window)?;
+    if sequence < 0 {
+        return Err("Acknowledged event sequence must be non-negative.".to_owned());
+    }
+    let mut session = state.stream_session.lock().map_err(|_| "Event stream state is unavailable.".to_owned())?;
+    let active = session.as_mut().ok_or_else(|| "Open an event stream before acknowledging it.".to_owned())?;
+    if active.expires_at <= Instant::now() || active.token != token {
+        return Err("Event stream token is invalid or expired; open a new session.".to_owned());
+    }
+    if sequence == active.acknowledged_cursor {
+        return Ok(());
+    }
+    if sequence != active.issued_cursor || sequence < active.acknowledged_cursor {
+        return Err("Only the final sequence of the most recently issued page may be acknowledged.".to_owned());
+    }
+    active.acknowledged_cursor = sequence;
+    Ok(())
 }
 
 #[tauri::command]
