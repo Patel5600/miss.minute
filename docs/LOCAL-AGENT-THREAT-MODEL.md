@@ -3,66 +3,65 @@
 ## Trust boundaries
 
 1. Owner-controlled configuration grants a finite list of directory roots.
-2. The Rust agent reads metadata under those roots and writes an event ledger on the same device. In Tauri desktop mode, it runs as a managed worker thread inside the desktop process.
-3. The React UI calls a finite set of registered Tauri commands and receives avatar events through Tauri IPC. There is no unauthenticated localhost TCP listener and no command that accepts shell text.
-4. The optional reasoner receives only a bounded batch of event metadata.
-5. A local reasoner endpoint is loopback-only for plaintext HTTP.
-6. A remote reasoner endpoint requires HTTPS and explicit metadata-egress consent.
-7. Model output is untrusted. It is parsed as a strict JSON decision and checked against the evidence IDs supplied to the model.
-8. A model-generated action is a proposal only. This milestone has no command, shell or application-action executor.
+2. The Rust agent reads filesystem metadata under those roots and writes a local SQLite evidence ledger.
+3. In desktop mode, the agent runs as a managed worker thread inside the Tauri process.
+4. The React UI invokes a finite set of registered Tauri commands. There is no unauthenticated localhost TCP listener and no command that accepts shell text.
+5. The optional reasoner receives a bounded batch of filesystem metadata.
+6. A local reasoner endpoint is loopback-only for plaintext HTTP. Remote endpoints require HTTPS and explicit metadata-egress consent.
+7. Model output is untrusted, parsed as strict JSON and validated against the evidence IDs supplied in the request.
+8. Native task execution is a finite typed capability. Model output cannot add capabilities or expand permission scopes.
 
 ## Invariants
 
-- No file-content reads.
-- No symlink traversal.
+- No file-content reads, symlink traversal, keystrokes, clipboard, screenshots, audio capture, browser history or private application databases.
 - No implicit home-directory or drive-wide enrollment.
-- No reasoner by default.
-- No remote metadata egress without explicit consent.
-- No API key values stored in the native agent JSON configuration.
+- No reasoner by default and no remote metadata egress without explicit consent.
+- API key values are not stored in the Rust agent config.
 - No unsupported event ID can be cited by a model decision.
-- No action proposal can omit owner approval.
-- No arbitrary shell-command execution.
-- No claim of full historical coverage.
-- The database is local, but not encrypted at rest in this milestone.
-- Avatar hit-testing uses transient cursor coordinates only; they are not stored in the evidence ledger or sent to the reasoner.
+- No arbitrary shell, script, process launch, network request, delete, move or overwrite capability.
+- Metadata timestamps are not treated as proof of human activity.
+- No claim of complete historical reconstruction.
+- The database is local but not encrypted at rest in this milestone.
+- Avatar hit-testing uses transient cursor coordinates only; they are not stored or sent to the reasoner.
+
+## Typed action boundary
+
+The initial capability registry contains only `create_note`:
+- target root selected by an integer index into the separate approved note-output root list;
+- root must be a canonical existing subfolder of an owner-authorized metadata root;
+- filename is a short ASCII slug ending in `.md`, with no separators or nested paths;
+- body is limited to 8192 bytes and rejects NUL;
+- creation uses an exclusive temporary file and atomic hard-link to the destination; an existing target is never overwritten;
+- pending approvals expire after 24 hours, are claimed once, and have append-only transition audit records;
+- revoking a note-output permission expires outstanding proposals;
+- interrupted executions are marked uncertain/failed on restart and are not automatically retried.
+
+Manual mode is the default. The owner reviews the exact path and content before approving a proposal.
+
+A separate automatic policy can be enabled only after a note-output root has been separately authorized. It can execute only `create_note`, is hard-capped at three successful operations per UTC day, and leaves proposals pending when the quota is exhausted. The model cannot enable or modify this policy. Policy changes stop and join the worker before restart so stale in-memory permissions are not retained.
+
+This is bounded autonomous execution for one low-risk file-creation capability. It is not general-purpose autonomous computer use.
 
 ## Failure modes
 
 - Root unavailable or permissions revoked: configuration validation fails closed.
-- Directory entry inaccessible: scan reports an incomplete inventory.
+- Directory entry inaccessible: scan reports incomplete inventory.
 - Watcher error: error is persisted as an observed collector event.
 - Bounded watcher queue overflow: a coverage-gap event is recorded and metadata reconciliation runs; missed event details cannot be recovered.
 - Reasoner unavailable or malformed output: no decision is recorded and no action is executed.
 - Remote endpoint configured without HTTPS or consent: configuration is rejected.
 - Model cites event IDs absent from the request: decision is rejected.
-- Process termination: SQLite WAL recovery is used on next open; the next scan reconciles metadata, but cannot reconstruct every missed event.
-- Tauri IPC command failure: UI receives a command error; no shell fallback is attempted.
+- Action payload has an invalid root, filename or body: execution is rejected.
+- Destination already exists: exclusive creation fails; no overwrite fallback exists.
+- Action proposal is stale, expired, rejected or already claimed: the store refuses a second claim.
+- Permission revoke or policy change: worker is stopped and joined, pending proposals are expired where applicable, and the new configuration is reloaded.
+- Process termination during an action: action is marked failed/uncertain and not automatically retried.
+- Tauri IPC command failure: UI receives an error; no shell fallback is attempted.
 
 ## Known limitations
 
 Filesystem notifications are not a universal audit log. They can be coalesced, missed, unsupported on some filesystems, or unavailable due to OS permissions. Metadata scans observe current files, not deleted historical files. The agent therefore makes no claim to reconstruct all device activity from first boot.
 
-The agent currently observes authorized filesystem metadata only. It does not see active windows, keystrokes, clipboard, screens, web sessions, messages, or application-private data. Mobile background agents and autonomous task execution are not included in this milestone.
+The agent currently observes authorized filesystem metadata only. It does not see active windows, browser sessions, notifications, messages, screen contents, or application-private data. Android/iOS native agents are not included. Precise click-through hit-testing is Windows-only in this milestone.
 
-
-## Write-capability boundary
-
-The agent metadata allowlist is read-only. Writing requires a second, separately persisted approved_note_roots grant. Each output root must be a canonical existing subfolder of an owner-authorized metadata root. Overlapping write roots are rejected.
-
-The initial capability registry contains only create_note:
-- Root selected by an integer index into the explicit write-root list.
-- Filename constrained to an ASCII slug with a .md suffix; no path separators or nested paths.
-- Body limited to 8192 bytes and rejects NUL.
-- Creation is exclusive and no-overwrite. A temporary file is written and flushed, then hard-linked atomically to the destination. A collision fails closed.
-- Approval records are durable, expire after 24 hours, and can be claimed only once. Approval and execution transitions are audited in action_audit.
-- Revoking any write root expires pending proposals.
-- A process restart marks in-flight executions as uncertain/failed; no automatic retry is attempted.
-
-There is no unrestricted process executor or model-authored code path. This vertical slice is owner-approved execution, not unattended autonomous task execution. Broader autonomy requires separate capability scopes and failure-mode review per action.
-
-
-## Bounded automatic mode
-
-Automatic note creation is a separate explicit owner policy, disabled by default. It is available only after a separate note-output folder grant exists. The single capability remains create_note, the daily successful-operation quota is hard-capped at three per UTC day, and quota exhaustion leaves proposals pending for manual review. It does not enable a general agent tool runtime.
-
-When the desktop UI changes this policy or the note-write grants, the host stops and joins the current worker before starting a new worker from the updated config. This prevents a stale in-memory policy from surviving a completed revoke/disable operation.
+The SQLite database is not encrypted at rest, and provider credentials used by the web UI remain in browser local storage. OS credential-vault migration, signed installers, update verification, and a complete multi-platform security review remain future work.
