@@ -33,6 +33,18 @@ pub struct DecisionRecord {
     pub decision_json: String,
 }
 
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnerContextRecord {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    pub enabled: bool,
+    pub created_at_unix_ms: i64,
+    pub updated_at_unix_ms: i64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingActionRecord {
@@ -258,9 +270,111 @@ impl Store {
                  payload_json TEXT NOT NULL,
                  FOREIGN KEY(action_id) REFERENCES action_queue(id) ON DELETE CASCADE
              );
-             CREATE INDEX IF NOT EXISTS action_audit_action_idx ON action_audit(action_id, seq);",
+             CREATE INDEX IF NOT EXISTS action_audit_action_idx ON action_audit(action_id, seq);
+             CREATE TABLE IF NOT EXISTS owner_contexts (
+                 id TEXT PRIMARY KEY,
+                 title TEXT NOT NULL,
+                 content TEXT NOT NULL,
+                 enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+                 created_at_unix_ms INTEGER NOT NULL,
+                 updated_at_unix_ms INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS owner_contexts_updated_idx ON owner_contexts(updated_at_unix_ms DESC);",
         )?;
         Ok(Self { connection })
+    }
+
+
+    pub fn owner_contexts(&self) -> Result<Vec<OwnerContextRecord>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, title, content, enabled, created_at_unix_ms, updated_at_unix_ms
+             FROM owner_contexts ORDER BY updated_at_unix_ms DESC LIMIT 20"
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(OwnerContextRecord {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                content: row.get(2)?,
+                enabled: row.get::<_, i64>(3)? != 0,
+                created_at_unix_ms: row.get(4)?,
+                updated_at_unix_ms: row.get(5)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    pub fn enabled_owner_contexts(&self) -> Result<Vec<OwnerContextRecord>> {
+        Ok(self.owner_contexts()?.into_iter().filter(|context| context.enabled).collect())
+    }
+
+    pub fn upsert_owner_context(
+        &mut self,
+        id: Option<&str>,
+        title: &str,
+        content: &str,
+        enabled: bool,
+    ) -> Result<OwnerContextRecord> {
+        let title = title.trim();
+        if title.is_empty() || title.len() > 80 || title.contains('\0') {
+            bail!("Context title must contain 1 to 80 bytes and no NUL.");
+        }
+        if content.trim().is_empty() || content.len() > 16 * 1024 || content.contains('\0') {
+            bail!("Context content must contain 1 to 16384 bytes and no NUL.");
+        }
+
+        let id = id.map(str::to_owned).unwrap_or_else(|| Uuid::new_v4().to_string());
+        let existing_len: i64 = self.connection.query_row(
+            "SELECT length(CAST(content AS BLOB)) FROM owner_contexts WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        ).optional()?.unwrap_or(0);
+        let total_len: i64 = self.connection.query_row(
+            "SELECT COALESCE(SUM(length(CAST(content AS BLOB))), 0) FROM owner_contexts",
+            [],
+            |row| row.get(0),
+        )?;
+        if total_len - existing_len + content.len() as i64 > 64 * 1024 {
+            bail!("Owner-pinned context exceeds the 64 KiB aggregate storage limit.");
+        }
+        let count: i64 = self.connection.query_row("SELECT COUNT(*) FROM owner_contexts", [], |row| row.get(0))?;
+        if existing_len == 0 && count >= 20 {
+            bail!("At most 20 owner-pinned context notes are allowed.");
+        }
+
+        let now = now_unix_ms();
+        self.connection.execute(
+            "INSERT INTO owner_contexts (id,title,content,enabled,created_at_unix_ms,updated_at_unix_ms)
+             VALUES (?1,?2,?3,?4,?5,?5)
+             ON CONFLICT(id) DO UPDATE SET
+                 title=excluded.title, content=excluded.content,
+                 enabled=excluded.enabled, updated_at_unix_ms=excluded.updated_at_unix_ms",
+            params![id, title, content, i64::from(enabled), now],
+        )?;
+        self.append_event(
+            "owner_context",
+            "owner.context_saved",
+            None,
+            "agent_observed_at",
+            None,
+            &serde_json::json!({"id": id, "title": title, "enabled": enabled, "content_bytes": content.len()}),
+        )?;
+        self.owner_contexts()?.into_iter().find(|context| context.id == id)
+            .context("Saved owner context could not be read back")
+    }
+
+    pub fn delete_owner_context(&mut self, id: &str) -> Result<bool> {
+        let changed = self.connection.execute("DELETE FROM owner_contexts WHERE id=?1", [id])? > 0;
+        if changed {
+            self.append_event(
+                "owner_context",
+                "owner.context_deleted",
+                None,
+                "agent_observed_at",
+                None,
+                &serde_json::json!({"id": id}),
+            )?;
+        }
+        Ok(changed)
     }
 
     pub fn append_event(
