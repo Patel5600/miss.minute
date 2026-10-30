@@ -5,7 +5,7 @@ use std::{
         Arc, Mutex,
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use miss_minute_agent::{
@@ -19,6 +19,7 @@ use miss_minute_agent::{
     store::{PendingActionRecord, Store},
 };
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -48,6 +49,7 @@ struct DesktopState {
     agent: Mutex<Option<AgentRuntime>>,
     avatar_bounds: Arc<Mutex<AvatarBounds>>,
     avatar_dragging: Arc<AtomicBool>,
+    stream_session: Mutex<Option<AgentStreamSession>>,
 }
 
 impl DesktopState {
@@ -57,6 +59,7 @@ impl DesktopState {
             agent: Mutex::new(None),
             avatar_bounds: Arc::new(Mutex::new(AvatarBounds::default())),
             avatar_dragging: Arc::new(AtomicBool::new(false)),
+            stream_session: Mutex::new(None),
         }
     }
 
@@ -216,6 +219,86 @@ fn agent_status_inner(state: &DesktopState) -> AgentStatus {
         }
     }
     status
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentStreamTicket {
+    token: String,
+    cursor: i64,
+    expires_at_unix_ms: u64,
+}
+
+struct AgentStreamSession {
+    token: String,
+    expires_at: Instant,
+}
+
+fn require_dashboard(window: &tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("This operation is restricted to the dashboard window.".to_owned());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn agent_stream_open(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<AgentStreamTicket, String> {
+    require_dashboard(&window)?;
+    let config = load_config(&state.config_path).map_err(|error| format!("{error:#}"))?;
+    let store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
+    let cursor = store.last_event_sequence().map_err(|error| format!("{error:#}"))?;
+    let token = Uuid::new_v4().to_string();
+    let expires_at = Instant::now() + Duration::from_secs(30 * 60);
+    let expires_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "System clock is before the Unix epoch.".to_owned())?
+        .as_millis()
+        .saturating_add(30 * 60 * 1000)
+        .min(u64::MAX as u128) as u64;
+    let mut session = state.stream_session.lock().map_err(|_| "Event stream state is unavailable.".to_owned())?;
+    *session = Some(AgentStreamSession { token: token.clone(), expires_at });
+    Ok(AgentStreamTicket { token, cursor, expires_at_unix_ms })
+}
+
+#[tauri::command]
+fn agent_events_after(
+    token: String,
+    after_seq: i64,
+    limit: usize,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<miss_minute_agent::store::EventRecord>, String> {
+    require_dashboard(&window)?;
+    if after_seq < 0 || limit == 0 || limit > 100 {
+        return Err("Event cursor must be non-negative and page size must be between 1 and 100.".to_owned());
+    }
+    {
+        let session = state.stream_session.lock().map_err(|_| "Event stream state is unavailable.".to_owned())?;
+        let active = session.as_ref().ok_or_else(|| "Open an event stream before reading it.".to_owned())?;
+        if active.expires_at <= Instant::now() || active.token != token {
+            return Err("Event stream token is invalid or expired; open a new session.".to_owned());
+        }
+    }
+    let config = load_config(&state.config_path).map_err(|error| format!("{error:#}"))?;
+    let store = Store::open(&config.database_path).map_err(|error| format!("{error:#}"))?;
+    store.events_after(after_seq, limit).map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+fn agent_stream_close(
+    token: String,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    require_dashboard(&window)?;
+    let mut session = state.stream_session.lock().map_err(|_| "Event stream state is unavailable.".to_owned())?;
+    if session.as_ref().is_some_and(|active| active.token == token) {
+        *session = None;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -668,6 +751,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             agent_status,
+            agent_stream_open,
+            agent_events_after,
+            agent_stream_close,
             agent_enroll,
             agent_start,
             agent_stop,
