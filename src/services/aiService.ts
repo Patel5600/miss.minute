@@ -172,7 +172,7 @@ export class AIService {
     settings: AISettings
   ): Promise<{ text: string; emotion: Emotion; isNexusAlert?: boolean }> {
     const model = settings.model || 'gemini-1.5-flash';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${settings.apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
     // Format conversation history for Gemini API
     const contents: any[] = [];
@@ -205,7 +205,7 @@ export class AIService {
 
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.apiKey },
       body: JSON.stringify(body),
     });
 
