@@ -142,9 +142,9 @@ fn process_notification(event: Event, roots: &[PathBuf], store: &mut Store) -> R
     Ok(processed)
 }
 
-fn evaluate_context(store: &mut Store, config: &AgentConfig) -> Result<bool> {
+fn evaluate_context(store: &mut Store, config: &AgentConfig) -> Result<Option<reasoner::Decision>> {
     let Some(reasoner_config) = &config.reasoner else {
-        return Ok(false);
+        return Ok(None);
     };
 
     let cursor = store.last_decision_sequence()?;
@@ -184,7 +184,7 @@ fn evaluate_context(store: &mut Store, config: &AgentConfig) -> Result<bool> {
             println!("[MISS MINUTES / SILENT] {}", decision.reasoning);
         }
     }
-    Ok(true)
+    Ok(Some(decision))
 }
 
 pub fn run_agent(config: &AgentConfig, quiet_window_seconds: u64, rescan_seconds: u64) -> Result<()> {
@@ -204,6 +204,21 @@ pub fn run_agent_until(
     rescan_seconds: u64,
     stopping: Arc<AtomicBool>,
 ) -> Result<()> {
+    run_agent_until_with_callback(config, quiet_window_seconds, rescan_seconds, stopping, |_| {})
+}
+
+/// Variant used by the native host to forward validated reasoning decisions to
+/// the character event bus. The callback runs on the collector worker thread.
+pub fn run_agent_until_with_callback<F>(
+    config: &AgentConfig,
+    quiet_window_seconds: u64,
+    rescan_seconds: u64,
+    stopping: Arc<AtomicBool>,
+    mut on_decision: F,
+) -> Result<()>
+where
+    F: FnMut(&reasoner::Decision),
+{
     let roots = config.consent.allowed_roots.clone();
     let (sender, receiver) = mpsc::sync_channel::<notify::Result<Event>>(2048);
     let overflowed = Arc::new(AtomicBool::new(false));
@@ -316,7 +331,11 @@ pub fn run_agent_until(
         if last_event_at.is_some_and(|last| last.elapsed() >= quiet_window) {
             if config.reasoner.is_some() {
                 match evaluate_context(&mut store, config) {
-                    Ok(_) => last_reasoner_error_at = None,
+                    Ok(Some(decision)) => {
+                        last_reasoner_error_at = None;
+                        on_decision(&decision);
+                    }
+                    Ok(None) => last_reasoner_error_at = None,
                     Err(error) => {
                         eprintln!("[reasoner] No decision recorded: {error:#}");
                         last_reasoner_error_at = Some(Instant::now());
@@ -338,7 +357,7 @@ pub fn run_agent_until(
 
 pub fn run_one_reasoning_cycle(config: &AgentConfig) -> Result<bool> {
     let mut store = Store::open(&config.database_path)?;
-    evaluate_context(&mut store, config)
+    evaluate_context(&mut store, config).map(|decision| decision.is_some())
 }
 
 #[cfg(test)]

@@ -9,12 +9,13 @@ use std::{
 };
 
 use miss_minute_agent::{
-    collector::run_agent_until,
+    collector::run_agent_until_with_callback,
     actions::{approve_and_execute, ActionExecutionResult},
     config::{
         authorize_note_root as grant_note_root, create_config, load_config,
         revoke_note_root as drop_note_root,
     },
+    reasoner::DecisionKind,
     store::{PendingActionRecord, Store},
 };
 use serde::{Deserialize, Serialize};
@@ -70,7 +71,7 @@ impl DesktopState {
         }
     }
 
-    fn start_agent(&self) -> Result<(), String> {
+    fn start_agent(&self, app: tauri::AppHandle) -> Result<(), String> {
         let config = load_config(&self.config_path).map_err(|error| format!("{error:#}"))?;
         let mut slot = self.agent.lock().map_err(|_| "Agent state is unavailable".to_owned())?;
 
@@ -89,13 +90,39 @@ impl DesktopState {
         let worker_shutdown = Arc::clone(&shutdown);
         let last_error = Arc::new(Mutex::new(None));
         let worker_error = Arc::clone(&last_error);
+        let event_app = app.clone();
 
         let join = std::thread::Builder::new()
             .name("miss-minutes-agent".to_owned())
             .spawn(move || {
-                if let Err(error) = run_agent_until(&config, 45, 300, worker_shutdown) {
+                let speech_app = event_app.clone();
+                let result = run_agent_until_with_callback(
+                    &config,
+                    45,
+                    300,
+                    worker_shutdown,
+                    move |decision| {
+                        if let (DecisionKind::Speak, Some(message)) =
+                            (decision.decision, decision.message.as_ref())
+                        {
+                            let _ = speech_app.emit_to(
+                                "avatar",
+                                "miss-minutes:speak",
+                                AvatarUtterance {
+                                    text: message.clone(),
+                                    emotion: "winking".to_owned(),
+                                    pitch: 1.12,
+                                    rate: 1.0,
+                                    eleven_labs_key: None,
+                                    eleven_labs_voice_id: None,
+                                },
+                            );
+                        }
+                    },
+                );
+                if let Err(error) = result {
                     if let Ok(mut slot) = worker_error.lock() {
-                        *slot = Some(format!("{error:#}"));
+                        *slot = Some(format!("${error:#}"));
                     }
                 }
             })
@@ -187,6 +214,7 @@ fn agent_enroll(
     roots: Vec<String>,
     confirm_owner_permission: bool,
     state: tauri::State<'_, DesktopState>,
+    app: tauri::AppHandle,
 ) -> Result<AgentStatus, String> {
     if !confirm_owner_permission {
         return Err("Review each folder and confirm owner permission before enrollment.".to_owned());
@@ -200,7 +228,7 @@ fn agent_enroll(
     let paths = roots.into_iter().map(PathBuf::from).collect::<Vec<_>>();
     create_config(&state.config_path, &paths, true)
         .map_err(|error| format!("{error:#}"))?;
-    state.start_agent()?;
+    state.start_agent(app)?;
     Ok(agent_status_inner(&state))
 }
 
@@ -258,8 +286,8 @@ fn reject_action(
 }
 
 #[tauri::command]
-fn agent_start(state: tauri::State<'_, DesktopState>) -> Result<(), String> {
-    state.start_agent()
+fn agent_start(state: tauri::State<'_, DesktopState>, app: tauri::AppHandle) -> Result<(), String> {
+    state.start_agent(app)
 }
 
 #[tauri::command]
@@ -578,7 +606,7 @@ pub fn run() {
             // login startup. A missing or invalid config never blocks the UI.
             if let Some(state) = app.try_state::<DesktopState>()
                 && state.config_path.is_file()
-                && let Err(error) = state.start_agent()
+                && let Err(error) = state.start_agent(app.handle().clone())
             {
                 eprintln!("[desktop] The saved agent could not be restarted: {error}");
             }

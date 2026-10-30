@@ -64,3 +64,8 @@ The first version intentionally does not provide automatic broad home-directory,
 ## Typed action approval surface
 
 The dashboard can authorize an exact note-output folder separately from metadata collection. Pending proposals show the full Markdown body and exact target path. The owner can approve once or reject. Revoking the folder permission expires pending proposals. See the agent README for CLI equivalents and strict execution limits.
+
+
+## Background reasoner speech
+
+When the local reasoner returns a validated speak decision, the Rust worker forwards the text to the separate avatar webview using a Tauri event. The same voice-reactive SVG renderer animates the mouth from the overlay playback analyser or speech-boundary callbacks. Silent decisions remain silent; action proposals stay in the dashboard approval queue.
