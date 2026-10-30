@@ -136,7 +136,13 @@ export function DesktopCompanionPanel() {
       } catch (cause) {
         if (cancelled) return;
         const message = cause instanceof Error ? cause.message : '';
-        if (message.includes('expired') || message.includes('invalid') || message.includes('Open an event stream')) {
+        if (message.includes('retention gap')) {
+          await closeTicket();
+          cursor = 0;
+          setAgentEvents([]);
+          setNotice('Some older events expired under the configured retention policy. Live monitoring has resumed from the current ledger position.');
+          setStreamState('expired');
+        } else if (message.includes('expired') || message.includes('invalid') || message.includes('Open an event stream')) {
           await closeTicket();
           setStreamState('expired');
         } else {
