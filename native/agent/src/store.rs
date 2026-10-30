@@ -503,12 +503,25 @@ impl Store {
         Ok(())
     }
 
+    /// High-water mark survives retention pruning. It resets only when the
+    /// owner explicitly forgets all history (which also clears sqlite_sequence).
     pub fn last_event_sequence(&self) -> Result<i64> {
         self.connection.query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM events",
+            "SELECT MAX(
+                COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'events'), 0),
+                COALESCE((SELECT MAX(seq) FROM events), 0)
+             )",
             [],
             |row| row.get(0),
         ).context("Cannot read the current event cursor")
+    }
+
+    pub fn oldest_event_sequence(&self) -> Result<Option<i64>> {
+        self.connection.query_row(
+            "SELECT MIN(seq) FROM events",
+            [],
+            |row| row.get(0),
+        ).context("Cannot read the oldest retained event cursor")
     }
 
     pub fn events_after(&self, sequence: i64, limit: usize) -> Result<Vec<EventRecord>> {
