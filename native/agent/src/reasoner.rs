@@ -84,6 +84,17 @@ struct CompletionMessage {
     content: String,
 }
 
+fn may_share_owner_context(config: &ReasonerConfig) -> Result<bool> {
+    let url = reqwest::Url::parse(&config.endpoint)
+        .context("Reasoner endpoint must be an absolute URL")?;
+    let host = url.host_str().unwrap_or_default();
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host.parse::<std::net::IpAddr>()
+            .map(|address| address.is_loopback())
+            .unwrap_or(false);
+    Ok(loopback || config.share_owner_context_with_remote)
+}
+
 fn validate_decision(
     decision: &Decision,
     evidence: &[EventRecord],
@@ -156,7 +167,7 @@ pub fn evaluate(
     let model_context = serde_json::json!({
         "evidence": evidence,
         "approved_note_output_roots": approved_note_roots,
-        "owner_pinned_context": owner_context,
+        "owner_pinned_context": if may_share_owner_context(config)? { owner_context } else { &[] },
         "limits": {
             "file_contents_available": false,
             "available_actions": if approved_note_roots.is_empty() { Vec::<&str>::new() } else { vec!["create_note"] },
@@ -228,6 +239,31 @@ mod tests {
             resource_path: None,
             payload_json: "{}".to_owned(),
         }]
+    }
+
+    #[test]
+    fn owner_context_is_not_shared_with_remote_reasoners_without_separate_consent() {
+        let remote = ReasonerConfig {
+            endpoint: "https://reasoner.example/v1/chat/completions".to_owned(),
+            model: "test-model".to_owned(),
+            api_key_env: None,
+            share_local_metadata_with_remote: true,
+            share_owner_context_with_remote: false,
+        };
+        assert!(!may_share_owner_context(&remote).unwrap());
+
+        let mut consented = remote.clone();
+        consented.share_owner_context_with_remote = true;
+        assert!(may_share_owner_context(&consented).unwrap());
+
+        let local = ReasonerConfig {
+            endpoint: "http://127.0.0.1:11434/v1/chat/completions".to_owned(),
+            model: "test-model".to_owned(),
+            api_key_env: None,
+            share_local_metadata_with_remote: false,
+            share_owner_context_with_remote: false,
+        };
+        assert!(may_share_owner_context(&local).unwrap());
     }
 
     #[test]
