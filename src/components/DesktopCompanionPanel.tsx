@@ -118,6 +118,14 @@ export function DesktopCompanionPanel() {
           expected = event.seq;
         }
         if (batch.length > 0) {
+          // Acknowledge only after the complete page has passed sequence checks
+          // and has been handed to renderer state. If this call fails, retrying
+          // the same cursor receives the same page (at-least-once semantics).
+          await invokeNative<void>('agent_stream_ack', {
+            token: activeTicket.token,
+            sequence: expected,
+          });
+          if (cancelled) return;
           cursor = expected;
           setAgentEvents(previous => [...previous, ...batch].slice(-12));
         }
