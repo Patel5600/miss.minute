@@ -12,7 +12,8 @@ use miss_minute_agent::{
     collector::run_agent_until_with_callback,
     actions::{approve_and_execute, ActionExecutionResult},
     config::{
-        authorize_note_root as grant_note_root, configure_auto_note_creation, create_config, load_config,
+        authorize_note_root as grant_note_root, configure_auto_note_creation,
+        configure_foreground_window_title, create_config, load_config,
         revoke_note_root as drop_note_root,
     },
     reasoner::DecisionKind,
@@ -163,6 +164,8 @@ struct AgentStatus {
     approved_note_roots: Vec<String>,
     pending_actions: i64,
     auto_create_notes: bool,
+    foreground_window_context_enabled: bool,
+    foreground_window_context_supported: bool,
     automatic_actions_today: i64,
     daily_note_limit: u8,
 }
@@ -179,6 +182,8 @@ fn agent_status_inner(state: &DesktopState) -> AgentStatus {
         approved_note_roots: Vec::new(),
         pending_actions: 0,
         auto_create_notes: false,
+        foreground_window_context_enabled: false,
+        foreground_window_context_supported: cfg!(windows),
         automatic_actions_today: 0,
         daily_note_limit: 3,
     };
@@ -199,6 +204,7 @@ fn agent_status_inner(state: &DesktopState) -> AgentStatus {
             .map(|root| root.display().to_string())
             .collect();
         status.auto_create_notes = config.automation.auto_create_notes;
+        status.foreground_window_context_enabled = config.capture.foreground_window_title;
         status.daily_note_limit = config.automation.max_notes_per_utc_day;
 
         if let Ok(mut store) = Store::open(&config.database_path) {
@@ -409,6 +415,27 @@ fn set_auto_note_creation(
         configure_auto_note_creation(&state.config_path, false)
             .map_err(|error| format!("{error:#}"))?;
     }
+    state.start_agent(app)?;
+    Ok(agent_status_inner(&state))
+}
+
+#[tauri::command]
+fn set_foreground_window_context(
+    enabled: bool,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    app: tauri::AppHandle,
+) -> Result<AgentStatus, String> {
+    require_dashboard(&window)?;
+    if enabled && !cfg!(windows) {
+        return Err("Foreground window-title context is supported only by the Windows desktop host.".to_owned());
+    }
+
+    // Join the current worker before changing consent. The old in-memory
+    // policy cannot continue sampling after this command returns.
+    state.stop_agent();
+    configure_foreground_window_title(&state.config_path, enabled)
+        .map_err(|error| format!("{error:#}"))?;
     state.start_agent(app)?;
     Ok(agent_status_inner(&state))
 }
