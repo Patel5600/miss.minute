@@ -150,7 +150,7 @@ fn evaluate_context(store: &mut Store, config: &AgentConfig) -> Result<Option<re
     let cursor = store.last_decision_sequence()?;
     let evidence: Vec<EventRecord> = store.events_after(cursor, 100)?;
     if evidence.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
 
     let through_seq = evidence.last().map(|event| event.seq).unwrap_or(cursor);
