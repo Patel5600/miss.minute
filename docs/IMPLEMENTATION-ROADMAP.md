@@ -29,7 +29,7 @@ This roadmap replaces the old checklist with dependency-ordered releases. It dis
 
 ## Release 2 — Living intelligence and event stream
 
-This must come before autonomous execution. A decision engine cannot safely act on incomplete and ambiguous observations.
+This must come before broad, general-purpose autonomous execution. The current create_note auto mode is a deliberately narrow exception: it acts only on filesystem metadata evidence, one separately granted folder capability, and a hard daily quota. A general decision engine cannot safely act on incomplete and ambiguous observations.
 
 1. Define a versioned evidence envelope for every connector: source, owner consent grant, timestamp semantics, confidence, event ID, collection gap, and retention class.
 2. Add an authenticated internal event stream from the Rust worker to Tauri. Push only newly committed events and decisions; reconnect by durable event cursor.
@@ -102,6 +102,6 @@ Exit criteria: platform permission review, lifecycle tests on physical devices, 
 
 ## Release order
 
-Desktop lifecycle and IPC -> typed note creation / owner approval (first action slice) -> reliable event stream and provenance -> context/attention engine -> additional bounded capabilities and policy-controlled automation -> mobile-native companions -> security hardening and signed distribution.
+Desktop lifecycle and IPC -> typed note creation with owner approval plus narrowly bounded auto mode -> reliable event stream and provenance -> context/attention engine -> additional bounded capabilities and policy-controlled automation -> mobile-native companions -> security hardening and signed distribution.
 
 Android/iOS background restrictions are intentional platform limits. The product must communicate them rather than claim the character can live above every app on every phone.
