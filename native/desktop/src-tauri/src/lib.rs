@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WebviewUrl, WebviewWindowBuilder,
+    Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartExt};
 
@@ -260,6 +260,42 @@ fn set_avatar_dragging(dragging: bool, state: tauri::State<'_, DesktopState>) {
     state.avatar_dragging.store(dragging, Ordering::Release);
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AvatarUtterance {
+    text: String,
+    emotion: String,
+    pitch: f32,
+    rate: f32,
+    eleven_labs_key: Option<String>,
+    eleven_labs_voice_id: Option<String>,
+}
+
+#[tauri::command]
+fn avatar_speak(
+    text: String,
+    emotion: String,
+    pitch: f32,
+    rate: f32,
+    eleven_labs_key: Option<String>,
+    eleven_labs_voice_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    if text.trim().is_empty() || text.len() > 6000 {
+        return Err("Avatar speech must contain 1 to 6000 characters.".to_owned());
+    }
+    let pitch = pitch.clamp(0.5, 2.0);
+    let rate = rate.clamp(0.7, 1.5);
+    app.emit_to("avatar", "miss-minutes:speak", AvatarUtterance {
+        text,
+        emotion,
+        pitch,
+        rate,
+        eleven_labs_key,
+        eleven_labs_voice_id,
+    }).map_err(|error| format!("Cannot send speech to avatar window: {error}"))
+}
+
 fn make_tray_icon() -> tauri::image::Image<'static> {
     let mut pixels = vec![0_u8; 32 * 32 * 4];
     for y in 0..32_i32 {
@@ -468,6 +504,15 @@ pub fn run() {
             create_avatar_window(app.handle())?;
             create_tray(app)?;
 
+            // Rehydrate the enrolled native worker on normal app launch and
+            // login startup. A missing or invalid config never blocks the UI.
+            if let Some(state) = app.try_state::<DesktopState>()
+                && state.config_path.is_file()
+                && let Err(error) = state.start_agent()
+            {
+                eprintln!("[desktop] The saved agent could not be restarted: {error}");
+            }
+
             #[cfg(target_os = "windows")]
             start_windows_cursor_gate(app.handle().clone(), bounds, dragging);
 
@@ -492,7 +537,8 @@ pub fn run() {
             toggle_avatar,
             show_dashboard,
             set_avatar_bounds,
-            set_avatar_dragging
+            set_avatar_dragging,
+            avatar_speak
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

@@ -10,9 +10,11 @@ import { VariantCard } from './components/VariantCard';
 import { SettingsModal } from './components/SettingsModal';
 import { TvaHeader } from './components/TvaHeader';
 import { DesktopCompanionPanel } from './components/DesktopCompanionPanel';
+import { invokeNative, isDesktopRuntime } from './desktop/bridge';
 import confetti from 'canvas-confetti';
 
 export function App() {
+  const isNativeDesktop = isDesktopRuntime();
   const [settings,       setSettings]       = useState<AISettings>(() => AIService.getStoredSettings());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [soundMuted,     setSoundMuted]     = useState(false);
@@ -88,7 +90,21 @@ export function App() {
       setEmotion(response.emotion);
 
       if (response.isNexusAlert) soundEffects.playNexusAlert();
-      if (settings.voiceEnabled) voiceService.speak(response.text, buildVoiceConfig());
+      if (settings.voiceEnabled) {
+        const voice = buildVoiceConfig();
+        if (isNativeDesktop) {
+          void invokeNative<void>('avatar_speak', {
+            text: response.text,
+            emotion: response.emotion,
+            pitch: voice.pitch,
+            rate: voice.rate,
+            elevenLabsKey: voice.elevenLabsKey,
+            elevenLabsVoiceId: voice.elevenLabsVoiceId,
+          }).catch(error => console.error('[Miss Minutes] Native speech bridge failed:', error));
+        } else {
+          void voiceService.speak(response.text, voice);
+        }
+      }
     } catch {
       setIsLoading(false);
       setEmotion('suspicious');
@@ -185,15 +201,17 @@ export function App() {
       />
 
       {/* ── Floating Walking Miss Minutes (fixed, border-patrol) ────────────── */}
-      <MissMinutesFloating
-        emotion={emotion}
-        isSpeaking={isSpeaking}
-        mouthFrame={mouthFrame}
-        autonomousChatter={settings.ambientChatter ?? true}
-        isBusy={isLoading}
-        hologramMode={settings.hologramMode}
-        onAvatarClick={handleAvatarClick}
-      />
+      {!isNativeDesktop && (
+        <MissMinutesFloating
+          emotion={emotion}
+          isSpeaking={isSpeaking}
+          mouthFrame={mouthFrame}
+          autonomousChatter={settings.ambientChatter ?? true}
+          isBusy={isLoading}
+          hologramMode={settings.hologramMode}
+          onAvatarClick={handleAvatarClick}
+        />
+      )}
 
       {/* ── Main Content ─────────────────────────────────────────────────────── */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-5 grid grid-cols-1 lg:grid-cols-12 gap-5 items-start z-10">
