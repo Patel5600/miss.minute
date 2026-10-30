@@ -13,6 +13,24 @@ export interface NativeAgentStatus {
   dailyNoteLimit: number;
 }
 
+export interface AgentStreamTicket {
+  token: string;
+  cursor: number;
+  expiresAtUnixMs: number;
+}
+
+export interface AgentEventRecord {
+  seq: number;
+  id: string;
+  source: string;
+  event_type: string;
+  observed_at_unix_ms: number;
+  source_timestamp_unix_ms: number | null;
+  timestamp_semantics: string;
+  resource_path: string | null;
+  payload_json: string;
+}
+
 export interface PendingAction {
   id: string;
   throughSeq: number;
