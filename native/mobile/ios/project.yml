@@ -1,0 +1,27 @@
+name: MissMinutesCompanion
+options:
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    PRODUCT_BUNDLE_IDENTIFIER: "com.patel5600.missminute.companion"
+    TARGETED_DEVICE_FAMILY: "1"
+targets:
+  MissMinutesCompanion:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Miss Minutes
+        UILaunchScreen: {}
+        UIBackgroundModes:
+          - fetch
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.patel5600.missminute.metadata-refresh
+    settings:
+      base:
+        INFOPLIST_KEY_NSUserTrackingUsageDescription: "Miss Minutes does not track you across other apps."
