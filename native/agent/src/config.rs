@@ -390,6 +390,8 @@ pub fn configure_reasoner(
         model,
         api_key_env,
         share_local_metadata_with_remote: confirm_remote_egress,
+        // Pinned context needs its own consent; reconfiguring an endpoint never grants it.
+        share_owner_context_with_remote: false,
     };
     validate_reasoner_config(&reasoner)?;
     config.reasoner = Some(reasoner);
@@ -462,6 +464,7 @@ mod tests {
             model: "test-model".to_owned(),
             api_key_env: Some("MISS_MINUTE_TEST_KEY".to_owned()),
             share_local_metadata_with_remote: false,
+            share_owner_context_with_remote: false,
         };
         assert!(validate_reasoner_config(&config).is_err());
     }
@@ -473,6 +476,7 @@ mod tests {
             model: "local-model".to_owned(),
             api_key_env: None,
             share_local_metadata_with_remote: false,
+            share_owner_context_with_remote: false,
         };
         assert!(validate_reasoner_config(&local).is_ok());
 
@@ -481,6 +485,7 @@ mod tests {
             model: "remote-model".to_owned(),
             api_key_env: None,
             share_local_metadata_with_remote: true,
+            share_owner_context_with_remote: false,
         };
         assert!(validate_reasoner_config(&remote).is_err());
     }

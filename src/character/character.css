@@ -1,0 +1,105 @@
+/*
+ * Miss Minutes rig styling. Colours are sampled from the owner's reference loop (giphy.gif):
+ *   face #ff711c (52% of her pixels), lit face #ff771f, cream #eeeddb, cream shade #d7d4c2,
+ *   ink #050101. The hologram skin follows the live-action projection stills: the same
+ *   drawing, brighter and translucent, with an amber bloom and scanlines.
+ */
+.mm-rig {
+  --mm-face: #ff711c;
+  --mm-face-lit: #ff771f;
+  --mm-rim: #e5621a;
+  --mm-ink: #050101;
+  --mm-cream: #eeeddb;
+  --mm-cream-shade: #d7d4c2;
+  --mm-cuff: #1c0a05;
+  --mm-mouth: #3a0e06;
+  --mm-tongue: #e66a6a;
+  --mm-teeth: #fffdf2;
+  --mm-cheek: #ff4f7a;
+  --mm-glow: rgba(255, 170, 60, 0.55);
+  --mm-halo: #ffb347;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ── Ink and fills ─────────────────────────────────────────── */
+.mm-rig .mm-disc { fill: var(--mm-face); stroke: var(--mm-ink); stroke-linejoin: round; }
+.mm-rig .mm-rim { fill: var(--mm-rim); stroke: var(--mm-ink); stroke-linejoin: round; }
+.mm-rig .mm-ticks line { stroke: var(--mm-ink); stroke-linecap: round; }
+.mm-rig .mm-nose { fill: var(--mm-ink); }
+
+.mm-rig .mm-eye-white { fill: var(--mm-cream); }
+.mm-rig .mm-eye-line { fill: none; stroke: var(--mm-ink); stroke-linejoin: round; }
+.mm-rig .mm-pupil { fill: var(--mm-ink); }
+.mm-rig .mm-pupil-core { fill: #160603; }
+.mm-rig .mm-glint { fill: #ffffff; }
+.mm-rig .mm-lid { fill: none; stroke: var(--mm-ink); stroke-linecap: round; stroke-linejoin: round; }
+.mm-rig .mm-lash { fill: none; stroke: var(--mm-ink); stroke-linecap: round; }
+
+.mm-rig .mm-mouth { fill: var(--mm-mouth); }
+.mm-rig .mm-teeth { fill: var(--mm-teeth); }
+.mm-rig .mm-tongue { fill: var(--mm-tongue); }
+.mm-rig .mm-mouth-line { fill: none; stroke: var(--mm-ink); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.mm-rig .mm-dimple { fill: none; stroke: var(--mm-ink); stroke-width: 1.8; stroke-linecap: round; }
+.mm-rig .mm-cheek-stop { stop-color: var(--mm-cheek); }
+
+/* Rubber-hose arms: black outline under an orange core, cuff stripes dashed on top. */
+.mm-rig .mm-arm-line { fill: none; stroke: var(--mm-ink); stroke-linecap: round; stroke-linejoin: round; }
+.mm-rig .mm-arm { fill: none; stroke: var(--mm-face); stroke-linecap: round; stroke-linejoin: round; }
+.mm-rig .mm-cuff { fill: none; stroke: var(--mm-cuff); stroke-linecap: butt; }
+
+/* Gloves: an ink silhouette drawn wider underneath, then the cream glove on top. */
+.mm-rig .mm-glove-edge { fill: var(--mm-ink); stroke: var(--mm-ink); stroke-linejoin: round; }
+.mm-rig .mm-glove-edge-stroke { fill: none; stroke: var(--mm-ink); stroke-linecap: round; stroke-linejoin: round; }
+.mm-rig .mm-glove { fill: var(--mm-cream); }
+.mm-rig .mm-glove-stroke { fill: none; stroke: var(--mm-cream); stroke-linecap: round; stroke-linejoin: round; }
+.mm-rig .mm-crease { fill: none; stroke: var(--mm-ink); stroke-width: 1.3; stroke-linecap: round; opacity: 0.85; }
+
+.mm-rig .mm-leg { fill: none; stroke: var(--mm-ink); stroke-linecap: round; }
+.mm-rig .mm-shoe { fill: var(--mm-cream); stroke: var(--mm-ink); stroke-linejoin: round; }
+.mm-rig .mm-shoe-detail { fill: none; stroke: var(--mm-ink); stroke-width: 1.5; stroke-linecap: round; opacity: 0.9; }
+.mm-rig .mm-shadow { fill: rgba(0, 0, 0, 0.32); }
+
+/* ── Classic skin: flat cartoon, no projection effects ─────── */
+.mm-skin-classic .mm-halo,
+.mm-skin-classic .mm-holo-only { display: none; }
+
+/* ── Hologram skin: the show's projection ──────────────────── */
+.mm-skin-hologram {
+  --mm-face: #ff8a2e;
+  --mm-face-lit: #ff9a40;
+  --mm-rim: #f26d22;
+  --mm-ink: #2a0d02;
+  --mm-cream: #fff3d6;
+  --mm-cuff: #3a1404;
+  filter: drop-shadow(0 0 5px var(--mm-glow)) drop-shadow(0 0 18px rgba(255, 140, 40, 0.35));
+  animation: mm-holo-flicker 7.2s steps(1, end) infinite;
+}
+.mm-skin-hologram .mm-halo-stop { stop-color: var(--mm-halo); }
+.mm-skin-hologram .mm-scan-line { fill: rgba(60, 18, 0, 0.18); }
+.mm-skin-hologram .mm-shadow { fill: rgba(255, 150, 50, 0.22); }
+
+/* Citadel / pruning: the menacing red projection. */
+.mm-tone-red {
+  --mm-face: #e8441c;
+  --mm-face-lit: #f0532a;
+  --mm-rim: #c33415;
+  --mm-glow: rgba(255, 60, 30, 0.6);
+  --mm-halo: #ff4a2a;
+}
+
+@keyframes mm-holo-flicker {
+  0%, 91%, 93%, 97%, 100% { opacity: 1; }
+  92% { opacity: 0.9; }
+  96% { opacity: 0.95; }
+}
+
+.mm-reduced,
+.mm-reduced * { animation: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .mm-skin-hologram { animation: none; }
+}

@@ -24,7 +24,7 @@ fn database_account(path: &Path) -> Result<String> {
 
 fn provider_entry(provider: &str) -> Result<Entry> {
     match provider {
-        "openai" | "gemini" | "anthropic" | "ollama" | "elevenlabs" => {}
+        "openai" | "gemini" | "anthropic" | "ollama" | "elevenlabs" | "openrouter" => {}
         _ => bail!("Unsupported credential provider."),
     }
     Entry::new(PROVIDER_SERVICE, provider).context("Cannot access the operating-system credential vault")
@@ -89,4 +89,36 @@ pub fn migration_paths(path: &Path) -> (PathBuf, PathBuf) {
     let mut backup = path.as_os_str().to_os_string();
     backup.push(".plaintext-backup");
     (PathBuf::from(temporary), PathBuf::from(backup))
+}
+
+/// Service namespace for 256-bit keys that wrap larger blobs the host stores as files
+/// (for example the ChatGPT OAuth token record). The blob lives in the app data directory;
+/// only its AES-256-GCM key lives in the OS vault. This keeps us under the Windows
+/// Credential Manager per-entry size limit while still protecting the material at rest.
+const FILE_KEY_SERVICE: &str = "com.patel5600.missminute.filekeys";
+
+/// Returns the wrapping key named `name`, creating and persisting a fresh random 256-bit key
+/// on first use. The key never leaves this process except into the OS credential vault.
+pub fn get_or_create_file_key(name: &str) -> Result<Zeroizing<Vec<u8>>> {
+    if name.is_empty() || name.len() > 128 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        bail!("File-key name must be a short ASCII slug.");
+    }
+    let entry = Entry::new(FILE_KEY_SERVICE, name)
+        .context("Cannot access the operating-system credential vault")?;
+    match entry.get_secret() {
+        Ok(secret) if secret.len() == 32 => Ok(Zeroizing::new(secret)),
+        Ok(_) => bail!("The stored file key has an invalid length. Refusing to replace it."),
+        Err(keyring::Error::NoEntry) => {
+            // Two UUIDv4 values give 256 bits of CSPRNG output without adding a dependency,
+            // mirroring how the database key is minted.
+            let mut secret = Zeroizing::new(Vec::with_capacity(32));
+            secret.extend_from_slice(Uuid::new_v4().as_bytes());
+            secret.extend_from_slice(Uuid::new_v4().as_bytes());
+            entry
+                .set_secret(secret.as_slice())
+                .context("Cannot persist the file key in the operating-system credential vault")?;
+            Ok(secret)
+        }
+        Err(error) => Err(error).context("Cannot read the file key from the operating-system vault"),
+    }
 }

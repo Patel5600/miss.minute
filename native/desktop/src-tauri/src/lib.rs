@@ -30,6 +30,18 @@ use tauri_plugin_autostart::ManagerExt as AutostartExt;
 #[cfg(target_os = "macos")]
 use tauri_plugin_autostart::MacosLauncher;
 
+mod chatgpt;
+mod crypto;
+mod desktop_tools;
+mod job;
+mod loopback;
+mod openrouter;
+mod provider;
+mod scheduler;
+mod util;
+mod voice;
+use voice::{VoiceHost, VoiceStatus};
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AvatarBounds {
@@ -51,6 +63,9 @@ struct DesktopState {
     avatar_bounds: Arc<Mutex<AvatarBounds>>,
     avatar_dragging: Arc<AtomicBool>,
     stream_session: Mutex<Option<AgentStreamSession>>,
+    voice: VoiceHost,
+    /// Owner preference: speak through the local voice engine when it is ready.
+    prefer_local_voice: AtomicBool,
 }
 
 impl DesktopState {
@@ -61,7 +76,41 @@ impl DesktopState {
             avatar_bounds: Arc::new(Mutex::new(AvatarBounds::default())),
             avatar_dragging: Arc::new(AtomicBool::new(false)),
             stream_session: Mutex::new(None),
+            voice: VoiceHost::new(),
+            prefer_local_voice: AtomicBool::new(false),
         }
+    }
+
+    /// Single path for everything the avatar says. Prefers the local voice engine when the
+    /// owner enabled it and it is ready; otherwise (or if it fails) falls back to the
+    /// overlay's own speech, so a missing engine never silences her.
+    fn speak_on_avatar(
+        &self,
+        app: &tauri::AppHandle,
+        utterance: AvatarUtterance,
+        style: &str,
+    ) -> Result<(), String> {
+        if self.prefer_local_voice.load(Ordering::Acquire) && self.voice.is_ready() {
+            let id = Uuid::new_v4().to_string();
+            match self.voice.speak(&id, &utterance.text, style, "avatar") {
+                Ok(()) => {
+                    return app
+                        .emit_to(
+                            "avatar",
+                            "miss-minutes:speak-local",
+                            serde_json::json!({
+                                "id": id,
+                                "emotion": utterance.emotion,
+                                "gesture": utterance.gesture,
+                            }),
+                        )
+                        .map_err(|error| format!("Cannot send speech to avatar window: {error}"));
+                }
+                Err(error) => eprintln!("[voice] Local voice unavailable, using system speech: {error}"),
+            }
+        }
+        app.emit_to("avatar", "miss-minutes:speak", utterance)
+            .map_err(|error| format!("Cannot send speech to avatar window: {error}"))
     }
 
     fn stop_agent(&self) {
@@ -109,18 +158,18 @@ impl DesktopState {
                         if let (DecisionKind::Speak, Some(message)) =
                             (decision.decision, decision.message.as_ref())
                         {
-                            let _ = speech_app.emit_to(
-                                "avatar",
-                                "miss-minutes:speak",
-                                AvatarUtterance {
-                                    text: message.clone(),
-                                    emotion: "winking".to_owned(),
-                                    pitch: 1.12,
-                                    rate: 1.0,
-                                    eleven_labs_key: None,
-                                    eleven_labs_voice_id: None,
-                                },
-                            );
+                            let utterance = AvatarUtterance {
+                                text: message.clone(),
+                                emotion: "winking".to_owned(),
+                                gesture: None,
+                                pitch: 1.12,
+                                rate: 1.0,
+                                eleven_labs_key: None,
+                                eleven_labs_voice_id: None,
+                            };
+                            if let Some(state) = speech_app.try_state::<DesktopState>() {
+                                let _ = state.speak_on_avatar(&speech_app, utterance, "conversational");
+                            }
                         }
                     },
                 );
@@ -207,7 +256,7 @@ fn agent_status_inner(state: &DesktopState) -> AgentStatus {
         status.foreground_window_context_enabled = config.capture.foreground_window_title;
         status.daily_note_limit = config.automation.max_notes_per_utc_day;
 
-        if let Ok(mut store) = Store::open(&config.database_path) {
+        if let Ok(store) = Store::open(&config.database_path) {
             const DAY_MS: i64 = 86_400_000;
             let now = miss_minute_agent::config::now_unix_ms();
             let day_start = now.div_euclid(DAY_MS) * DAY_MS;
@@ -641,35 +690,155 @@ fn set_avatar_dragging(dragging: bool, state: tauri::State<'_, DesktopState>) {
 struct AvatarUtterance {
     text: String,
     emotion: String,
+    /// Body language to perform while speaking (wave, shrug, point, hips, present, think, knock, clap).
+    gesture: Option<String>,
     pitch: f32,
     rate: f32,
     eleven_labs_key: Option<String>,
     eleven_labs_voice_id: Option<String>,
 }
 
+/// Only known gesture names reach the avatar window.
+fn valid_gesture(gesture: Option<String>) -> Option<String> {
+    gesture.filter(|name| {
+        matches!(name.as_str(), "wave" | "shrug" | "point" | "hips" | "present" | "think" | "knock" | "clap")
+    })
+}
+
 #[tauri::command]
 fn avatar_speak(
     text: String,
     emotion: String,
+    gesture: Option<String>,
     pitch: f32,
     rate: f32,
     eleven_labs_key: Option<String>,
     eleven_labs_voice_id: Option<String>,
+    style: Option<String>,
     app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     if text.trim().is_empty() || text.len() > 6000 {
         return Err("Avatar speech must contain 1 to 6000 characters.".to_owned());
     }
     let pitch = pitch.clamp(0.5, 2.0);
     let rate = rate.clamp(0.7, 1.5);
-    app.emit_to("avatar", "miss-minutes:speak", AvatarUtterance {
-        text,
-        emotion,
-        pitch,
-        rate,
-        eleven_labs_key,
-        eleven_labs_voice_id,
-    }).map_err(|error| format!("Cannot send speech to avatar window: {error}"))
+    let style = valid_voice_style(style.as_deref());
+    let gesture = valid_gesture(gesture);
+    state.speak_on_avatar(
+        &app,
+        AvatarUtterance { text, emotion, gesture, pitch, rate, eleven_labs_key, eleven_labs_voice_id },
+        style,
+    )
+}
+
+/// Lets the avatar window speak its click lines through the same router. This is the only
+/// speech entry point the overlay gets, it is length-limited, and it cannot reach the agent.
+#[tauri::command]
+fn avatar_say(
+    text: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    if text.trim().is_empty() || text.len() > 240 {
+        return Err("Avatar lines must contain 1 to 240 characters.".to_owned());
+    }
+    state.speak_on_avatar(
+        &app,
+        AvatarUtterance {
+            text,
+            emotion: "winking".to_owned(),
+            gesture: None,
+            pitch: 1.12,
+            rate: 1.0,
+            eleven_labs_key: None,
+            eleven_labs_voice_id: None,
+        },
+        "conversational",
+    )
+}
+
+/// Only the four known delivery styles are forwarded to the worker.
+fn valid_voice_style(style: Option<&str>) -> &'static str {
+    match style {
+        Some("narration") => "narration",
+        Some("persuasive") => "persuasive",
+        Some("informational") => "informational",
+        _ => "conversational",
+    }
+}
+
+#[tauri::command]
+fn voice_status(state: tauri::State<'_, DesktopState>) -> VoiceStatus {
+    state.voice.status()
+}
+
+#[tauri::command]
+fn voice_start(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    require_dashboard(&window)?;
+    state.voice.start(&app)
+}
+
+#[tauri::command]
+fn voice_shutdown(window: tauri::WebviewWindow, state: tauri::State<'_, DesktopState>) -> Result<(), String> {
+    require_dashboard(&window)?;
+    state.prefer_local_voice.store(false, Ordering::Release);
+    state.voice.shutdown();
+    Ok(())
+}
+
+/// Records whether the owner wants the local voice. Enabling it also starts the engine,
+/// because loading the models takes tens of seconds and should not delay the first reply.
+#[tauri::command]
+fn voice_set_preferred(
+    enabled: bool,
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<VoiceStatus, String> {
+    require_dashboard(&window)?;
+    state.prefer_local_voice.store(enabled, Ordering::Release);
+    if enabled {
+        let _ = state.voice.start(&app); // an install problem is reported through status
+    }
+    Ok(state.voice.status())
+}
+
+/// Speaks text in the dashboard window (used by the voice previews). Returns the job id.
+#[tauri::command]
+fn voice_speak(
+    text: String,
+    style: Option<String>,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<String, String> {
+    require_dashboard(&window)?;
+    let id = Uuid::new_v4().to_string();
+    state.voice.speak(&id, &text, valid_voice_style(style.as_deref()), window.label())?;
+    Ok(id)
+}
+
+#[tauri::command]
+fn voice_cancel(window: tauri::WebviewWindow, state: tauri::State<'_, DesktopState>) -> Result<(), String> {
+    require_dashboard(&window)?;
+    state.voice.cancel()
+}
+
+/// Speech-to-text on this PC (WebView2 has no working Web Speech recognition).
+/// `audio` is base64 mono 16-bit little-endian PCM at `sample_rate` Hz.
+#[tauri::command]
+async fn voice_transcribe(
+    audio: String,
+    sample_rate: u32,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<String, String> {
+    require_dashboard(&window)?;
+    state.voice.transcribe(&audio, sample_rate).await
 }
 
 fn make_tray_icon() -> tauri::image::Image<'static> {
@@ -717,6 +886,17 @@ fn create_avatar_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     .shadow(false)
     .focused(false)
     .visible(true);
+
+    // The click-through overlay rarely receives a user gesture, and WebView2 otherwise keeps
+    // audio suspended until it does. Setting browser args replaces wry's defaults, so they are
+    // repeated here.
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.additional_browser_args(
+            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+             --autoplay-policy=no-user-gesture-required",
+        );
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -802,6 +982,22 @@ fn start_windows_cursor_gate(
         .ok();
 }
 
+/// Quits Miss Minutes: the dashboard, the overlay and the tray icon all go away.
+///
+/// Destroying the windows, rather than exiting at once, closes each WebView2 cleanly. Tauri
+/// ends the app when the last window is gone, and the `RunEvent::Exit` handler then stops the
+/// agent and the voice worker.
+fn quit_app(app: &tauri::AppHandle) {
+    let windows = app.webview_windows();
+    if windows.is_empty() {
+        app.exit(0);
+        return;
+    }
+    for window in windows.values() {
+        let _ = window.destroy();
+    }
+}
+
 fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open dashboard", true, None::<&str>)?;
     let avatar = MenuItem::with_id(app, "avatar", "Show / hide avatar", true, None::<&str>)?;
@@ -837,7 +1033,7 @@ fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 if let Some(state) = app.try_state::<DesktopState>() {
                     state.stop_agent();
                 }
-                app.exit(0);
+                quit_app(app);
             }
             _ => {}
         })
@@ -861,6 +1057,13 @@ fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
 }
 
 pub fn run() {
+    // Create the job that the app's helper processes join as they spawn, so they end with the
+    // app even after a crash or a Task Manager kill. The app's own process stays out of it, so
+    // programs opened for the user are never caught by it.
+    if let Err(error) = job::init() {
+        eprintln!("[desktop] Helper processes are not tied to the app's lifetime: {error}");
+    }
+
     let autostart_builder = tauri_plugin_autostart::Builder::new()
         .app_name("Miss Minutes")
         .args(["--background"]);
@@ -868,7 +1071,21 @@ pub fn run() {
     let autostart_builder = autostart_builder.macos_launcher(MacosLauncher::LaunchAgent);
 
     let app = tauri::Builder::default()
+        // Registered first, so a second launch is caught before anything else starts. That
+        // launch exits without creating a window, and this callback runs in the running app.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // Login autostart never pops the dashboard over an instance that already runs.
+            if args.iter().any(|argument| argument == "--background") {
+                return;
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(autostart_builder.build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let app_data = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data)?;
@@ -879,6 +1096,7 @@ pub fn run() {
 
             create_avatar_window(app.handle())?;
             create_tray(app)?;
+            scheduler::start(app.handle().clone());
 
             // Rehydrate the enrolled native worker on normal app launch and
             // login startup. A missing or invalid config never blocks the UI.
@@ -931,12 +1149,42 @@ pub fn run() {
             show_dashboard,
             set_avatar_bounds,
             set_avatar_dragging,
-            avatar_speak
+            avatar_speak,
+            avatar_say,
+            voice_status,
+            voice_start,
+            voice_shutdown,
+            voice_set_preferred,
+            voice_speak,
+            voice_cancel,
+            voice_transcribe,
+            provider::provider_http_stream,
+            provider::provider_http_cancel,
+            provider::provider_has_credential,
+            provider::realtime_client_secret,
+            chatgpt::chatgpt_sign_in,
+            chatgpt::chatgpt_account,
+            chatgpt::chatgpt_sign_out,
+            chatgpt::chatgpt_models,
+            openrouter::openrouter_pair_start,
+            openrouter::openrouter_pair_complete,
+            desktop_tools::desktop_propose,
+            desktop_tools::desktop_run,
+            desktop_tools::desktop_approve,
+            desktop_tools::desktop_reject,
+            desktop_tools::desktop_audit,
+            desktop_tools::capture_screen,
+            scheduler::schedule_sync
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if window.label() == "main" {
+                    // Closing the dashboard quits the app; she never stays behind on screen.
+                    quit_app(window.app_handle());
+                } else {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .build(tauri::generate_context!())
@@ -944,8 +1192,12 @@ pub fn run() {
 
     app.run(|handle, event| {
         if let tauri::RunEvent::Exit = event {
+            // Stop her own helpers cleanly first. The voice worker is asked to exit and joined;
+            // anything still in the job (such as a running command) ends when the process exits
+            // and the job's last handle closes.
             if let Some(state) = handle.try_state::<DesktopState>() {
                 state.stop_agent();
+                state.voice.shutdown();
             }
         }
     });

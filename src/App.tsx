@@ -1,293 +1,331 @@
-import { useState, useEffect } from 'react';
-import type { AISettings, ChatMessage, Emotion, MouthFrame, TimelineBranch } from './types';
-import { AIService } from './services/aiService';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Activity, BookUser, CalendarClock, Settings as SettingsIcon, Timer, Volume2, VolumeX, X } from 'lucide-react';
+import type { AISettings, CharacterCue, Emotion, Gesture } from './types';
+import { initializeSettings, loadSettings, onSettingsChange, PROVIDER_LABELS, saveSettings } from './agent/settings';
+import { startScheduler, type SchedulerAlert } from './agent/scheduler';
+import { onCue } from './character/cues';
+import { MissMinutesRig } from './character/MissMinutesRig';
+import { ActivityLog, Dossier, SacredTimeline, Toolbelt } from './panels';
+import { RANDOM_CLICK_QUOTES } from './data/tvaLore';
 import { voiceService } from './services/voiceService';
 import { soundEffects } from './utils/audioEffects';
-import { MissMinutesFloating } from './components/MissMinutesFloating';
-import { ChatInterface } from './components/ChatInterface';
-import { TimelineMonitor } from './components/TimelineMonitor';
-import { VariantCard } from './components/VariantCard';
-import { SettingsModal } from './components/SettingsModal';
-import { TvaHeader } from './components/TvaHeader';
-import { DesktopCompanionPanel } from './components/DesktopCompanionPanel';
 import { invokeNative, isDesktopRuntime } from './desktop/bridge';
-import confetti from 'canvas-confetti';
+import { recordUtterance, pcm16ToBase64, CAPTURE_RATE } from './agent/realtime/micCapture';
+import { Stage, type StageStatus } from './app/Stage';
+import { ChatPanel } from './app/ChatPanel';
+import { Settings } from './app/Settings';
+import { speaker, type SpeakerState } from './app/speaker';
+import { useConversation } from './app/useConversation';
+
+type Tab = 'timeline' | 'toolbelt' | 'dossier' | 'activity';
+
+const TABS: Array<{ id: Tab; label: string; icon: typeof Timer }> = [
+  { id: 'timeline', label: 'Sacred Timeline', icon: CalendarClock },
+  { id: 'toolbelt', label: 'Timers, to-dos & notes', icon: Timer },
+  { id: 'dossier', label: 'What she knows', icon: BookUser },
+  { id: 'activity', label: 'Activity', icon: Activity },
+];
+
+const GREETING = "Hey y'all! I'm Miss Minutes. Ask me anything, or hand me a job: timers, reminders, your schedule, notes, the weather. For all time. Always!";
+
+const IDLE_LINES = [
+  "Yoo-hoo! Still there, sugar? Your timeline's awful quiet.",
+  "Just checkin' in. Anything you need me to keep track of?",
+  "Tick-tock! If there's a reminder rattlin' around in your head, hand it to me.",
+  "I've been standin' here so long my hands went numb. Well, more numb.",
+  "Don't mind me, darlin'. Just keepin' an eye on the Sacred Timeline.",
+];
+
+interface Toast { id: string; title: string; body: string }
 
 export function App() {
-  const isNativeDesktop = isDesktopRuntime();
-  const [settings,       setSettings]       = useState<AISettings>(() => AIService.getStoredSettings());
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [soundMuted,     setSoundMuted]     = useState(false);
-  const [emotion,        setEmotion]        = useState<Emotion>('cheerful');
-  const [isSpeaking,     setIsSpeaking]     = useState(false);
-  const [mouthFrame,     setMouthFrame]     = useState<MouthFrame>(0);
-  const [isLoading,      setIsLoading]      = useState(false);
-  const [timeDoorActive, setTimeDoorActive] = useState(false);
+  const desktop = isDesktopRuntime();
+  const [settings, setSettingsState] = useState<AISettings>(() => loadSettings());
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [tab, setTab] = useState<Tab>('timeline');
 
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome-1',
-      sender: 'miss_minute',
-      text: "Hey y'all! Welcome to the Time Variance Authority! I'm Miss Minutes, your friendly TVA guide! I'm just walkin' the perimeter to make sure no unauthorized variants slip through. Ask me anything, sugar! For all time. Always.",
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      emotion: 'cheerful',
-    },
-  ]);
+  const [emotion, setEmotion] = useState<Emotion>('cheerful');
+  const [gesture, setGesture] = useState<{ g: Gesture; k: number }>({ g: 'wave', k: 1 });
+  const [voice, setVoice] = useState<SpeakerState>(speaker.current);
+  const [listening, setListening] = useState(false);
+  const [interim, setInterim] = useState('');
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [line, setLine] = useState(GREETING);
+  const [handsFree, setHandsFree] = useState(false);
+  const stopListening = useRef<(() => void) | null>(null);
+  const lastActivity = useRef(Date.now());
 
-  useEffect(() => {
-    let active = true;
-    void AIService.initializeSecureSettings()
-      .then(next => { if (active) setSettings(next); })
-      .catch(error => console.error('[Miss Minutes] Secure credential migration failed:', error));
-    return () => { active = false; };
+  const setSettings = useCallback((next: AISettings) => {
+    setSettingsState(saveSettings(next));
   }, []);
 
-  // ── Sync speaking state → face animation ──────────────────────────────────
+  // Settings: migrate legacy keys, load remembered secrets, follow changes from other windows.
   useEffect(() => {
-    const unsubscribeSpeaking = voiceService.onSpeakingChange(speaking => {
-      setIsSpeaking(speaking);
-      if (!speaking) setEmotion('cheerful');
+    void initializeSettings().then(setSettingsState).catch(() => undefined);
+    return onSettingsChange(setSettingsState);
+  }, []);
+
+  useEffect(() => { soundEffects.setMuted(!settings.soundEffects); }, [settings.soundEffects]);
+
+  // Voice output state drives her mouth and subtitles.
+  useEffect(() => speaker.subscribe(state => {
+    setVoice(state);
+    if (state.line) setLine(state.line);
+  }), []);
+
+  // Character cues from the brain, scheduler and tools.
+  const applyCue = useCallback((cue: CharacterCue) => {
+    if (cue.emotion) setEmotion(cue.emotion);
+    if (cue.gesture && cue.gesture !== 'none') setGesture(previous => ({ g: cue.gesture as Gesture, k: previous.k + 1 }));
+  }, []);
+  useEffect(() => onCue(applyCue), [applyCue]);
+
+  const conversation = useConversation(settings, () => undefined);
+  const { busy, approvals, messages } = conversation;
+
+  // Relax back to her resting mood a little after she finishes.
+  useEffect(() => {
+    if (busy || voice.speaking) return;
+    const id = window.setTimeout(() => { setEmotion('cheerful'); setGesture(g => ({ g: 'none', k: g.k })); }, 3500);
+    return () => window.clearTimeout(id);
+  }, [busy, voice.speaking]);
+
+  // While thinking (before any words arrive) she looks thoughtful.
+  const lastReply = messages[messages.length - 1];
+  const waitingForWords = busy && lastReply?.sender === 'miss_minute' && !lastReply.text;
+  useEffect(() => {
+    if (waitingForWords) applyCue({ emotion: 'thinking', gesture: 'think' });
+  }, [waitingForWords, applyCue]);
+
+  // Show the reply text as subtitles if she is not speaking it.
+  useEffect(() => {
+    if (!settings.voiceEnabled && lastReply?.sender === 'miss_minute' && lastReply.text) setLine(lastReply.text);
+  }, [lastReply, settings.voiceEnabled]);
+
+  // Alarms, timers and reminders.
+  useEffect(() => {
+    const stop = startScheduler({
+      speak: (text, cue) => {
+        applyCue(cue);
+        speaker.say(text, settingsRef.current);
+        setLine(text);
+      },
+      onAlert: (alert: SchedulerAlert) => {
+        if (alert.missed) return;
+        setToasts(list => [...list.slice(-3), { id: alert.id, title: alert.title, body: alert.body }]);
+        window.setTimeout(() => setToasts(list => list.filter(t => t.id !== alert.id)), 15000);
+      },
     });
-    const unsubscribeViseme = voiceService.onVisemeChange(setMouthFrame);
-    return () => {
-      unsubscribeSpeaking();
-      unsubscribeViseme();
-      voiceService.stop();
+    return stop;
+  }, [applyCue]);
+
+  // Voice input: Web Speech in Chrome/Edge; on desktop, local Whisper through the host.
+  const toggleMic = useCallback(() => {
+    if (listening) { stopListening.current?.(); return; }
+    lastActivity.current = Date.now();
+    speaker.stop();
+    setInterim('');
+    applyCue({ emotion: 'surprised' });
+    const micFailed = (message: string) => {
+      setListening(false);
+      setHandsFree(false);
+      stopListening.current = null;
+      conversation.note(message, 'system');
     };
-  }, []);
-
-  // ── Boot chime on first interaction ───────────────────────────────────────
-  useEffect(() => {
-    const h = () => soundEffects.playTvaChime();
-    window.addEventListener('click', h, { once: true });
-  }, []);
-
-  // Build voice config from current settings
-  const buildVoiceConfig = () => ({
-    pitch:              settings.voicePitch,
-    rate:               settings.voiceRate,
-    elevenLabsKey:      settings.useElevenLabs ? settings.elevenLabsKey      : undefined,
-    elevenLabsVoiceId:  settings.useElevenLabs ? settings.elevenLabsVoiceId : undefined,
-  });
-
-  // ── Message sending ───────────────────────────────────────────────────────
-  const handleSendMessage = async (text: string) => {
-    const userMsg: ChatMessage = {
-      id: `msg-${Date.now()}`,
-      sender: 'user',
-      text,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
-    setMessages(prev => [...prev, userMsg]);
-    setIsLoading(true);
-    setEmotion('thinking');
-
-    try {
-      const response = await AIService.generateResponse(text, messages, settings);
-      setIsLoading(false);
-
-      const aiMsg: ChatMessage = {
-        id: `msg-${Date.now() + 1}`,
-        sender: 'miss_minute',
-        text: response.text,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        emotion: response.emotion,
-        nexusEventDetected: response.isNexusAlert,
-      };
-      setMessages(prev => [...prev, aiMsg]);
-      setEmotion(response.emotion);
-
-      if (response.isNexusAlert) soundEffects.playNexusAlert();
-      if (settings.voiceEnabled) {
-        const voice = buildVoiceConfig();
-        if (isNativeDesktop) {
-          void invokeNative<void>('avatar_speak', {
-            text: response.text,
-            emotion: response.emotion,
-            pitch: voice.pitch,
-            rate: voice.rate,
-            // Native overlay uses OS speech until TTS is proxied through the native credential boundary.
-            elevenLabsKey: undefined,
-            elevenLabsVoiceId: undefined,
-          }).catch(error => console.error('[Miss Minutes] Native speech bridge failed:', error));
-        } else {
-          void voiceService.speak(response.text, voice);
+    if (desktop) {
+      const session = recordUtterance({ silenceMs: 1100, noSpeechMs: 8000, maxSeconds: 45 });
+      setListening(true);
+      stopListening.current = () => session.stop();
+      void session.result.then(async recording => {
+        setListening(false);
+        stopListening.current = null;
+        if (!recording.speech) return;
+        setInterim('Transcribing…');
+        try {
+          const text = await invokeNative<string>('voice_transcribe', { audio: pcm16ToBase64(recording.pcm), sampleRate: CAPTURE_RATE });
+          setInterim('');
+          if (text.trim()) void conversation.send(text);
+        } catch (error) {
+          setInterim('');
+          micFailed(`I couldn't hear that properly: ${String(error)}`);
         }
-      }
-    } catch {
-      setIsLoading(false);
-      setEmotion('suspicious');
+      }).catch((error: unknown) => micFailed(`Microphone unavailable: ${String(error)}`));
+      return;
     }
-  };
-
-  // ── Avatar click → quote ──────────────────────────────────────────────────
-  const handleAvatarClick = (quote: string) => {
-    setEmotion('winking');
-    if (settings.voiceEnabled) voiceService.speak(quote, buildVoiceConfig());
-    setMessages(prev => [
-      ...prev,
-      {
-        id: `quote-${Date.now()}`,
-        sender: 'miss_minute',
-        text: quote,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        emotion: 'winking',
+    const handle = voiceService.startListening(
+      (text, isFinal) => {
+        setInterim(text);
+        if (isFinal) {
+          setListening(false);
+          setInterim('');
+          if (text.trim()) void conversation.send(text);
+        }
       },
-    ]);
-  };
-
-  // ── Branch pruned notice ───────────────────────────────────────────────────
-  const handleBranchPruned = (branch: TimelineBranch) => {
-    setEmotion('pruning');
-    setMessages(prev => [
-      ...prev,
-      {
-        id: `notice-${Date.now()}`,
-        sender: 'system',
-        text: `RESET CHARGE DEPLOYED: "${branch.name}" has been pruned and dispatched to the Void!`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      error => {
+        // Silence just ends the turn in hands-free mode; real failures stop it.
+        if (error === 'no-speech' || error === 'aborted') { setListening(false); return; }
+        micFailed(`Microphone: ${error}`);
       },
-    ]);
-    setTimeout(() => setEmotion('cheerful'), 2500);
-  };
+      () => setListening(false),
+    );
+    if (handle) { setListening(true); stopListening.current = () => handle.stop(); }
+    else setHandsFree(false);
+  }, [listening, desktop, conversation, applyCue]);
 
-  // ── Nexus event notice ────────────────────────────────────────────────────
-  const handleNexusTriggered = () => {
-    setEmotion('suspicious');
-    setMessages(prev => [
-      ...prev,
-      {
-        id: `notice-${Date.now()}`,
-        sender: 'system',
-        text: 'CRITICAL ALERT: Spontaneous Nexus Event detected! Branch approaching red line threshold!',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        nexusEventDetected: true,
-      },
-    ]);
-  };
+  // Hands-free: whenever she is done talking (and not working), listen again.
+  const toggleMicRef = useRef(toggleMic);
+  toggleMicRef.current = toggleMic;
+  useEffect(() => {
+    if (!handsFree || busy || voice.speaking || listening || approvals.length) return;
+    const id = window.setTimeout(() => toggleMicRef.current(), 700);
+    return () => window.clearTimeout(id);
+  }, [handsFree, busy, voice.speaking, listening, approvals.length]);
 
-  // ── TemPad Time Door warp ─────────────────────────────────────────────────
-  const handleTimeDoorJump = () => {
-    setTimeDoorActive(true);
-    soundEffects.playHologramGlitch();
-    confetti({
-      particleCount: 85,
-      spread: 110,
-      origin: { y: 0.5 },
-      colors: ['#F97316', '#FBBF24', '#EA580C', '#FDE68A'],
+  const toggleHandsFree = useCallback(() => {
+    setHandsFree(on => {
+      if (on) { stopListening.current?.(); speaker.stop(); }
+      else applyCue({ emotion: 'cheerful', gesture: 'wave' });
+      return !on;
     });
-    setTimeout(() => { setTimeDoorActive(false); soundEffects.playTvaChime(); }, 1400);
-  };
+  }, [applyCue]);
 
-  const handleToggleSound = () => {
-    const next = !soundMuted;
-    setSoundMuted(next);
-    soundEffects.setMuted(next);
-  };
+  // Idle chatter: after a long quiet spell she says something, at most every few minutes.
+  useEffect(() => {
+    const mark = () => { lastActivity.current = Date.now(); };
+    window.addEventListener('pointerdown', mark, true);
+    window.addEventListener('keydown', mark, true);
+    const id = window.setInterval(() => {
+      const s = settingsRef.current;
+      if (s.ambientChatter === false || document.visibilityState !== 'visible') return;
+      if (Date.now() - lastActivity.current < 6 * 60_000 || speaker.current.speaking) return;
+      lastActivity.current = Date.now();
+      const quiet = IDLE_LINES[Math.floor(Math.random() * IDLE_LINES.length)];
+      applyCue({ emotion: 'sassy', gesture: Math.random() < 0.5 ? 'knock' : 'hips' });
+      setLine(quiet);
+      speaker.say(quiet, s);
+    }, 30_000);
+    return () => {
+      window.removeEventListener('pointerdown', mark, true);
+      window.removeEventListener('keydown', mark, true);
+      window.clearInterval(id);
+    };
+  }, [applyCue]);
+
+  const poke = useCallback(() => {
+    const quote = RANDOM_CLICK_QUOTES[Math.floor(Math.random() * RANDOM_CLICK_QUOTES.length)];
+    soundEffects.playClockTick(false);
+    applyCue({ emotion: 'winking', gesture: 'wave' });
+    setLine(quote);
+    speaker.say(quote, settingsRef.current);
+  }, [applyCue]);
+
+  const status: StageStatus = approvals.length ? 'approval'
+    : listening ? 'listening'
+      : waitingForWords ? 'thinking'
+        : busy ? 'working' : 'idle';
+
+  const providerLabel = useMemo(() => PROVIDER_LABELS[settings.provider], [settings.provider]);
 
   return (
-    <div className="min-h-screen bg-[#120D08] text-amber-100 flex flex-col relative overflow-x-hidden crt-flicker selection:bg-amber-600 selection:text-white">
+    <div className="min-h-screen bg-[#0d0905] text-amber-50">
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_70%_45%_at_30%_0%,rgba(245,130,30,0.14),transparent)]" />
 
-      {/* Ambient radial glow */}
-      <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(ellipse_80%_60%_at_50%_0%,rgba(245,158,11,0.12),transparent)]" />
-      {/* Retro grid lines */}
-      <div className="fixed inset-0 pointer-events-none opacity-10 bg-[linear-gradient(to_right,#F59E0B09_1px,transparent_1px),linear-gradient(to_bottom,#F59E0B09_1px,transparent_1px)] bg-[size:28px_28px]" />
-
-      {/* TemPad Time Door flash overlay */}
-      {timeDoorActive && (
-        <div className="fixed inset-0 z-50 pointer-events-none flex items-center justify-center bg-gradient-to-r from-orange-700/35 via-amber-400/50 to-orange-700/35 backdrop-blur-[2px]">
-          <div className="w-[420px] h-[420px] rounded-full border-[10px] border-orange-300 shadow-[0_0_140px_rgba(249,115,22,0.95)] animate-ping" />
-        </div>
-      )}
-
-      {/* ── TVA Header ──────────────────────────────────────────────────────── */}
-      <TvaHeader
-        settings={settings}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        onToggleSound={handleToggleSound}
-        soundMuted={soundMuted}
-        onTimeDoorJump={handleTimeDoorJump}
-      />
-
-      {/* ── Floating Walking Miss Minutes (fixed, border-patrol) ────────────── */}
-      {!isNativeDesktop && (
-        <MissMinutesFloating
-          emotion={emotion}
-          isSpeaking={isSpeaking}
-          mouthFrame={mouthFrame}
-          autonomousChatter={settings.ambientChatter ?? true}
-          isBusy={isLoading}
-          hologramMode={settings.hologramMode}
-          onAvatarClick={handleAvatarClick}
-        />
-      )}
-
-      {/* ── Main Content ─────────────────────────────────────────────────────── */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-5 grid grid-cols-1 lg:grid-cols-12 gap-5 items-start z-10">
-
-        {/* LEFT: mood picker + variant dossier */}
-        <section className="lg:col-span-4 flex flex-col gap-4">
-          <DesktopCompanionPanel />
-          {/* Mood Selector */}
-          <div className="bg-amber-950/40 border border-amber-600/28 rounded-2xl p-4 backdrop-blur-md shadow-xl">
-            <p className="text-[10px] uppercase font-bold text-amber-400/80 tracking-[0.2em] mb-2.5">
-              Miss Minutes — Current Mood
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {(['cheerful','talking','winking','suspicious','scary','pruning','thinking'] as Emotion[]).map(emo => (
-                <button
-                  key={emo}
-                  onClick={() => { setEmotion(emo); soundEffects.playKeyClick(); }}
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-mono uppercase border transition-all ${
-                    emotion === emo
-                      ? 'bg-amber-500 text-neutral-950 border-amber-400 font-bold shadow-md'
-                      : 'bg-amber-950/50 text-amber-300/70 border-amber-700/30 hover:border-amber-500/60 hover:text-amber-200'
-                  }`}
-                >
-                  {emo}
-                </button>
-              ))}
-            </div>
-
-            {/* Live status strip */}
-            <div className="mt-3 pt-2.5 border-t border-amber-700/20 flex items-center gap-2 text-[10px] text-amber-400/70 font-mono">
-              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isSpeaking ? 'bg-amber-400 animate-ping' : 'bg-emerald-400'}`}/>
-              <span className="truncate">
-                {isSpeaking
-                  ? 'VOICE TX — Miss Minutes speaking…'
-                  : '👟 Patrolling screen border • Click her to interact'}
-              </span>
-            </div>
+      {/* Top bar */}
+      <header className="relative z-20 flex items-center justify-between gap-3 border-b border-amber-900/50 bg-black/40 px-4 py-2.5 backdrop-blur sm:px-6">
+        <div className="flex items-center gap-3">
+          <div className="h-11 w-11">
+            <MissMinutesRig emotion="cheerful" snapshot={{ time: 0, gaze: { x: 0, y: 0 } }} gaze="none" skin="classic" title="Miss Minutes" />
           </div>
+          <div>
+            <h1 className="text-lg font-black uppercase tracking-[0.18em] text-amber-400">Miss Minutes</h1>
+            <p className="text-[10px] uppercase tracking-[0.25em] text-amber-500/70">Time Variance Authority</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setSettingsOpen(true)} className="hidden rounded-full border border-amber-800/60 px-3 py-1 text-xs text-amber-300 hover:border-amber-500 sm:block">
+            {providerLabel}{settings.model ? ` · ${settings.model}` : ''}
+          </button>
+          <button type="button" onClick={() => { if (settings.voiceEnabled) speaker.stop(); setSettings({ ...settings, voiceEnabled: !settings.voiceEnabled }); }}
+            aria-label={settings.voiceEnabled ? 'Mute her voice' : 'Unmute her voice'}
+            className="grid h-9 w-9 place-items-center rounded-xl border border-amber-800/60 text-amber-300 hover:text-amber-100">
+            {settings.voiceEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+          </button>
+          <button type="button" onClick={() => setSettingsOpen(true)} aria-label="Settings" className="grid h-9 w-9 place-items-center rounded-xl bg-amber-500 text-neutral-950 hover:bg-amber-400">
+            <SettingsIcon className="h-4 w-4" />
+          </button>
+        </div>
+      </header>
 
-          {/* TVA Variant Dossier */}
-          <VariantCard />
+      <main className="relative z-10 mx-auto grid max-w-[1500px] grid-cols-1 gap-5 px-4 py-5 sm:px-6 lg:grid-cols-12">
+        <section className="lg:col-span-5">
+          <Stage
+            emotion={emotion}
+            gesture={gesture.g}
+            gestureKey={gesture.k}
+            speaking={voice.speaking}
+            mouth={voice.mouth}
+            status={status}
+            line={voice.speaking || !settings.voiceEnabled || line === GREETING ? line : ''}
+            skin={settings.hologramMode ? 'hologram' : 'classic'}
+            onPoke={() => { if (voice.speaking && handsFree) speaker.stop(); else poke(); }}
+            handsFree={handsFree}
+            onToggleHandsFree={toggleHandsFree}
+          />
         </section>
 
-        {/* RIGHT: timeline monitor + chat */}
-        <section className="lg:col-span-8 flex flex-col gap-4">
-          <TimelineMonitor
-            onBranchPruned={handleBranchPruned}
-            onNexusTriggered={handleNexusTriggered}
+        <section className="lg:col-span-7 lg:h-[min(62vh,560px)] lg:min-h-[380px]">
+          <ChatPanel
+            messages={conversation.messages}
+            chats={conversation.chats}
+            chatId={conversation.chatId}
+            busy={busy}
+            approvals={approvals}
+            listening={listening}
+            interim={interim}
+            onSend={(text, attachments) => void conversation.send(text, attachments)}
+            onStop={conversation.stop}
+            onDecide={conversation.decide}
+            onMic={toggleMic}
+            onNewChat={() => void conversation.newChat()}
+            onOpenChat={conversation.openChat}
+            onDeleteChat={id => void conversation.removeChat(id)}
           />
-          <ChatInterface
-            messages={messages}
-            onSendMessage={handleSendMessage}
-            isLoading={isLoading}
-            settings={settings}
-            onQuickPrompt={handleSendMessage}
-            onClearChat={() => setMessages([])}
-          />
+        </section>
+
+        <section className="lg:col-span-12">
+          <nav className="mb-3 flex flex-wrap gap-2" aria-label="Panels">
+            {TABS.map(({ id, label, icon: Icon }) => (
+              <button key={id} type="button" onClick={() => setTab(id)}
+                className={`flex items-center gap-2 rounded-xl border px-3.5 py-2 text-sm ${tab === id ? 'border-amber-400 bg-amber-500/20 text-amber-50' : 'border-amber-900/60 bg-black/30 text-amber-300 hover:border-amber-600'}`}>
+                <Icon className="h-4 w-4" /> {label}
+              </button>
+            ))}
+          </nav>
+          {tab === 'timeline' && <SacredTimeline />}
+          {tab === 'toolbelt' && <Toolbelt />}
+          {tab === 'dossier' && <Dossier homeCity={settings.homeCity} onHomeCityChange={city => setSettings({ ...settings, homeCity: city })} />}
+          {tab === 'activity' && <ActivityLog />}
         </section>
       </main>
 
-      {/* AI Settings Modal */}
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        settings={settings}
-        onSave={s => setSettings(s)}
-      />
+      {/* Alarm / reminder toasts */}
+      <div className="fixed right-4 top-16 z-[10030] flex w-80 flex-col gap-2">
+        {toasts.map(toast => (
+          <div key={toast.id} className="rounded-2xl border border-amber-500/70 bg-[#1d130a] p-3 shadow-2xl">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-sm font-bold text-amber-200">{toast.title}</p>
+                {toast.body && <p className="text-xs text-amber-300/80">{toast.body}</p>}
+              </div>
+              <button type="button" onClick={() => setToasts(list => list.filter(t => t.id !== toast.id))} aria-label="Dismiss" className="text-amber-400 hover:text-amber-100"><X className="h-4 w-4" /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <Settings open={settingsOpen} settings={settings} onChange={setSettings} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }

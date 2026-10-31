@@ -12,6 +12,7 @@ body.mm-native-overlay #root {
   background-color: transparent !important;
 }
 
+/* The window covers the screen; only she receives pointer events. */
 .mm-native-overlay-root {
   position: fixed;
   inset: 0;
@@ -20,16 +21,8 @@ body.mm-native-overlay #root {
   pointer-events: none;
   isolation: isolate;
 }
-
-.mm-native-overlay-root .mm-avatar-shell {
+.mm-native-overlay-root .mm-companion {
   pointer-events: auto;
   contain: layout style;
-  will-change: left, top, transform;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .mm-native-overlay-root .mm-avatar-shell,
-  .mm-native-overlay-root .mm-avatar-hologram {
-    animation: none !important;
-  }
+  will-change: left, top;
 }

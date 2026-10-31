@@ -1,4 +1,31 @@
 import type { MouthFrame } from '../types';
+import type { NativeVoiceChunk, NativeVoiceEnd } from '../desktop/bridge';
+
+/** Maps loudness to one of the five mouth shapes. Shared by every audio engine. */
+function mouthFrameForRms(rms: number): MouthFrame {
+  return rms < 0.014 ? 0 : rms < 0.045 ? 1 : rms < 0.095 ? 2 : rms < 0.17 ? 3 : 4;
+}
+
+function decodePcm16(base64: string): Float32Array {
+  const binary = atob(base64);
+  const out = new Float32Array(binary.length >> 1);
+  for (let i = 0; i < out.length; i += 1) {
+    const value = binary.charCodeAt(i * 2) | (binary.charCodeAt(i * 2 + 1) << 8);
+    out[i] = (value << 16 >> 16) / 32768; // sign-extend the 16-bit sample
+  }
+  return out;
+}
+
+/** Audio the desktop host synthesized on-device, played as it arrives sentence by sentence. */
+interface NativePlayback {
+  id: string;
+  context: AudioContext;
+  analyser: AnalyserNode;
+  nextStart: number;
+  pending: number;
+  ended: boolean;
+  frame: number;
+}
 
 /**
  * VoiceService – Multi-Engine TTS for Miss Minutes
@@ -29,6 +56,9 @@ export class VoiceService {
   private cancelWebSpeech: (() => void) | null = null;
   private requestController: AbortController | null = null;
   private playbackGeneration = 0;
+  private native: NativePlayback | null = null;
+  /** Jobs that were stopped or replaced; chunks still in flight for them must not play. */
+  private closedNativeIds: string[] = [];
   private recognition: any = null;
 
   constructor() {
@@ -207,14 +237,7 @@ export class VoiceService {
                 energy += value * value;
               }
 
-              const rms = Math.sqrt(energy / samples.length);
-              const frame: MouthFrame =
-                rms < 0.014 ? 0 :
-                rms < 0.045 ? 1 :
-                rms < 0.095 ? 2 :
-                rms < 0.17 ? 3 : 4;
-
-              this._notifyViseme(frame);
+              this._notifyViseme(mouthFrameForRms(Math.sqrt(energy / samples.length)));
               animationFrame = requestAnimationFrame(sampleMouth);
             };
 
@@ -338,6 +361,130 @@ export class VoiceService {
     });
   }
 
+  // ── On-device voice (desktop host) ─────────────────────────────────────────
+
+  /**
+   * Subscribes this window to audio relayed by the desktop host. The host sends audio to one
+   * window only, so attaching in both the dashboard and the overlay cannot double-play.
+   * Returns an unsubscribe function.
+   */
+  attachNativeVoice(): () => void {
+    const events = window.__TAURI__?.event;
+    if (!events) return () => undefined;
+
+    let disposed = false;
+    const stops: Array<() => void> = [];
+    const subscribe = <T,>(name: string, handler: (payload: T) => void) => {
+      void events.listen<T>(name, event => handler(event.payload)).then(stop => {
+        if (disposed) stop();
+        else stops.push(stop);
+      }).catch((error: unknown) => console.error('[VoiceService] Cannot listen for ' + name + ':', error));
+    };
+
+    subscribe<NativeVoiceChunk>('miss-minutes:voice-chunk', chunk => this.playNativeChunk(chunk));
+    subscribe<NativeVoiceEnd>('miss-minutes:voice-end', end => this.endNativeVoice(end));
+
+    // WebView2 keeps audio suspended until the window sees a gesture; resume on the first one.
+    const resume = () => { void this.native?.context.resume().catch(() => undefined); };
+    window.addEventListener('pointerdown', resume, { passive: true });
+
+    return () => {
+      disposed = true;
+      stops.forEach(stop => stop());
+      window.removeEventListener('pointerdown', resume);
+    };
+  }
+
+  private playNativeChunk(chunk: NativeVoiceChunk) {
+    if (typeof AudioContext === 'undefined') return;
+    if (this.closedNativeIds.includes(chunk.id)) return;
+
+    let playback = this.native;
+    if (!playback || playback.id !== chunk.id) {
+      this.stopAll(false); // a new utterance replaces whatever any engine was saying
+      playback = this.openNativePlayback(chunk);
+    }
+
+    const samples = decodePcm16(chunk.pcm16);
+    if (samples.length === 0) return;
+
+    const buffer = playback.context.createBuffer(1, samples.length, chunk.sampleRate);
+    buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
+    const source = playback.context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(playback.analyser);
+
+    const startAt = Math.max(playback.context.currentTime + 0.04, playback.nextStart);
+    source.start(startAt);
+    playback.nextStart = startAt + buffer.duration;
+    playback.pending += 1;
+
+    const current = playback;
+    source.onended = () => {
+      current.pending -= 1;
+      this.finishNativeIfDone(current);
+    };
+  }
+
+  private openNativePlayback(chunk: NativeVoiceChunk): NativePlayback {
+    let context: AudioContext;
+    try {
+      context = new AudioContext({ sampleRate: chunk.sampleRate });
+    } catch {
+      context = new AudioContext(); // some engines reject uncommon rates; the buffer is resampled
+    }
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.72;
+    analyser.connect(context.destination);
+    void context.resume().catch(() => undefined);
+
+    const playback: NativePlayback = {
+      id: chunk.id, context, analyser, nextStart: 0, pending: 0, ended: false, frame: 0,
+    };
+
+    const samples = new Uint8Array(analyser.fftSize);
+    const sampleMouth = () => {
+      if (this.native !== playback) return;
+      analyser.getByteTimeDomainData(samples);
+      let energy = 0;
+      for (let index = 0; index < samples.length; index += 1) {
+        const value = (samples[index] - 128) / 128;
+        energy += value * value;
+      }
+      this._notifyViseme(mouthFrameForRms(Math.sqrt(energy / samples.length)));
+      playback.frame = requestAnimationFrame(sampleMouth);
+    };
+
+    this.native = playback;
+    this._notify(true);
+    playback.frame = requestAnimationFrame(sampleMouth);
+    return playback;
+  }
+
+  private endNativeVoice(end: NativeVoiceEnd) {
+    if (end.event === 'error') console.warn('[VoiceService] Local voice error:', end.message);
+    const playback = this.native;
+    if (!playback || playback.id !== end.id) return; // a stale or already-replaced job
+    playback.ended = true;
+    this.finishNativeIfDone(playback);
+  }
+
+  private finishNativeIfDone(playback: NativePlayback) {
+    if (!playback.ended || playback.pending > 0 || this.native !== playback) return;
+    this.closeNative();
+    this._notify(false);
+  }
+
+  private closeNative() {
+    const playback = this.native;
+    if (!playback) return;
+    this.native = null;
+    this.closedNativeIds = [...this.closedNativeIds.slice(-15), playback.id];
+    cancelAnimationFrame(playback.frame);
+    void playback.context.close().catch(() => undefined);
+  }
+
   async speak(text: string, cfg: VoiceConfig = {}): Promise<void> {
     this.stop();
     const generation = this.playbackGeneration;
@@ -357,6 +504,11 @@ export class VoiceService {
   }
 
   stop() {
+    this.stopAll(true);
+  }
+
+  /** `notify: false` is for replacing one utterance with the next without a "silent" flicker. */
+  private stopAll(notify: boolean) {
     this.playbackGeneration += 1;
     this.requestController?.abort();
     this.requestController = null;
@@ -365,6 +517,7 @@ export class VoiceService {
     this.cleanupAudioPlayback = null;
     this.cancelWebSpeech?.();
     this.cancelWebSpeech = null;
+    this.closeNative();
 
     if (this.synth) this.synth.cancel();
     if (this.mouthTimer) clearInterval(this.mouthTimer);
@@ -376,7 +529,7 @@ export class VoiceService {
       this.currentAudio = null;
     }
 
-    this._notify(false);
+    if (notify) this._notify(false);
   }
 
   /** Alias kept for component compatibility */

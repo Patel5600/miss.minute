@@ -6,6 +6,13 @@ rust-version = "1.90"
 description = "Native desktop shell and companion runtime for Miss Minutes"
 license = "MIT"
 
+[features]
+# Embed the built web app (dist/) in the executable. Without this, a plain `cargo build`
+# would point the window at the Vite dev server. For live-reload development run
+# `npm run dev` and `cargo run --no-default-features`.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = "=2.7.4"
 
@@ -17,6 +24,33 @@ serde_json = "1.0"
 uuid = { version = "=1.29.0", features = ["v4"] }
 tauri = { version = "=2.12.5", features = ["tray-icon"] }
 tauri-plugin-autostart = "=2.7.0"
+tauri-plugin-notification = "=2.8.0"
+tauri-plugin-single-instance = "=2.5.5"
+# Native provider proxy, OAuth sign-in and desktop tools.
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+reqwest = { version = "=0.13.5", features = ["json"] }
+url = "=2.5.8"
+base64 = "=0.22.1"
+sha2 = "=0.10.9"
+aes-gcm = { version = "=0.10.3", features = ["zeroize"] }
+getrandom = "=0.2.17"
+zeroize = "=1.8.2"
+jsonwebtoken = { version = "=9.3.1", default-features = false }
+chrono = { version = "=0.4.45", default-features = false, features = ["clock", "std"] }
+png = "=0.18.1"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_JobObjects",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Power",
+    "Win32_System_Threading",
+] }
