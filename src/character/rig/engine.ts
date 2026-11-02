@@ -477,9 +477,32 @@ export class RigEngine {
     bob += this.vis.open * 1.1;
     roll += Math.sin(o.t * 2.6) * this.vis.open * 0.7 * still;
 
+    // Advanced locomotion offsets
+    if (this.hangBlend > 0.001) {
+      bob += -140 * this.hangBlend;
+      sway += Math.sin(o.t * 3.2) * 12 * this.hangBlend * still;
+      roll += Math.sin(o.t * 3.2 + 0.6) * 7 * this.hangBlend * still;
+      stretch += 0.04 * this.hangBlend;
+    }
+    if (this.peekBlend > 0.001) {
+      bob += 110 * this.peekBlend;
+      sway += Math.sin(o.t * 2.2) * 4 * this.peekBlend * still;
+    }
+    if (this.napBlend > 0.001) {
+      roll += 80 * this.napBlend;
+      bob += 12 * this.napBlend;
+    }
+    if (this.thinkBlend > 0.001) {
+      bob += -18 * (0.5 - 0.5 * Math.cos(o.t * 2.4)) * this.thinkBlend;
+      sway += Math.sin(o.t * 1.6) * 5 * this.thinkBlend;
+    }
+
     let hopH = 0;
     let hopSy = 1;
     let tuck = 0;
+    if (this.peekBlend > 0.001) {
+      tuck += this.peekBlend;
+    }
     if (this.hopT >= 0) {
       const h = hopCurve(this.hopT);
       hopH = h.height;
@@ -614,6 +637,33 @@ export class RigEngine {
         idle.right.shape = 'open';
         idle.left.shape = 'open';
       }
+    }
+
+    // Hanging: arms reached up gripping the ceiling/border
+    if (this.hangBlend > 0.001) {
+      const hb = this.hangBlend;
+      const swayHand = Math.sin(o.t * 3.2) * 5;
+      idle.right.x = lerp(idle.right.x, 62 + swayHand, hb);
+      idle.right.y = lerp(idle.right.y, -112, hb);
+      idle.right.hand = lerpAngle(idle.right.hand, -90, hb);
+      idle.right.shoulder = lerpAngle(idle.right.shoulder, -60, hb);
+      idle.left.x = lerp(idle.left.x, -62 + swayHand, hb);
+      idle.left.y = lerp(idle.left.y, -112, hb);
+      idle.left.hand = lerpAngle(idle.left.hand, -90, hb);
+      idle.left.shoulder = lerpAngle(idle.left.shoulder, -120, hb);
+    }
+
+    // Thinking: hand to chin, thoughtful tilt
+    if (this.thinkBlend > 0.001) {
+      const tb = this.thinkBlend;
+      idle.right.x = lerp(idle.right.x, 34, tb);
+      idle.right.y = lerp(idle.right.y, 42, tb);
+      idle.right.hand = lerpAngle(idle.right.hand, -65, tb);
+      idle.right.shoulder = lerpAngle(idle.right.shoulder, 25, tb);
+      idle.left.x = lerp(idle.left.x, -88, tb);
+      idle.left.y = lerp(idle.left.y, 58, tb);
+      idle.left.hand = lerpAngle(idle.left.hand, 160, tb);
+      idle.left.shoulder = lerpAngle(idle.left.shoulder, 180, tb);
     }
   }
 
@@ -771,6 +821,13 @@ export class RigEngine {
         ax = lerp(ax, hip.x + kick * 0.6, db);
         ay = lerp(ay, hip.y + 58 - Math.abs(kick) * 0.3, db);
         shoeAngle = lerp(shoeAngle, kick * 1.2, db);
+      }
+      if (this.hangBlend > 0.001) {
+        const hb = this.hangBlend;
+        const dangle = Math.sin(o.t * 3.2 + i * 0.4) * 11;
+        ax = lerp(ax, hip.x + sideSign * 8 + dangle, hb);
+        ay = lerp(ay, hip.y + 62 - Math.abs(dangle) * 0.2, hb);
+        shoeAngle = lerp(shoeAngle, dangle * 1.4, hb);
       }
       // bodyPoint already returns ground-frame coordinates (floor at y = 0).
       const hx = hip.x;

@@ -39,3 +39,21 @@ html.mm-native-overlay, body.mm-native-overlay { background: transparent !import
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+
+/* Fourth wall glass tap ripple */
+.glass-tap-ripple {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  border: 2px solid rgba(255, 180, 50, 0.85);
+  background: radial-gradient(circle, rgba(255, 200, 100, 0.35) 0%, rgba(255, 140, 30, 0) 70%);
+  transform: translate(-50%, -50%) scale(0.2);
+  animation: mm-glass-ripple 0.55s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
+  z-index: 50;
+}
+@keyframes mm-glass-ripple {
+  0% { transform: translate(-50%, -50%) scale(0.2); opacity: 0.95; }
+  60% { opacity: 0.6; }
+  100% { transform: translate(-50%, -50%) scale(2.8); opacity: 0; }
+}

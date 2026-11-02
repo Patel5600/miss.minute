@@ -16,6 +16,7 @@ import { todoTools } from './todos';
 import type { ToolContext, ToolDef, ToolPolicy } from './types';
 import { visionTools } from './vision';
 import { weatherTools } from './weather';
+import { deviceTools } from './device';
 
 export { discardPreparedAction, rejectDesktopProposal } from './desktop';
 
@@ -30,6 +31,7 @@ const tools: ToolDef[] = [
   ...calculateTools,
   ...memoryTools,
   ...visionTools,
+  ...deviceTools,
   ...desktopTools,
 ];
 

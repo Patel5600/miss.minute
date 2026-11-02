@@ -6,6 +6,7 @@ import type { Locomotion } from '../character/MissMinutesRig';
 import { BrainDirector, type BrainContext } from './BrainDirector';
 import { ThoughtBubble } from '../character/ThoughtBubble';
 import { subscribeTick } from '../character/rig/ticker';
+import { soundEffects } from '../utils/audioEffects';
 
 export type StageStatus = 'idle' | 'listening' | 'thinking' | 'speaking' | 'working' | 'approval';
 
@@ -171,10 +172,22 @@ export function Stage({ emotion, gesture, gestureKey, speaking, mouth, status, l
     }
   }, [busy, getContext]);
 
-  const handlePoke = useCallback(() => {
+  // Glass tap ripples for breaking the 4th wall
+  const [ripples, setRipples] = useState<Array<{ id: number; x: number; y: number }>>([]);
+
+  const handlePoke = useCallback((e: React.MouseEvent) => {
     lastInteraction.current = Date.now();
+    soundEffects.playGlassTap();
     rig.current?.hop();
     brain.current.event({ type: 'poke' }, getContext());
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const rx = e.clientX - rect.left;
+    const ry = e.clientY - rect.top;
+    const ripId = Date.now() + Math.random();
+    setRipples(prev => [...prev.slice(-3), { id: ripId, x: rx, y: ry }]);
+    window.setTimeout(() => setRipples(prev => prev.filter(r => r.id !== ripId)), 550);
+
     onPoke();
   }, [getContext, onPoke]);
 
@@ -225,7 +238,17 @@ export function Stage({ emotion, gesture, gestureKey, speaking, mouth, status, l
             transition: walk.ms ? `transform ${walk.ms}ms linear` : 'transform 300ms ease-out',
           }}
         >
-          <ThoughtBubble visible={brainLocomotion === 'think' || (status === 'thinking' && !speaking)} />
+          {ripples.map(r => (
+            <span
+              key={r.id}
+              className="glass-tap-ripple"
+              style={{ left: r.x, top: r.y, width: 80, height: 80 }}
+            />
+          ))}
+          <ThoughtBubble
+            visible={brainLocomotion === 'think' || (status === 'thinking' && !speaking)}
+            thoughtText={status === 'thinking' ? 'CRUNCHING TIMELINE...' : undefined}
+          />
           <MissMinutesRig
             ref={rig}
             emotion={activeEmotion}
