@@ -3,7 +3,7 @@ import type { Emotion, Gesture, MouthFrame } from './types';
 import { GESTURES } from './types';
 import { voiceService } from './services/voiceService';
 import { soundEffects } from './utils/audioEffects';
-import { invokeNative } from './desktop/bridge';
+import { invokeNative, type NativeVoiceActivity } from './desktop/bridge';
 import { RANDOM_CLICK_QUOTES } from './data/tvaLore';
 import { Companion } from './app/Companion';
 import './overlay.css';
@@ -41,8 +41,22 @@ export function OverlayApp() {
       }
     });
     const stopVisemes = voiceService.onVisemeChange(setMouth);
-    // Local-voice audio (on-device engine) arrives from the host as events.
-    const detachNativeVoice = voiceService.attachNativeVoice();
+    // This window is the sole PCM owner for avatar utterances. Audio-free activity is broadcast
+    // separately so the overlay can still animate while the dashboard owns playback.
+    const detachNativeVoice = voiceService.attachNativeVoice('avatar');
+    const stopNativeActivity = voiceService.onNativeActivity((activity: NativeVoiceActivity) => {
+      if (activity.event === 'chunk') {
+        if (activity.text) setLine(activity.text);
+        if (activity.playbackOwner !== 'avatar') {
+          setSpeaking(true);
+          if (activity.mouth != null) setMouth(activity.mouth as MouthFrame);
+        }
+      } else if (activity.playbackOwner !== 'avatar') {
+        setSpeaking(false);
+        setMouth(0);
+        if (activity.event === 'error') setEmotion('cheerful');
+      }
+    });
     const cue = (e: Emotion, g: unknown, text?: string) => {
       setEmotion(e);
       const gest = asGesture(g);
@@ -61,7 +75,6 @@ export function OverlayApp() {
     };
 
     listen<{ id: string; emotion: Emotion; gesture?: string | null }>('miss-minutes:speak-local', payload => cue(payload.emotion, payload.gesture));
-    listen<{ id: string; event: string }>('miss-minutes:voice-end', payload => { if (payload.event === 'error') setEmotion('cheerful'); });
     listen<AvatarUtterance>('miss-minutes:speak', payload => {
       cue(payload.emotion, payload.gesture, payload.text);
       void voiceService.speak(payload.text, {
@@ -80,6 +93,7 @@ export function OverlayApp() {
       document.body.classList.remove('mm-native-overlay');
       stopSpeaking();
       stopVisemes();
+      stopNativeActivity();
       detachNativeVoice();
       voiceService.stop();
     };

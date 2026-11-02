@@ -1,4 +1,16 @@
-"""Chatterbox-backed voice engine: load once, clone from a reference clip, stream sentences."""
+"""Speech engines behind one small interface, and the Chatterbox engine.
+
+Every engine loads once, clones a voice from a reference clip, and streams mono float32 chunks at
+24 kHz for a text and a delivery style. Setting the `cancel` event passed to `stream()` stops the
+utterance between chunks. Two engines exist:
+
+  chatterbox  Chatterbox Turbo (Resemble AI). Expressive, but about 7x slower than real time on a
+              laptop CPU, so it suits short cached lines and previews.
+  pocket      Kyutai Pocket TTS (miss_voice.pocket_engine). 100M parameters, streams audio frames
+              while it generates, fast enough for live replies on a CPU.
+
+miss_voice.benchmark measures both against the same reference and records which one speaks live.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -8,7 +20,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Protocol
 
 import numpy as np
 
@@ -19,18 +31,63 @@ from .styles import DEFAULT_STYLE, Style, get_style
 
 log = logging.getLogger("miss_voice")
 
+ENGINES = ("chatterbox", "pocket")
+ENGINE_LABELS = {"chatterbox": "Chatterbox Turbo", "pocket": "Pocket TTS"}
+
 
 @dataclass
 class Chunk:
     index: int
     last: bool
     text: str
-    audio: np.ndarray  # float32 mono at engine.sr; includes the trailing sentence pause
+    audio: np.ndarray  # float32 mono at engine.sr; includes any trailing pause
     speech_seconds: float  # duration of speech without the pause
     synth_seconds: float  # wall-clock time spent generating it
 
 
-class VoiceEngine:
+class Engine(Protocol):
+    """What the worker, the previews and the benchmark need from a speech engine."""
+
+    kind: str  # one of ENGINES
+    label: str  # shown to the owner, e.g. "Pocket TTS"
+    model_name: str  # identity for the speech cache
+    sr: int
+    voice_name: str | None  # "builtin" or the prepared voice's name
+    voice_id: str | None  # name plus reference digest
+    load_seconds: float
+    warmup_realtime: float | None  # seconds of speech per second of compute at warm-up
+    first_chunk_ms: float | None  # time to the first audio chunk at warm-up
+
+    def set_voice(self, reference: Path, name: str = "miss-minutes") -> None: ...
+
+    def use_builtin_voice(self) -> None: ...
+
+    def stream(self, text: str, style: Style | str = DEFAULT_STYLE, seed: int | None = None,
+               cancel: threading.Event | None = None) -> Iterator[Chunk]: ...
+
+    def synthesize(self, text: str, style: Style | str = DEFAULT_STYLE, seed: int | None = None) -> np.ndarray: ...
+
+    def warm_up(self) -> float: ...
+
+
+def create_engine(kind: str, *, model: str = "turbo", threads: int | None = None) -> Engine:
+    """Loads the named engine. `model` selects the Chatterbox variant and is ignored otherwise."""
+    if kind == "chatterbox":
+        return ChatterboxEngine(model, threads=threads)
+    if kind == "pocket":
+        from .pocket_engine import PocketEngine
+
+        return PocketEngine(threads=threads)
+    raise ValueError(f"unknown engine {kind!r}; expected one of {', '.join(ENGINES)}")
+
+
+def reference_digest(reference: Path) -> str:
+    return hashlib.sha256(Path(reference).read_bytes()).hexdigest()[:16]
+
+
+class ChatterboxEngine:
+    kind = "chatterbox"
+
     def __init__(self, model: str = "turbo", device: str = "cpu", threads: int | None = None):
         if model not in ("nano", "turbo"):
             raise ValueError("model must be 'nano' or 'turbo'")
@@ -44,7 +101,7 @@ class VoiceEngine:
         t3_file = paths.MODELS / ("t3_nano_v1.safetensors" if model == "nano" else "t3_turbo_v1.safetensors")
         if not t3_file.is_file():
             raise FileNotFoundError(f"{t3_file.name} is missing. Run native/voice/download_models.ps1"
-                                    + (" -IncludeTurbo" if model == "turbo" else ""))
+                                    + (" -IncludeNano" if model == "nano" else ""))
         # The released chatterbox-tts (0.1.7) is Turbo-only. Nano exists only on unreleased
         # upstream code, so ask the installed package instead of assuming.
         supports_nano = "nano" in inspect.signature(ChatterboxTurboTTS.from_local).parameters
@@ -54,13 +111,20 @@ class VoiceEngine:
         started = time.perf_counter()
         kwargs = {"nano": True} if model == "nano" else {}
         self.tts = ChatterboxTurboTTS.from_local(paths.MODELS, device, **kwargs)
+        # Under numpy 2 a float32 clip times pyloudnorm's float64 gain becomes float64, and the
+        # tokenizer's float32 mel filters then refuse it while cloning. Keep it float32, as numpy 1 did.
+        normalize = self.tts.norm_loudness
+        self.tts.norm_loudness = lambda wav, sr, *rest, **kw: np.asarray(normalize(wav, sr, *rest, **kw),
+                                                                       dtype=np.float32)
         self.model_name = model
+        self.label = f"Chatterbox {model.title()}"
         self.device = device
         self.sr: int = self.tts.sr
         self.voice_name: str | None = None
         # Name plus reference digest: the speech cache must never replay another voice's audio.
         self.voice_id: str | None = None
         self.warmup_realtime: float | None = None
+        self.first_chunk_ms: float | None = None
         self.load_seconds = time.perf_counter() - started
         log.info("Loaded Chatterbox %s on %s in %.1fs", model, device, self.load_seconds)
 
@@ -70,7 +134,7 @@ class VoiceEngine:
         from chatterbox.tts_turbo import Conditionals
 
         reference = Path(reference)
-        digest = hashlib.sha256(reference.read_bytes()).hexdigest()[:16]
+        digest = reference_digest(reference)
         cache = paths.VOICE_CACHE / f"{name}-{digest}.pt"
         if cache.is_file():
             self.tts.conds = Conditionals.load(cache, map_location="cpu").to(self.tts.device)
@@ -141,6 +205,8 @@ class VoiceEngine:
         # Seconds of speech per second of compute. Below 1.0 the engine cannot keep up with a
         # live reply, which the dashboard uses to decide what this engine may voice.
         self.warmup_realtime = (len(wav) / self.sr) / elapsed if elapsed > 0 else None
+        # Chatterbox renders a whole sentence before any of it can play.
+        self.first_chunk_ms = elapsed * 1000.0
         return elapsed
 
     # -- analysis helpers (verification only) ----------------------------------------
@@ -149,3 +215,7 @@ class VoiceEngine:
         wav16 = au.resample(wav, sr, 16000)
         emb = np.asarray(self.tts.ve.embeds_from_wavs([wav16], sample_rate=16000)).reshape(-1, 256).mean(axis=0)
         return emb / (np.linalg.norm(emb) + 1e-9)
+
+
+# Older scripts and the previews import this name.
+VoiceEngine = ChatterboxEngine

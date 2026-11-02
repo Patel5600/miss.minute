@@ -21,6 +21,7 @@ import com.patel5600.missminute.mobile.core.FrameGate;
 import com.patel5600.missminute.mobile.core.FrameStats;
 import com.patel5600.missminute.mobile.core.JumpSolver;
 import com.patel5600.missminute.mobile.core.Locomotion;
+import com.patel5600.missminute.mobile.core.Mulberry32;
 import com.patel5600.missminute.mobile.core.OverlayState;
 import com.patel5600.missminute.mobile.core.Physics;
 import com.patel5600.missminute.mobile.core.PhysicsConfig;
@@ -68,6 +69,8 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
 
         /** Android refused to add her window (for example the permission was taken away). */
         void onWindowRefused();
+
+        void onTap();
     }
 
     private static final String TAG = "MMLoop";
@@ -78,10 +81,7 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
     private static final double JUMP_MAX_REACH = 260;
 
     /**
-     * The capabilities the native choreography below can carry out: the baseline plus run (a faster
-     * walk), jump (a ballistic arc over the floor) and nap (standing still, asleep). Hang, sit-edge,
-     * climb and peek need movement along the screen edges that is not written yet, so they stay off
-     * even when the rig reports a pose for them.
+     * The capabilities the native choreography below can carry out: all roaming capabilities.
      */
     static final Set<String> NATIVE_CHOREOGRAPHED;
 
@@ -90,10 +90,16 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
         names.add("run");
         names.add("jump");
         names.add("nap");
+        names.add("hang");
+        names.add("climb");
+        names.add("sit-edge");
+        names.add("peek");
+        names.add("teleport");
+        names.add("think");
         NATIVE_CHOREOGRAPHED = Collections.unmodifiableSet(names);
     }
 
-    private enum Act { GAP, STAND, GESTURE, HOP, WALK, AIR, DRAG }
+    private enum Act { GAP, STAND, GESTURE, HOP, WALK, AIR, DRAG, CLIMB }
 
     private final Settings settings;
     private final Supplier<PowerInputs> powerSource;
@@ -108,6 +114,7 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
     private final FrameGate gate = new FrameGate();
     private final FrameStats stats = new FrameStats();
     private final BodyState body = new BodyState();
+    private final Mulberry32 rng;
 
     private World world;
     private double density;
@@ -122,6 +129,7 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
     private long actEndMs;
     private double walkTarget;
     private double walkSpeed;
+    private double climbTargetY;
     private BehaviourPlan plan;
     private boolean running;
     private boolean scheduled;
@@ -152,6 +160,7 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
         this.clock = clock;
         this.host = host;
         this.keyguard = context.getSystemService(KeyguardManager.class);
+        this.rng = new Mulberry32((System.nanoTime() ^ clock.nowMs()) & 0xFFFFFFFFL);
     }
 
     // ---- lifecycle ---------------------------------------------------------------------------
@@ -230,7 +239,7 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
     void setHolding(boolean hold) {
         holding = hold;
         if (hold) {
-            if (act == Act.WALK) {
+            if (act == Act.WALK || act == Act.CLIMB) {
                 body.locomotion = Locomotion.STAND;
                 plan = null;
                 setAct(Act.STAND);
@@ -434,6 +443,9 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
             case WALK:
                 walk(dt, now);
                 break;
+            case CLIMB:
+                climb(dt, now);
+                break;
             case STAND:
             case GESTURE:
             case HOP:
@@ -524,8 +536,65 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
                 napping = true;
                 sender.state(OverlayState.SLEEPING);
                 break;
+            case HANG:
+                body.locomotion = Locomotion.HANG;
+                body.y = world.ceilTop();
+                body.x = next.targetX;
+                body.grounded = false;
+                setAct(Act.STAND);
+                actEndMs = now + next.durationMs;
+                if (rng.chance(0.4)) {
+                    host.onTap();
+                }
+                break;
+            case SIT_EDGE:
+                body.locomotion = Locomotion.SIT_EDGE;
+                body.x = next.targetX;
+                body.facing = (body.x <= world.minX() + 10) ? 1 : -1;
+                setAct(Act.STAND);
+                actEndMs = now + next.durationMs;
+                break;
+            case CLIMB:
+                body.locomotion = Locomotion.CLIMB;
+                body.x = next.targetX;
+                body.facing = (body.x <= world.minX() + 10) ? 1 : -1;
+                climbTargetY = rng.range(world.ceilTop(), world.floorTop());
+                setAct(Act.CLIMB);
+                actEndMs = now + next.durationMs;
+                break;
+            case PEEK:
+                body.locomotion = Locomotion.PEEK;
+                body.x = next.targetX;
+                body.facing = (body.x <= world.minX() + 10) ? 1 : -1;
+                setAct(Act.STAND);
+                actEndMs = now + next.durationMs;
+                break;
+            case TELEPORT:
+                body.locomotion = Locomotion.TELEPORT;
+                sender.gesture("teleport");
+                if (rng.chance(0.35)) {
+                    body.y = world.ceilTop();
+                    body.x = next.targetX;
+                } else if (rng.chance(0.35)) {
+                    body.y = rng.range(world.ceilTop(), world.floorTop());
+                    body.x = rng.chance(0.5) ? world.minX() : world.maxX();
+                } else {
+                    body.y = world.floorTop();
+                    body.x = next.targetX;
+                }
+                setAct(Act.STAND);
+                actEndMs = now + next.durationMs;
+                break;
+            case THINK:
+                body.locomotion = Locomotion.THINK;
+                sender.gesture("think");
+                setAct(Act.STAND);
+                actEndMs = now + next.durationMs;
+                if (rng.chance(0.6)) {
+                    host.onTap();
+                }
+                break;
             default:
-                // Hang, sit-edge, climb and peek are not offered to the director (see NATIVE_CHOREOGRAPHED).
                 if (BuildConfig.DEBUG) {
                     Log.w(TAG, "behaviour without native choreography: " + next.behaviourId);
                 }
@@ -566,7 +635,20 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
         }
         body.facing = distance > 0 ? 1 : -1;
         body.x = clamp(body.x + Math.signum(distance) * step, world.minX(), world.maxX());
-        body.y = world.floorTop();
+        boolean onCeiling = body.y <= world.ceilTop() + 15;
+        body.y = onCeiling ? world.ceilTop() : world.floorTop();
+    }
+
+    private void climb(double dt, long now) {
+        double distance = climbTargetY - body.y;
+        double climbSpeed = 50.0;
+        double step = climbSpeed * dt;
+        if (Math.abs(distance) <= step || now >= actEndMs) {
+            body.y = climbTargetY;
+            endBehaviour(now);
+            return;
+        }
+        body.y = clamp(body.y + Math.signum(distance) * step, world.ceilTop(), world.floorTop());
     }
 
     private void advancePhysics(double dt, long now) {
@@ -607,7 +689,7 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
     }
 
     private void sendPose() {
-        sender.pose(body.locomotion, body.facing, act == Act.WALK ? walkSpeed : 0);
+        sender.pose(body.locomotion, body.facing, (act == Act.WALK || act == Act.CLIMB) ? walkSpeed : 0);
     }
 
     private void syncWindow() {
@@ -679,10 +761,12 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
         }
         interact();
         wake();
+        Log.i(TAG, "User tapped Miss Minutes!");
         boolean calm = act == Act.GAP || act == Act.STAND || act == Act.GESTURE;
         if (calm && effective.has("hop")) {
             sender.hop();
         }
+        host.onTap();
     }
 
     @Override

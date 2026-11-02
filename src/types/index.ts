@@ -69,6 +69,11 @@ export interface AISettings {
   roam?: boolean;
   // Voice engine
   voiceEngine?: VoiceEngine;
+  /**
+   * True once the owner picked a voice engine themselves. Until then the desktop app makes her
+   * cloned voice (the 'local' engine) the default as soon as it is prepared on this PC.
+   */
+  voiceEngineChosen?: boolean;
   /** OpenAI TTS / Realtime voice name (e.g. "coral"). */
   openaiVoice?: string;
   elevenLabsKey?: string;

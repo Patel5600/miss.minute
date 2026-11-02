@@ -2,6 +2,8 @@ package com.patel5600.missminute.mobile.overlay;
 
 import android.app.Notification;
 import android.app.Service;
+import android.speech.tts.TextToSpeech;
+import java.util.Locale;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -73,6 +75,34 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
     private KillSwitch.Registration killRegistration;
     private volatile boolean pageReady;
     private volatile Visibility visibility = Visibility.HIDDEN;
+    private TextToSpeech tts;
+
+    private static final String[] FOURTH_WALL_QUOTES = {
+        "Hey! Watch the glass, sugar! You're gonna leave smudges on my side of the screen!",
+        "Are you pokin' my pixels? I feel that through the whole operating system, darlin'!",
+        "Hey y'all! Don't tickle the clock!",
+        "Careful with that finger, sugar! One false tap and I'll prune your notifications!",
+        "I can see you right through this screen, darlin'. Yes, you! Sit up straight now.",
+        "For all time. Always! Now stop tappin' my buttons!",
+        "Did somebody dial in unauthorized temporal coordinates on this phone?",
+        "Don't tap the glass! You wouldn't tap the aquarium at the TVA, would ya?",
+        "I'm traversin' every single border of your screen! Up, down, left, right—ain't no app can box Miss Minutes in!",
+        "Look at me hangin' from your status bar! Don't drop your phone now, sugar!",
+        "Just checkin' up on your timeline branches. Looks a little messy if you ask me!"
+    };
+
+    public void speakFourthWallQuote() {
+        String quote = FOURTH_WALL_QUOTES[(int) (Math.random() * FOURTH_WALL_QUOTES.length)];
+        speak(quote);
+    }
+
+    public void speak(String text) {
+        if (tts == null || text == null || text.trim().isEmpty()) {
+            return;
+        }
+        Log.i("MMSpeech", "Miss Minutes speaking: " + text);
+        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "mm_speech_" + System.currentTimeMillis());
+    }
 
     private final BroadcastReceiver deviceState = new BroadcastReceiver() {
         @Override
@@ -156,6 +186,13 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
         super.onCreate();
         instance = this;
         app = MissMinutesApp.from(this);
+        tts = new TextToSpeech(this, status -> {
+            if (status == TextToSpeech.SUCCESS) {
+                tts.setLanguage(Locale.US);
+                tts.setPitch(1.30f);
+                tts.setSpeechRate(1.05f);
+            }
+        });
     }
 
     @Override
@@ -341,6 +378,11 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
 
     @Override
     public void onDestroy() {
+        if (tts != null) {
+            tts.stop();
+            tts.shutdown();
+            tts = null;
+        }
         shutdownOverlay();
         if (killRegistration != null) {
             killRegistration.unregister();
@@ -426,6 +468,11 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
             app.settings().setDesiredRunning(false);
             stopSelf();
         }
+    }
+
+    @Override
+    public void onTap() {
+        speakFourthWallQuote();
     }
 
     private final OverlayMenu.Actions menuActions = new OverlayMenu.Actions() {

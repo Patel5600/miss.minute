@@ -43,6 +43,8 @@ miss-minute-agent.json
 /.work/
 # Agent workflow task briefs, progress files and review reports
 /.agents/
+# Per-machine Kiro settings (sandbox and permission overrides). Never commit or push.
+/.kiro/settings/
 # Dev-only QA pages (?qa=<name>)
 /src/qa/
 
@@ -73,3 +75,5 @@ native/voice/**/*.onnx
 native/voice/references/
 native/voice/voices/
 *.gguf
+# Android companion: generated web bundle
+native/mobile/android/app/src/main/assets/web/

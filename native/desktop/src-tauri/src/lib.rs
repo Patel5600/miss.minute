@@ -808,18 +808,36 @@ fn voice_set_preferred(
     Ok(state.voice.status())
 }
 
-/// Speaks text in the dashboard window (used by the voice previews). Returns the job id.
+/// Speaks text in the dashboard window in the local voice. Returns the job id.
+///
+/// With `stream: true` the text is one sentence of a reply that is still being written: every
+/// call with the same `id` adds to one continuous utterance, which `voice_speak_end` closes.
+/// Without it, the text is a complete line that replaces whatever she is saying.
 #[tauri::command]
 fn voice_speak(
     text: String,
     style: Option<String>,
+    id: Option<String>,
+    stream: Option<bool>,
     window: tauri::WebviewWindow,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<String, String> {
     require_dashboard(&window)?;
-    let id = Uuid::new_v4().to_string();
-    state.voice.speak(&id, &text, valid_voice_style(style.as_deref()), window.label())?;
+    let id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let style = valid_voice_style(style.as_deref());
+    if stream == Some(true) {
+        state.voice.speak_stream(&id, &text, style, window.label())?;
+    } else {
+        state.voice.speak(&id, &text, style, window.label())?;
+    }
     Ok(id)
+}
+
+/// Ends a streamed utterance started with `voice_speak(stream: true)`.
+#[tauri::command]
+fn voice_speak_end(id: String, window: tauri::WebviewWindow, state: tauri::State<'_, DesktopState>) -> Result<(), String> {
+    require_dashboard(&window)?;
+    state.voice.speak_end(&id)
 }
 
 #[tauri::command]
@@ -1156,6 +1174,7 @@ pub fn run() {
             voice_shutdown,
             voice_set_preferred,
             voice_speak,
+            voice_speak_end,
             voice_cancel,
             voice_transcribe,
             provider::provider_http_stream,

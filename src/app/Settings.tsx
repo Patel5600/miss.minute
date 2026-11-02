@@ -11,7 +11,7 @@ import { invokeNative, isDesktopRuntime, type ChatGptAccount } from '../desktop/
 import { wipeAll } from '../store/db';
 import { DesktopCompanionPanel } from '../components/DesktopCompanionPanel';
 import { VoiceLab } from '../components/VoiceLab';
-import { speaker } from './speaker';
+import { speaker, useActiveVoice } from './speaker';
 
 export interface SettingsProps {
   open: boolean;
@@ -55,12 +55,11 @@ export function Settings({ open, settings, onChange, onClose }: SettingsProps) {
         </div>
         <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5 text-sm text-amber-100">
           {tab === 'brain' && <BrainSettings settings={settings} set={set} />}
-          {tab === 'voice' && <VoiceSettings settings={settings} set={set} />}
+          {tab === 'voice' && <VoiceSettings settings={settings} set={set} onSettingsChange={onChange} />}
           {tab === 'behavior' && <BehaviorSettings settings={settings} set={set} />}
           {tab === 'desktop' && desktop && (
             <div className="space-y-4">
               <DesktopCompanionPanel />
-              <VoiceLab settings={settings} onSettingsChange={onChange} isSpeaking={false} />
             </div>
           )}
           {tab === 'data' && <DataSettings />}
@@ -253,29 +252,36 @@ function BrainSettings({ settings, set }: { settings: AISettings; set(p: Partial
   );
 }
 
-function VoiceSettings({ settings, set }: { settings: AISettings; set(p: Partial<AISettings>): void }) {
+function VoiceSettings({ settings, set, onSettingsChange }: { settings: AISettings; set(p: Partial<AISettings>): void; onSettingsChange(next: AISettings): void }) {
   const desktop = isDesktopRuntime();
   const engine = settings.voiceEngine ?? 'system';
+  const active = useActiveVoice(settings);
   const [elKey, setElKey] = useState('');
   const engines: Array<[VoiceEngine, string, string]> = [
+    ...(desktop ? [['local', 'Her cloned voice', 'Cloned from the prepared reference and rendered on this PC. Nothing is uploaded.'] as [VoiceEngine, string, string]] : []),
     ['system', 'System voice', 'Built into Windows / your browser. Free, works offline.'],
-    ['openai', 'OpenAI voice', 'Natural, expressive speech. Uses your OpenAI key.'],
+    ['openai', 'OpenAI voice', 'Natural, expressive speech in an original 1950s hostess style. Uses your OpenAI key.'],
     ['elevenlabs', 'ElevenLabs', 'Your own ElevenLabs voice (one you own or are licensed to use).'],
-    ...(desktop ? [['local', 'On this PC', 'Private on-device engine. Slow on this laptop; best for short lines.'] as [VoiceEngine, string, string]] : []),
   ];
   return (
     <>
       <Toggle label="She talks out loud" checked={settings.voiceEnabled} onChange={v => set({ voiceEnabled: v })} />
+      <div role="status" className={`rounded-xl border px-3 py-2 ${active.reason ? 'border-amber-600/50 bg-amber-950/40' : 'border-emerald-700/40 bg-emerald-950/20'}`}>
+        <span className="block text-[10px] uppercase tracking-[0.2em] text-amber-400/80">Speaking with</span>
+        <span className="block text-sm font-semibold text-amber-50">{active.label}</span>
+        {active.reason && <span className="block text-xs text-amber-300/80">Why: {active.reason}</span>}
+      </div>
       <Section title="Voice engine">
         <div className="space-y-2">
           {engines.map(([id, label, hint]) => (
-            <button key={id} type="button" onClick={() => set({ voiceEngine: id })} className={`w-full rounded-xl border px-3 py-2 text-left ${engine === id ? 'border-amber-400 bg-amber-600/20' : 'border-amber-800/40 bg-black/30 hover:border-amber-600/60'}`}>
+            <button key={id} type="button" onClick={() => set({ voiceEngine: id, voiceEngineChosen: true, localVoice: id === 'local' })} className={`w-full rounded-xl border px-3 py-2 text-left ${engine === id ? 'border-amber-400 bg-amber-600/20' : 'border-amber-800/40 bg-black/30 hover:border-amber-600/60'}`}>
               <span className="block text-sm font-semibold">{label}</span>
               <span className="block text-xs text-amber-400/70">{hint}</span>
             </button>
           ))}
         </div>
       </Section>
+      {desktop && <VoiceLab settings={settings} onSettingsChange={onSettingsChange} isSpeaking={false} />}
       {engine === 'openai' && (
         <Section title="OpenAI voice" hint="Needs an OpenAI API key (Brain tab, OpenAI). The style is an original 1950s cartoon hostess.">
           <select value={settings.openaiVoice ?? 'coral'} onChange={e => set({ openaiVoice: e.target.value })} className={field}>

@@ -1,5 +1,10 @@
 import type { MouthFrame } from '../types';
-import type { NativeVoiceChunk, NativeVoiceEnd } from '../desktop/bridge';
+import type {
+  NativePlaybackOwner,
+  NativeVoiceActivity,
+  NativeVoiceChunk,
+  NativeVoiceEnd,
+} from '../desktop/bridge';
 
 /** Maps loudness to one of the five mouth shapes. Shared by every audio engine. */
 function mouthFrameForRms(rms: number): MouthFrame {
@@ -22,9 +27,26 @@ interface NativePlayback {
   context: AudioContext;
   analyser: AnalyserNode;
   nextStart: number;
+  nextIndex: number;
   pending: number;
   ended: boolean;
   frame: number;
+}
+
+interface NativeVoiceBinding {
+  owner: NativePlaybackOwner;
+  service: VoiceService;
+  refs: number;
+  active: boolean;
+  stops: Array<() => void>;
+  resume: () => void;
+}
+
+declare global {
+  interface Window {
+    /** One native-audio event binding per WebView, surviving repeated React mounts and HMR. */
+    __missMinutesNativeVoiceBinding?: NativeVoiceBinding;
+  }
 }
 
 /**
@@ -50,6 +72,7 @@ export class VoiceService {
   private _isSpeaking = false;
   private callbacks: ((s: boolean) => void)[] = [];
   private visemeCallbacks: ((frame: MouthFrame) => void)[] = [];
+  private nativeActivityCallbacks: ((activity: NativeVoiceActivity) => void)[] = [];
   private mouthTimer: ReturnType<typeof setInterval> | null = null;
   private currentAudio: HTMLAudioElement | null = null;
   private cleanupAudioPlayback: (() => void) | null = null;
@@ -95,6 +118,15 @@ export class VoiceService {
   onVisemeChange(cb: (frame: MouthFrame) => void) {
     this.visemeCallbacks.push(cb);
     return () => { this.visemeCallbacks = this.visemeCallbacks.filter(listener => listener !== cb); };
+  }
+
+  onNativeActivity(cb: (activity: NativeVoiceActivity) => void) {
+    this.nativeActivityCallbacks.push(cb);
+    return () => { this.nativeActivityCallbacks = this.nativeActivityCallbacks.filter(listener => listener !== cb); };
+  }
+
+  private _notifyNativeActivity(activity: NativeVoiceActivity) {
+    this.nativeActivityCallbacks.forEach(cb => cb(activity));
   }
 
   private _notifyViseme(frame: MouthFrame) {
@@ -364,49 +396,96 @@ export class VoiceService {
   // ── On-device voice (desktop host) ─────────────────────────────────────────
 
   /**
-   * Subscribes this window to audio relayed by the desktop host. The host sends audio to one
-   * window only, so attaching in both the dashboard and the overlay cannot double-play.
-   * Returns an unsubscribe function.
+   * Subscribes this WebView to native voice events as one explicit playback owner. Repeated calls
+   * share one listener set and are reference-counted; a listener that resolves after final detach
+   * immediately unsubscribes instead of leaking through a React remount.
    */
-  attachNativeVoice(): () => void {
-    const events = window.__TAURI__?.event;
+  attachNativeVoice(owner: NativePlaybackOwner): () => void {
+    const host = window;
+    const events = host.__TAURI__?.event;
     if (!events) return () => undefined;
 
-    let disposed = false;
-    const stops: Array<() => void> = [];
-    const subscribe = <T,>(name: string, handler: (payload: T) => void) => {
-      void events.listen<T>(name, event => handler(event.payload)).then(stop => {
-        if (disposed) stop();
-        else stops.push(stop);
+    const detachFor = (binding: NativeVoiceBinding) => {
+      let detached = false;
+      return () => {
+        if (detached) return;
+        detached = true;
+        if (host.__missMinutesNativeVoiceBinding !== binding) return;
+        binding.refs = Math.max(0, binding.refs - 1);
+        if (binding.refs > 0) return;
+        binding.active = false;
+        binding.stops.splice(0).forEach(stop => stop());
+        host.removeEventListener('pointerdown', binding.resume);
+        binding.service.stopAll(true);
+        delete host.__missMinutesNativeVoiceBinding;
+      };
+    };
+
+    const existing = host.__missMinutesNativeVoiceBinding;
+    if (existing) {
+      if (existing.owner !== owner) {
+        console.error(`[VoiceService] This window already owns native playback as ${existing.owner}; refusing ${owner}.`);
+        return () => undefined;
+      }
+      existing.refs += 1;
+      if (existing.service !== this) {
+        existing.service.stopAll(true);
+        existing.service = this;
+      }
+      return detachFor(existing);
+    }
+
+    const binding: NativeVoiceBinding = {
+      owner,
+      service: this,
+      refs: 1,
+      active: true,
+      stops: [],
+      resume: () => { void binding.service.native?.context.resume().catch(() => undefined); },
+    };
+    host.__missMinutesNativeVoiceBinding = binding;
+
+    const subscribe = <T,>(name: string, handler: (service: VoiceService, payload: T) => void) => {
+      void events.listen<T>(name, event => {
+        if (binding.active && host.__missMinutesNativeVoiceBinding === binding) {
+          handler(binding.service, event.payload);
+        }
+      }).then(stop => {
+        if (!binding.active || host.__missMinutesNativeVoiceBinding !== binding) stop();
+        else binding.stops.push(stop);
       }).catch((error: unknown) => console.error('[VoiceService] Cannot listen for ' + name + ':', error));
     };
 
-    subscribe<NativeVoiceChunk>('miss-minutes:voice-chunk', chunk => this.playNativeChunk(chunk));
-    subscribe<NativeVoiceEnd>('miss-minutes:voice-end', end => this.endNativeVoice(end));
+    subscribe<NativeVoiceChunk>('miss-minutes:voice-chunk', (service, chunk) => service.playNativeChunk(chunk, owner));
+    subscribe<NativeVoiceEnd>('miss-minutes:voice-end', (service, end) => service.endNativeVoice(end, owner));
+    subscribe<NativeVoiceActivity>('miss-minutes:voice-activity', (service, activity) => service._notifyNativeActivity(activity));
 
     // WebView2 keeps audio suspended until the window sees a gesture; resume on the first one.
-    const resume = () => { void this.native?.context.resume().catch(() => undefined); };
-    window.addEventListener('pointerdown', resume, { passive: true });
-
-    return () => {
-      disposed = true;
-      stops.forEach(stop => stop());
-      window.removeEventListener('pointerdown', resume);
-    };
+    host.addEventListener('pointerdown', binding.resume, { passive: true });
+    return detachFor(binding);
   }
 
-  private playNativeChunk(chunk: NativeVoiceChunk) {
+  private playNativeChunk(chunk: NativeVoiceChunk, owner: NativePlaybackOwner) {
+    if (chunk.playbackOwner && chunk.playbackOwner !== owner) return;
     if (typeof AudioContext === 'undefined') return;
     if (this.closedNativeIds.includes(chunk.id)) return;
 
-    let playback = this.native;
-    if (!playback || playback.id !== chunk.id) {
-      this.stopAll(false); // a new utterance replaces whatever any engine was saying
-      playback = this.openNativePlayback(chunk);
-    }
-
+    const index = Number.isSafeInteger(chunk.index) ? chunk.index : -1;
     const samples = decodePcm16(chunk.pcm16);
     if (samples.length === 0) return;
+
+    let playback = this.native;
+    if (!playback || playback.id !== chunk.id) {
+      // Every worker utterance starts at zero. A late middle chunk must never replace the current
+      // voice or resurrect a job that stop/replacement already closed.
+      if (index !== 0) return;
+      this.stopAll(false);
+      playback = this.openNativePlayback(chunk);
+    }
+    // Exactly-once, ordered playback by protocol sequence. Equal PCM in two different sequence
+    // slots is valid and is deliberately not deduplicated by content.
+    if (index !== playback.nextIndex) return;
+    playback.nextIndex += 1;
 
     const buffer = playback.context.createBuffer(1, samples.length, chunk.sampleRate);
     buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
@@ -440,7 +519,7 @@ export class VoiceService {
     void context.resume().catch(() => undefined);
 
     const playback: NativePlayback = {
-      id: chunk.id, context, analyser, nextStart: 0, pending: 0, ended: false, frame: 0,
+      id: chunk.id, context, analyser, nextStart: 0, nextIndex: 0, pending: 0, ended: false, frame: 0,
     };
 
     const samples = new Uint8Array(analyser.fftSize);
@@ -462,7 +541,8 @@ export class VoiceService {
     return playback;
   }
 
-  private endNativeVoice(end: NativeVoiceEnd) {
+  private endNativeVoice(end: NativeVoiceEnd, owner: NativePlaybackOwner) {
+    if (end.playbackOwner && end.playbackOwner !== owner) return;
     if (end.event === 'error') console.warn('[VoiceService] Local voice error:', end.message);
     const playback = this.native;
     if (!playback || playback.id !== end.id) return; // a stale or already-replaced job

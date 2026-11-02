@@ -61,22 +61,65 @@ export interface CreateNotePayload {
   content: string;
 }
 
+/** Her cloned voice as prepared on disk, known before the voice worker starts. */
+export interface NativeConfiguredVoice {
+  /** A prepared reference and its rights record both exist. */
+  reference: boolean;
+  rightsBasis: string | null;
+  /** Engine the worker will load ("pocket" or "chatterbox") and its display name. */
+  engine: string | null;
+  engineLabel: string | null;
+  /** True when the engine was chosen by the benchmark from measured numbers. */
+  measured: boolean;
+  /** Synthesis time / audio time; below 1 is faster than real time. */
+  rtf: number | null;
+  firstChunkMs: number | null;
+  /** Speaker-embedding cosine against the reference, raw and normalized (0 unrelated, 1 itself). */
+  similarity: number | null;
+  similarityNorm: number | null;
+  wer: number | null;
+  /** Thresholds the chosen engine missed, if any. */
+  shortfall: string[];
+  chosenAt: string | null;
+}
+
 /** State of the private on-device voice engine (`native/voice`). */
 export interface NativeVoiceStatus {
   installed: boolean;
   starting: boolean;
   ready: boolean;
   model: string | null;
-  /** "builtin" is the model's own neutral voice; anything else is a prepared voice. */
+  /** "cloned:reference" while she speaks in her cloned voice; "builtin" for the engine's own voice. */
   voice: string | null;
+  /** Engine the worker loaded ("pocket" or "chatterbox") and its display name. */
+  engine?: string | null;
+  engineLabel?: string | null;
+  /** "measured" (benchmark), "override" or "default". */
+  engineChoice?: string | null;
+  /** Why the engine's own voice is used instead of the cloned one. */
+  voiceNote?: string | null;
+  rightsBasis?: string | null;
   sampleRate: number | null;
   loadSeconds: number | null;
+  /** Milliseconds from a request to its first audio, measured at warm-up. */
+  firstChunkMs?: number | null;
+  /** Seconds of speech per second of compute (above 1 keeps up with playback). */
+  realtimeFactor?: number | null;
   lastError: string | null;
   /** When not installed: the next step, phrased for the owner. */
   detail: string | null;
+  transcriber?: string | null;
+  configured?: NativeConfiguredVoice;
 }
 
-/** One sentence of synthesized speech relayed by the host. `pcm16` is base64 mono PCM16. */
+/** True while the worker is speaking in the voice cloned from the prepared reference. */
+export function isClonedVoice(status: NativeVoiceStatus | null | undefined): boolean {
+  return !!status?.ready && typeof status.voice === 'string' && status.voice.startsWith('cloned');
+}
+
+export type NativePlaybackOwner = 'main' | 'avatar';
+
+/** One sentence of synthesized speech relayed only to its selected playback window. */
 export interface NativeVoiceChunk {
   id: string;
   index: number;
@@ -84,12 +127,27 @@ export interface NativeVoiceChunk {
   text: string;
   sampleRate: number;
   pcm16: string;
+  /** Explicit defense-in-depth routing; older hosts omit it but still use targeted events. */
+  playbackOwner?: NativePlaybackOwner;
 }
 
 export interface NativeVoiceEnd {
   id: string;
   event: 'done' | 'cancelled' | 'error';
   message: string | null;
+  playbackOwner?: NativePlaybackOwner;
+}
+
+/** Audio-free lifecycle metadata broadcast to both windows for subtitles and animation. */
+export interface NativeVoiceActivity {
+  id: string;
+  event: 'chunk' | 'done' | 'cancelled' | 'error';
+  playbackOwner: NativePlaybackOwner;
+  index?: number;
+  last?: boolean;
+  text?: string;
+  mouth?: 0 | 1 | 2 | 3 | 4;
+  message?: string | null;
 }
 
 // ── AI provider proxy ─────────────────────────────────────────────────────────

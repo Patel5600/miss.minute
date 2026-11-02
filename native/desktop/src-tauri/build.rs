@@ -34,6 +34,7 @@ const APP_COMMANDS: &[&str] = &[
     "voice_shutdown",
     "voice_set_preferred",
     "voice_speak",
+    "voice_speak_end",
     "voice_cancel",
     "voice_transcribe",
     "provider_http_stream",

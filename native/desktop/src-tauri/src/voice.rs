@@ -1,5 +1,6 @@
-﻿//! Supervisor for the private local voice worker (`native/voice`): Chatterbox speech synthesis
-//! and faster-whisper speech recognition, both on the CPU.
+﻿//! Supervisor for the private local voice worker (`native/voice`): speech synthesis in her cloned
+//! voice (Kyutai Pocket TTS or Chatterbox, whichever `miss_voice.benchmark` measured as the live
+//! engine) and faster-whisper speech recognition, all on the CPU.
 //!
 //! The worker is a child process that speaks JSON lines over stdio. There is no TCP
 //! listener, and the worker starts with Hugging Face in offline mode, so it cannot reach
@@ -7,7 +8,9 @@
 //! credentials are involved anywhere on this path.
 //!
 //! The worker starts on demand and loads the synthesis models only when speech is wanted, so a
-//! worker launched just to transcribe the microphone answers within a few seconds.
+//! worker launched just to transcribe the microphone answers within a few seconds. A reply can be
+//! spoken while the model is still writing it: `speak_stream` appends sentences to one utterance,
+//! which plays as a single continuous stream and ends with `speak_end`.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -22,6 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
@@ -29,11 +33,17 @@ use tauri::{AppHandle, Emitter};
 pub const EVENT_STATUS: &str = "miss-minutes:voice-status";
 pub const EVENT_CHUNK: &str = "miss-minutes:voice-chunk";
 pub const EVENT_END: &str = "miss-minutes:voice-end";
+pub const EVENT_ACTIVITY: &str = "miss-minutes:voice-activity";
 
-/// The released chatterbox-tts package ships only the Turbo architecture.
+/// Chatterbox variant passed to the worker; the released chatterbox-tts package ships only Turbo.
 pub const MODEL: &str = "turbo";
-const MODEL_FILE: &str = "t3_turbo_v1.safetensors";
+const CHATTERBOX_FILE: &str = "t3_turbo_v1.safetensors";
+/// Pocket TTS checkpoint in `models/pocket` (see `native/voice/download_models.ps1`).
+const POCKET_CHECKPOINT: &str = "english_2026-04";
+const POCKET_FILES: [&str; 2] = ["model.safetensors", "tokenizer.json"];
 const MAX_TEXT_BYTES: usize = 6000;
+/// Utterance ids chosen by the dashboard are short ASCII tokens (the worker caps ids at 64).
+const MAX_ID_LEN: usize = 64;
 const STDERR_TAIL_LINES: usize = 12;
 
 const MIN_TRANSCRIBE_SECONDS: f64 = 0.1;
@@ -52,10 +62,22 @@ pub struct VoiceStatus {
     pub starting: bool,
     pub ready: bool,
     pub model: Option<String>,
-    /// "builtin" for the model's own neutral voice, otherwise the prepared voice name.
+    /// "cloned:reference" while the worker speaks in the voice cloned from the prepared
+    /// reference, "builtin" for the engine's own voice. Reported by the worker once it is ready.
     pub voice: Option<String>,
+    /// Speech engine the worker loaded ("pocket" or "chatterbox") and its display name.
+    pub engine: Option<String>,
+    pub engine_label: Option<String>,
+    /// How the engine was chosen: "measured" (the benchmark), "override" or "default".
+    pub engine_choice: Option<String>,
+    /// Why the engine's own voice is used instead of the cloned one, when it is.
+    pub voice_note: Option<String>,
+    /// The recorded reason the reference may be cloned (`work/reference/rights.json`).
+    pub rights_basis: Option<String>,
     pub sample_rate: Option<u32>,
     pub load_seconds: Option<f64>,
+    /// Milliseconds from a request to its first audio, measured at warm-up.
+    pub first_chunk_ms: Option<f64>,
     pub last_error: Option<String>,
     /// Why the engine is not installed, phrased as the next step to take.
     pub detail: Option<String>,
@@ -64,6 +86,34 @@ pub struct VoiceStatus {
     pub realtime_factor: Option<f64>,
     /// The speech recognition model, once the worker has loaded it.
     pub transcriber: Option<String>,
+    /// What is prepared on disk, known before the worker starts.
+    pub configured: ConfiguredVoice,
+}
+
+/// The cloned voice as prepared on disk: the reference, its rights record and the benchmark's
+/// choice of live engine. The worker re-checks that the rights record matches the reference.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfiguredVoice {
+    /// A prepared reference and its rights record both exist.
+    pub reference: bool,
+    pub rights_basis: Option<String>,
+    /// Engine the worker will load: the benchmark's choice, else Pocket TTS when installed.
+    pub engine: Option<String>,
+    pub engine_label: Option<String>,
+    /// True when `engine` comes from a benchmark run (`work/voice-config.json`).
+    pub measured: bool,
+    /// Benchmark numbers for that engine. RTF is synthesis time divided by audio time (below 1 is
+    /// faster than real time); similarity is the speaker-embedding cosine against the reference,
+    /// normalized between an unrelated voice (0) and the reference itself (1).
+    pub rtf: Option<f64>,
+    pub first_chunk_ms: Option<f64>,
+    pub similarity: Option<f64>,
+    pub similarity_norm: Option<f64>,
+    pub wer: Option<f64>,
+    /// Thresholds the chosen engine missed, if any.
+    pub shortfall: Vec<String>,
+    pub chosen_at: Option<String>,
 }
 
 struct Worker {
@@ -145,7 +195,9 @@ impl VoiceHost {
             .root
             .clone()
             .ok_or_else(|| "The voice engine folder (native/voice) was not found.".to_owned())?;
-        if let Some(problem) = install_problem(&root) {
+        inner.refresh_installed();
+        let problem = inner.shared.status.lock().ok().and_then(|status| status.detail.clone());
+        if let Some(problem) = problem {
             inner.set_error(&problem);
             return Err(problem);
         }
@@ -158,7 +210,9 @@ impl VoiceHost {
             } else {
                 status.starting = true;
                 status.last_error = None;
-                status.model = Some(MODEL.to_owned());
+                // Until the worker reports what it loaded, show what it is about to load.
+                status.engine = status.configured.engine.clone();
+                status.engine_label = status.configured.engine_label.clone();
                 true
             }
         };
@@ -175,6 +229,27 @@ impl VoiceHost {
     /// Queues speech. A newer request replaces the one in progress, which is how an
     /// interruption should behave in a live assistant.
     pub fn speak(&self, id: &str, text: &str, style: &str, target: &str) -> Result<(), String> {
+        self.send_speech(id, text, style, target, false)
+    }
+
+    /// Adds a sentence to the streamed utterance `id`, starting it (and replacing anything else
+    /// being spoken) on first use. The audio plays as one continuous stream until `speak_end`.
+    pub fn speak_stream(&self, id: &str, text: &str, style: &str, target: &str) -> Result<(), String> {
+        self.send_speech(id, text, style, target, true)
+    }
+
+    /// Closes the streamed utterance `id`; its `done` follows once the last sentence is rendered.
+    pub fn speak_end(&self, id: &str) -> Result<(), String> {
+        validate_id(id)?;
+        let registered = self.inner.shared.targets.lock().map(|targets| targets.contains_key(id)).unwrap_or(false);
+        if !registered {
+            return Ok(()); // already finished, cancelled or replaced
+        }
+        self.inner.send(&json!({ "op": "speak_end", "id": id }))
+    }
+
+    fn send_speech(&self, id: &str, text: &str, style: &str, target: &str, stream: bool) -> Result<(), String> {
+        validate_id(id)?;
         let text = text.trim();
         if text.is_empty() || text.len() > MAX_TEXT_BYTES {
             return Err(format!("Speech must contain 1 to {MAX_TEXT_BYTES} bytes of text."));
@@ -188,7 +263,10 @@ impl VoiceHost {
             }
             targets.insert(id.to_owned(), target.to_owned());
         }
-        let line = json!({ "op": "speak", "id": id, "text": text, "style": style });
+        let mut line = json!({ "op": "speak", "id": id, "text": text, "style": style });
+        if stream {
+            line["stream"] = Value::Bool(true);
+        }
         self.inner.send(&line)
     }
 
@@ -229,13 +307,20 @@ impl VoiceHost {
 
 impl Inner {
     fn refresh_installed(&self) {
-        let detail = match &self.root {
-            None => Some("The voice engine folder (native/voice) was not found next to this app.".to_owned()),
-            Some(root) => install_problem(root),
+        let (detail, configured) = match &self.root {
+            None => (
+                Some("The voice engine folder (native/voice) was not found next to this app.".to_owned()),
+                ConfiguredVoice::default(),
+            ),
+            Some(root) => {
+                let configured = configured_voice(root);
+                (install_problem(root, configured.engine.as_deref()), configured)
+            }
         };
         if let Ok(mut status) = self.shared.status.lock() {
             status.installed = detail.is_none();
             status.detail = detail;
+            status.configured = configured;
         }
     }
 
@@ -353,6 +438,33 @@ impl Inner {
     }
 }
 
+fn mouth_frame_for_pcm(encoded: Option<&str>) -> Option<u8> {
+    let bytes = BASE64.decode(encoded?).ok()?;
+    let samples = bytes.chunks_exact(2);
+    let count = samples.len();
+    if count == 0 {
+        return Some(0);
+    }
+    let energy = samples
+        .map(|pair| {
+            let value = f64::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.0;
+            value * value
+        })
+        .sum::<f64>();
+    let rms = (energy / count as f64).sqrt();
+    Some(if rms < 0.014 {
+        0
+    } else if rms < 0.045 {
+        1
+    } else if rms < 0.095 {
+        2
+    } else if rms < 0.17 {
+        3
+    } else {
+        4
+    })
+}
+
 impl Shared {
     fn app(&self) -> Option<AppHandle> {
         self.app.lock().ok().and_then(|app| app.clone())
@@ -365,24 +477,55 @@ impl Shared {
         }
     }
 
+    fn emit_activity(&self, label: &str, event: &Value) {
+        let Some(app) = self.app() else { return };
+        let kind = event.get("event").and_then(Value::as_str).unwrap_or_default();
+        let payload = json!({
+            "id": event.get("id").and_then(Value::as_str),
+            "event": kind,
+            "playbackOwner": label,
+            "index": event.get("index").and_then(Value::as_u64),
+            "last": event.get("last").and_then(Value::as_bool),
+            "text": event.get("text").and_then(Value::as_str),
+            "mouth": mouth_frame_for_pcm(event.get("pcm16").and_then(Value::as_str)),
+            "message": event.get("message").and_then(Value::as_str),
+        });
+        // No PCM is broadcast. Both windows get only the lifecycle, subtitle and mouth frame.
+        let _ = app.emit(EVENT_ACTIVITY, payload);
+    }
+
     fn emit_end(&self, label: String, id: &str, kind: &str, message: Option<String>) {
         if let Some(app) = self.app() {
-            let _ = app.emit_to(label, EVENT_END, json!({ "id": id, "event": kind, "message": message }));
+            let payload = json!({
+                "id": id,
+                "event": kind,
+                "message": message,
+                "playbackOwner": label.as_str(),
+            });
+            let _ = app.emit_to(&label, EVENT_END, payload.clone());
+            self.emit_activity(&label, &payload);
         }
     }
 
-    fn handle_event(&self, epoch: u64, event: Value) {
-        let kind = event.get("event").and_then(Value::as_str).unwrap_or_default();
+    fn handle_event(&self, epoch: u64, mut event: Value) {
+        let kind = event.get("event").and_then(Value::as_str).unwrap_or_default().to_owned();
         let id = event.get("id").and_then(Value::as_str).map(str::to_owned);
 
-        match kind {
+        match kind.as_str() {
             "ready" => {
                 if let Ok(mut status) = self.status.lock() {
                     status.starting = false;
                     status.ready = true;
                     status.last_error = None;
-                    status.model = event.get("model").and_then(Value::as_str).map(str::to_owned);
-                    status.voice = event.get("voice").and_then(Value::as_str).map(str::to_owned);
+                    let text = |key: &str| event.get(key).and_then(Value::as_str).map(str::to_owned);
+                    status.model = text("model");
+                    status.voice = text("voice");
+                    status.engine = text("engine");
+                    status.engine_label = text("engineLabel");
+                    status.engine_choice = text("engineChoice");
+                    status.voice_note = text("voiceNote");
+                    status.rights_basis = text("rightsBasis");
+                    status.first_chunk_ms = event.get("firstChunkMs").and_then(Value::as_f64);
                     status.sample_rate = event
                         .get("sampleRate")
                         .and_then(Value::as_u64)
@@ -395,7 +538,13 @@ impl Shared {
             "chunk" => {
                 let label = id.as_ref().and_then(|id| self.targets.lock().ok().and_then(|map| map.get(id).cloned()));
                 if let (Some(label), Some(app)) = (label, self.app()) {
-                    let _ = app.emit_to(label, EVENT_CHUNK, event);
+                    if let Some(fields) = event.as_object_mut() {
+                        fields.insert("playbackOwner".to_owned(), Value::String(label.clone()));
+                    }
+                    self.emit_activity(&label, &event);
+                    // PCM goes to one named WebView only. The owner field makes the JS side reject
+                    // a duplicated or accidentally broadcast event as a second line of defense.
+                    let _ = app.emit_to(&label, EVENT_CHUNK, event);
                 }
             }
             "done" | "cancelled" | "error" => {
@@ -404,7 +553,7 @@ impl Shared {
                 if let Some(id) = &id {
                     let label = self.targets.lock().ok().and_then(|mut map| map.remove(id));
                     if let Some(label) = label {
-                        self.emit_end(label, id, kind, message.clone());
+                        self.emit_end(label, id, kind.as_str(), message.clone());
                     }
                 }
                 if kind == "done" && !event.get("cached").and_then(Value::as_bool).unwrap_or(false) {
@@ -569,18 +718,106 @@ fn python_exe(root: &Path) -> PathBuf {
     }
 }
 
+fn pocket_installed(root: &Path) -> bool {
+    let dir = root.join("models").join("pocket").join(POCKET_CHECKPOINT);
+    POCKET_FILES.iter().all(|file| dir.join(file).is_file())
+}
+
+fn engine_label(engine: &str) -> &'static str {
+    match engine {
+        "pocket" => "Pocket TTS",
+        _ => "Chatterbox Turbo",
+    }
+}
+
+fn read_json(path: &Path) -> Option<Value> {
+    // Both files are a few hundred bytes; anything larger is not ours.
+    let bytes = std::fs::read(path).ok().filter(|bytes| bytes.len() <= 64 * 1024)?;
+    serde_json::from_slice::<Value>(&bytes).ok().filter(Value::is_object)
+}
+
+/// The cloned voice as prepared on disk, mirroring how the worker chooses its engine: the
+/// benchmark's measured choice (`work/voice-config.json`), else Pocket TTS when it is installed,
+/// else Chatterbox.
+fn configured_voice(root: &Path) -> ConfiguredVoice {
+    let work = root.join("work");
+    let reference_dir = work.join("reference");
+    let rights = read_json(&reference_dir.join("rights.json"));
+    let rights_basis = rights
+        .as_ref()
+        .and_then(|record| record.get("basis"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let reference = reference_dir.join("reference.wav").is_file() && rights_basis.is_some();
+
+    let config = read_json(&work.join("voice-config.json"));
+    let measured_engine = config
+        .as_ref()
+        .and_then(|config| config.get("engine"))
+        .and_then(Value::as_str)
+        .filter(|engine| matches!(*engine, "pocket" | "chatterbox"))
+        .map(str::to_owned);
+    let measured = measured_engine.is_some();
+    let engine = measured_engine
+        .unwrap_or_else(|| (if pocket_installed(root) { "pocket" } else { "chatterbox" }).to_owned());
+    let summary = config.as_ref().filter(|_| measured).and_then(|config| config.get("summary"));
+    let number = |key: &str| summary.and_then(|summary| summary.get(key)).and_then(Value::as_f64);
+    let shortfall: Vec<String> = config
+        .as_ref()
+        .filter(|_| measured)
+        .and_then(|config| config.get("shortfall"))
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).take(8).map(str::to_owned).collect())
+        .unwrap_or_default();
+    ConfiguredVoice {
+        reference,
+        rights_basis,
+        engine_label: Some(engine_label(&engine).to_owned()),
+        engine: Some(engine),
+        measured,
+        rtf: number("rtf"),
+        first_chunk_ms: number("first_chunk_ms_max"),
+        similarity: number("similarity"),
+        similarity_norm: number("similarity_norm"),
+        wer: number("wer"),
+        shortfall,
+        chosen_at: config
+            .as_ref()
+            .filter(|_| measured)
+            .and_then(|config| config.get("chosen_at"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    }
+}
+
 /// `None` when everything speech synthesis needs is present; otherwise the next step for the owner.
-fn install_problem(root: &Path) -> Option<String> {
+fn install_problem(root: &Path, engine: Option<&str>) -> Option<String> {
     if !python_exe(root).is_file() {
         return Some("The voice engine is not installed. Run native/voice/setup.ps1 once.".to_owned());
     }
     if !root.join("miss_voice").join("worker.py").is_file() {
         return Some("The voice worker module is missing from native/voice.".to_owned());
     }
-    if !root.join("models").join("chatterbox").join(MODEL_FILE).is_file() {
+    let models = match engine {
+        Some("pocket") => pocket_installed(root),
+        _ => root.join("models").join("chatterbox").join(CHATTERBOX_FILE).is_file(),
+    };
+    if !models {
         return Some("The voice models are not downloaded yet. Run native/voice/setup.ps1.".to_owned());
     }
     None
+}
+
+/// Utterance ids come from the dashboard; keep them to short ASCII tokens.
+fn validate_id(id: &str) -> Result<(), String> {
+    let valid = !id.is_empty()
+        && id.len() <= MAX_ID_LEN
+        && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+    if valid {
+        Ok(())
+    } else {
+        Err(format!("A speech id must be 1 to {MAX_ID_LEN} letters, digits, '-' or '_'."))
+    }
 }
 
 /// `None` when speech recognition can run; otherwise the next step for the owner.

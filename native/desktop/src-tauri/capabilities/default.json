@@ -32,6 +32,7 @@
     "allow-voice-shutdown",
     "allow-voice-set-preferred",
     "allow-voice-speak",
+    "allow-voice-speak-end",
     "allow-voice-cancel",
     "allow-voice-transcribe",
     "allow-provider-http-stream",

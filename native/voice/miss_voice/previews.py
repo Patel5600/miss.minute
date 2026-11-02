@@ -1,146 +1,158 @@
-"""Render the four scenario previews, measure them, and build previews/index.html.
+"""Scenario previews: speaker-similarity helpers, the benchmark table and the listening page.
 
-    python -m miss_voice.previews                 # Nano model
-    python -m miss_voice.previews --model turbo   # larger model, slower, usually steadier
+    python -m miss_voice.previews          # same as python -m miss_voice.benchmark
+
+Rendering and measuring live in miss_voice.benchmark, which writes previews/<engine>/<scenario>.wav,
+previews/benchmark.json, previews/benchmark.md and previews/index.html (open it in a browser to
+listen to both engines side by side).
 """
 from __future__ import annotations
 
-import argparse
 import html
-import json
-import time
-from pathlib import Path
 
 import numpy as np
 
-from . import analysis, paths
 from . import audio as au
-from .engine import VoiceEngine
-from .styles import STYLES
 
 
 def cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
 
 
-def calibrate(engine: VoiceEngine, reference: np.ndarray) -> dict:
-    """Give the similarity scores a scale: 'ceiling' is the reference against itself,
-    'floor' is an unrelated speaker (the model's built-in voice) against the reference."""
-    ref_emb = engine.speaker_embedding(reference, paths.SAMPLE_RATE)
+def load_encoder():
+    """Chatterbox's speaker encoder: the one yardstick used for every engine."""
+    from .prepare_reference import load_voice_encoder
+
+    return load_voice_encoder()
+
+
+def embedding(encoder, wav: np.ndarray, sr: int) -> np.ndarray:
+    from .prepare_reference import embed
+
+    return embed(encoder, au.resample(wav, sr, 16000).astype(np.float32))
+
+
+def ceiling(encoder, reference: np.ndarray, sr: int) -> float:
+    """The reference against itself: its first half compared with its second half."""
     half = len(reference) // 2
-    ceiling = cosine(engine.speaker_embedding(reference[:half], paths.SAMPLE_RATE),
-                     engine.speaker_embedding(reference[half:], paths.SAMPLE_RATE))
-    engine.use_builtin_voice()
-    other = engine.synthesize("The weather is clear and the afternoon is quiet today.", "informational", seed=3)
-    floor = cosine(ref_emb, engine.speaker_embedding(other, engine.sr))
-    engine.set_voice(paths.REFERENCE_WAV, "miss-minutes")
-    return {"reference_halves": round(ceiling, 3), "unrelated_voice": round(floor, 3)}
+    return round(cosine(embedding(encoder, reference[:half], sr), embedding(encoder, reference[half:], sr)), 3)
 
 
-def page(items: list[dict], summary: dict) -> str:
-    cards = []
-    for it in items:
-        m = it["metrics"]
-        match = ("" if m["speaker_similarity"] is None
-                 else f" &middot; voice match {m['speaker_similarity']:.2f}")
-        cards.append(f"""
-    <section class="card">
-      <h2>{html.escape(it['label'])}</h2>
-      <p class="blurb">{html.escape(it['blurb'])}</p>
-      <audio controls preload="metadata" src="{html.escape(it['file'])}"></audio>
-      <p class="script">&ldquo;{html.escape(it['script'])}&rdquo;</p>
-      <p class="stats">{m['duration_s']:.1f}s{match}
-        &middot; word error {m['wer'] * 100:.0f}% &middot; {m['f0_median'] or 0:.0f} Hz median pitch
-        &middot; generated at {m['realtime_factor']:.2f}&times; real time</p>
-    </section>""")
-    cal = summary["calibration"]
-    scale = ("" if cal is None else
-             f"Voice match is cosine similarity of speaker embeddings against the reference prompt. "
-             f"Scale on this machine: {cal['unrelated_voice']:.2f} for an unrelated voice, "
-             f"{cal['reference_halves']:.2f} for the reference compared with itself. ")
+def _fmt(value, spec: str = ".2f") -> str:
+    return "n/a" if value is None else format(value, spec)
+
+
+def markdown(report: dict) -> str:
+    cal = report["calibration"]
+    th = report["thresholds"]
+    lines = [
+        "# Miss Minutes voice benchmark",
+        "",
+        f"Generated {report['generated']} on {report['machine']['processor'] or 'this PC'} "
+        f"({report['machine']['cpu_count']} logical CPUs, {report['machine']['threads']} PyTorch threads), "
+        f"seed {report['seed']}.",
+        f"Reference: `{report['reference']['path']}` ({report['reference']['seconds']} s, SHA-256 "
+        f"`{report['reference']['sha256'][:16]}...`), rights basis: {report['rights_basis']}.",
+        "",
+        "RTF is synthesis wall time divided by audio duration (below 1 is faster than real time). First chunk "
+        "is the time from the request to the first audio the worker can send. Similarity is the cosine of "
+        "Chatterbox voice-encoder embeddings against the reference; normalized = (sim - floor) / "
+        f"(ceiling - floor), with ceiling {cal['ceiling']:.3f} (reference first half against second half) and "
+        f"floor {cal['floor']:.3f} ({cal['floor_source']}). WER is a Whisper base.en round trip against the script.",
+        "",
+        "Unrelated voices against the reference: "
+        + ", ".join(f"{kind} built-in {value:.3f}" for kind, value in cal["unrelated"].items()) + ".",
+        "",
+        "Chatterbox conditions its speech on this same voice encoder, so its similarity can read higher than "
+        "a listener would judge; Pocket TTS does not use it.",
+        "",
+        "| Engine | Scenario | Audio s | Wall s | RTF | First chunk ms | Similarity | Normalized | WER | File |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for result in report["engines"].values():
+        for row in result["rows"]:
+            lines.append(
+                f"| {result['label']} | {row['label']} | {row['audio_s']:.2f} | {row['wall_s']:.2f} | "
+                f"{_fmt(row['rtf'], '.3f')} | {row['first_chunk_ms']:.0f} | {row['similarity']:.3f} | "
+                f"{_fmt(row['similarity_norm'], '.3f')} | {row['wer']:.3f} | `{row['file']}` |")
+    lines += [
+        "",
+        "| Engine | RTF | First chunk max ms | First chunk median ms | Similarity | Normalized | WER | Thresholds |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for result in report["engines"].values():
+        s = result["summary"]
+        verdict = "all pass" if not result["shortfall"] else "; ".join(result["shortfall"])
+        lines.append(
+            f"| {result['label']} | {s['rtf']:.3f} | {s['first_chunk_ms_max']:.0f} | {s['first_chunk_ms_median']:.0f} | "
+            f"{s['similarity']:.3f} | {_fmt(s['similarity_norm'], '.3f')} | {s['wer']:.3f} | {verdict} |")
+    choice = report["choice"]
+    lines += [
+        "",
+        f"Thresholds: RTF <= {th['rtf']}, first chunk <= {th['first_chunk_ms']:.0f} ms, normalized similarity >= "
+        f"{th['similarity_norm']}, WER <= {th['wer']}.",
+        "",
+        f"**Live engine: {choice['engine']}** ({choice['rule']})"
+        + (f". Shortfall: {'; '.join(choice['shortfall'])}." if choice["shortfall"] else "."),
+        "",
+        "Private, local audio: do not publish or ship these files.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def page(report: dict) -> str:
+    """A local listening page with both engines side by side for every scenario."""
+    engines = report["engines"]
+    first = next(iter(engines.values()), None)
+    scenarios = [row["scenario"] for row in first["rows"]] if first else []
+    sections = []
+    for key in scenarios:
+        cells = []
+        label = key
+        for kind, result in engines.items():
+            row = next((r for r in result["rows"] if r["scenario"] == key), None)
+            if row is None:
+                continue
+            label = row["label"]
+            cells.append(f"""
+        <div class="cell"><h3>{html.escape(result['label'])}</h3>
+          <audio controls preload="metadata" src="{html.escape(kind)}/{html.escape(key)}.wav"></audio>
+          <p class="stats">{row['audio_s']:.1f} s &middot; RTF {_fmt(row['rtf'], '.2f')} &middot; first audio
+          {row['first_chunk_ms']:.0f} ms &middot; voice match {row['similarity']:.2f}
+          (normalized {_fmt(row['similarity_norm'])}) &middot; word error {row['wer'] * 100:.0f}%</p></div>""")
+        sections.append(f"""
+    <section class="card"><h2>{html.escape(label)}</h2><div class="pair">{''.join(cells)}</div></section>""")
+    choice = report["choice"]
+    cal = report["calibration"]
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Miss Minutes voice previews</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   body{{margin:0;background:#120D08;color:#fde68a;font:15px/1.5 ui-monospace,Consolas,monospace;padding:32px}}
   h1{{margin:0 0 4px;color:#fbbf24}} .sub{{color:#d9a441;margin:0 0 24px}}
-  .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;max-width:1100px}}
-  .card{{background:#1c130a;border:1px solid #92400e;border-radius:14px;padding:18px}}
-  h2{{margin:0;color:#f59e0b;text-transform:uppercase;letter-spacing:.12em;font-size:14px}}
-  .blurb{{margin:4px 0 12px;color:#d9a441}} audio{{width:100%}}
-  .script{{font-style:italic;color:#fde68a}} .stats{{color:#a16207;font-size:12px}}
+  .card{{background:#1c130a;border:1px solid #92400e;border-radius:14px;padding:18px;margin:0 0 16px;max-width:1100px}}
+  h2{{margin:0 0 10px;color:#f59e0b;text-transform:uppercase;letter-spacing:.12em;font-size:14px}}
+  h3{{margin:0 0 6px;color:#fbbf24;font-size:13px}}
+  .pair{{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}}
+  audio{{width:100%}} .stats{{color:#a16207;font-size:12px;margin:6px 0 0}}
   .note{{max-width:1100px;margin-top:24px;color:#a16207;font-size:12px}}
 </style></head><body>
 <h1>Miss Minutes &mdash; voice previews</h1>
-<p class="sub">Local voice &middot; model: Chatterbox {summary['model']} &middot; voice: {summary['voice']} &middot; generated {summary['generated']}</p>
-<div class="grid">{''.join(cards)}
-</div>
-<p class="note">{scale}Word error is a Whisper check of intelligibility.
-Private, local audio: do not publish or ship these files. Every clip carries Resemble&rsquo;s inaudible
-PerTh watermark that marks it as synthetic.</p>
+<p class="sub">Cloned from the prepared reference &middot; live engine: {html.escape(str(choice['engine']))}
+({html.escape(choice['rule'])}) &middot; generated {html.escape(report['generated'])}</p>
+{''.join(sections)}
+<p class="note">Voice match is the cosine of speaker embeddings against the reference; on this machine an
+unrelated voice scores {cal['floor']:.2f} and the reference against itself {cal['ceiling']:.2f}. Word error is a
+Whisper check of intelligibility. RTF below 1 is faster than real time. Private, local audio: do not publish
+or ship these files.</p>
 </body></html>"""
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--model", choices=["nano", "turbo"], default="turbo")
-    ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--out", type=Path, default=paths.PREVIEWS)
-    args = ap.parse_args(argv)
+    from .benchmark import main as benchmark_main
 
-    args.out.mkdir(parents=True, exist_ok=True)
-    cloned = paths.REFERENCE_WAV.is_file()
-    reference = au.load_audio(paths.REFERENCE_WAV, paths.SAMPLE_RATE) if cloned else None
-
-    print(f"loading Chatterbox {args.model}...")
-    engine = VoiceEngine(args.model)
-    if cloned:
-        engine.set_voice(paths.REFERENCE_WAV, "miss-minutes")
-    else:
-        engine.use_builtin_voice()
-    print(f"voice: {engine.voice_name}; loaded in {engine.load_seconds:.1f}s; warm-up {engine.warm_up():.1f}s")
-
-    calibration = ref_emb = None
-    if cloned:
-        calibration = calibrate(engine, reference)
-        ref_emb = engine.speaker_embedding(reference, paths.SAMPLE_RATE)
-        print("similarity scale:", calibration)
-
-    items: list[dict] = []
-    for key, style in STYLES.items():
-        started = time.perf_counter()
-        wav = engine.synthesize(style.script, style, seed=args.seed)
-        elapsed = time.perf_counter() - started
-        file = f"{key}.wav"
-        au.write_wav(args.out / file, wav, engine.sr)
-
-        spoken, _ = analysis.transcribe(wav, engine.sr)
-        pitch = analysis.f0_stats(wav, engine.sr)
-        metrics = {
-            "duration_s": round(len(wav) / engine.sr, 2),
-            "synth_s": round(elapsed, 2),
-            "realtime_factor": round((len(wav) / engine.sr) / elapsed, 2),
-            "speaker_similarity": (None if ref_emb is None
-                                   else round(cosine(ref_emb, engine.speaker_embedding(wav, engine.sr)), 3)),
-            "wer": round(analysis.wer(style.script, spoken), 3),
-            "f0_median": None if pitch["median"] is None else round(pitch["median"], 1),
-            "lufs": analysis.loudness_lufs(wav, engine.sr),
-            **analysis.clipping(wav),
-            "watermark": analysis.watermark_score(wav, engine.sr),
-            "transcript": spoken,
-        }
-        items.append({"key": key, "label": style.label, "blurb": style.blurb, "script": style.script,
-                      "file": file, "metrics": metrics})
-        print(f"{style.label:<14} {metrics['duration_s']:5.1f}s  match {metrics['speaker_similarity']}  "
-              f"WER {metrics['wer']*100:4.0f}%  f0 {metrics['f0_median']}  "
-              f"{metrics['realtime_factor']:.2f}x realtime  watermark {metrics['watermark']}")
-
-    summary = {"model": args.model, "voice": engine.voice_name, "generated": time.strftime("%Y-%m-%d %H:%M"),
-               "seed": args.seed, "calibration": calibration, "items": items}
-    (args.out / "metrics.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    (args.out / "index.html").write_text(page(items, summary), encoding="utf-8")
-    print(f"open: {args.out / 'index.html'}")
-    return 0
+    return benchmark_main(argv)
 
 
 if __name__ == "__main__":

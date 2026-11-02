@@ -21,6 +21,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install web dependencies
+        run: npm ci
+      - name: Build the Android web layer
+        run: npm run build:mobile
+      - name: Test the shared web code and golden vectors
+        run: node --test "tests/android/*.test.ts"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -34,6 +44,9 @@ jobs:
       - name: Assemble Android companion
         working-directory: native/mobile/android
         run: gradle --no-daemon -Pandroid.useAndroidX=true -Pandroid.nonTransitiveRClass=true :app:assembleDebug
+      - name: Unit-test Android companion
+        working-directory: native/mobile/android
+        run: gradle --no-daemon -Pandroid.useAndroidX=true -Pandroid.nonTransitiveRClass=true :app:testDebugUnitTest
       - uses: actions/upload-artifact@v4
         with:
           name: miss-minutes-android-debug

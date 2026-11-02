@@ -70,6 +70,7 @@ export function defaultSettings(): AISettings {
     elevenLabsVoiceId: '',
     useElevenLabs: false,
     localVoice: false,
+    voiceEngineChosen: false,
     homeCity: '',
     memoryEnabled: true,
     strictApprovals: false,
@@ -137,6 +138,9 @@ export function normalizeSettings(raw: unknown): AISettings {
     elevenLabsVoiceId: str(r.elevenLabsVoiceId, '', 200).trim(),
     useElevenLabs: bool(r.useElevenLabs, d.useElevenLabs ?? false),
     localVoice: bool(r.localVoice, d.localVoice ?? false),
+    // Records saved before this field existed: a non-default engine there was the owner's own pick.
+    voiceEngineChosen: bool(r.voiceEngineChosen,
+      typeof r.voiceEngine === 'string' && r.voiceEngine !== 'system' && voiceEngine === r.voiceEngine),
     homeCity: str(r.homeCity, '', 120).trim(),
     memoryEnabled: bool(r.memoryEnabled, d.memoryEnabled ?? true),
     strictApprovals: bool(r.strictApprovals, d.strictApprovals ?? false),
