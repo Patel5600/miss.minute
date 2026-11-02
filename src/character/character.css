@@ -103,3 +103,40 @@
 @media (prefers-reduced-motion: reduce) {
   .mm-skin-hologram { animation: none; }
 }
+
+/* ── Teleport: TemPad portal warp ───────────────────────────── */
+.mm-rig.mm-teleport {
+  animation: mm-teleport-out 0.45s ease-in forwards;
+}
+@keyframes mm-teleport-out {
+  0%   { opacity: 1; filter: hue-rotate(0deg) brightness(1) blur(0); }
+  40%  { opacity: 0.9; filter: hue-rotate(90deg) brightness(2.2) blur(1px); }
+  70%  { opacity: 0.3; filter: hue-rotate(180deg) brightness(3) blur(6px) scaleX(0.2); }
+  100% { opacity: 0; filter: hue-rotate(220deg) brightness(4) blur(10px); }
+}
+
+/* ── Think: floating bob ────────────────────────────────────── */
+.mm-rig.mm-thinking {
+  animation: mm-think-float 3.2s ease-in-out infinite;
+}
+@keyframes mm-think-float {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-8px); }
+}
+
+/* ── Nap: zzz Z bubbles ─────────────────────────────────────── */
+.mm-rig.mm-napping::after {
+  content: 'z z Z';
+  position: absolute;
+  top: -30px;
+  right: -20px;
+  font-size: 18px;
+  color: rgba(255, 200, 100, 0.85);
+  font-weight: bold;
+  animation: mm-zzz 2s ease-in-out infinite;
+}
+@keyframes mm-zzz {
+  0%   { opacity: 0; transform: translateY(0) scale(0.7); }
+  50%  { opacity: 1; transform: translateY(-12px) scale(1); }
+  100% { opacity: 0; transform: translateY(-24px) scale(1.3); }
+}

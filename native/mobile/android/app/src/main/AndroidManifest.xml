@@ -2,20 +2,42 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Declared for the overlay service. It is only used while she is listening (a later stage), after RECORD_AUDIO is granted. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
+        android:name=".app.MissMinutesApp"
         android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
-            android:name=".MainActivity"
-            android:exported="true">
+            android:name=".app.DashboardActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.MissMinutes"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|layoutDirection">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- The folder-metadata screen. Opened from the dashboard's Settings; it is not a launcher any more. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false" />
+        <service
+            android:name=".overlay.OverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse|microphone">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-started floating companion character drawn as a user-granted overlay, with an ongoing notification and a Stop action" />
+        </service>
         <service
             android:name=".MetadataCompanionService"
             android:description="@string/metadata_service_description"
@@ -25,5 +47,9 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-started metadata-only monitoring of one directory explicitly selected with the Storage Access Framework, with an ongoing stop control notification." />
         </service>
+        <!-- Target of the "Stop Miss Minutes" notification action. Not exported: only the app's own PendingIntent reaches it. -->
+        <receiver
+            android:name=".kill.KillReceiver"
+            android:exported="false" />
     </application>
 </manifest>

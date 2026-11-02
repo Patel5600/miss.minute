@@ -2,4 +2,56 @@
 <resources>
     <string name="app_name">Miss Minutes Companion</string>
     <string name="metadata_service_description">Owner-started metadata-only monitor for one folder selected by the user</string>
+
+    <!-- Notification channels -->
+    <string name="overlay_channel_name">Miss Minutes on screen</string>
+    <string name="overlay_channel_description">Shown while Miss Minutes is on your screen. It has a Stop button.</string>
+    <string name="reminders_channel_name">Reminders and timers</string>
+    <string name="reminders_channel_description">Timers and reminders you set.</string>
+    <string name="cards_channel_name">Prompts</string>
+    <string name="cards_channel_description">Short prompts, for example when she needs a permission.</string>
+
+    <!-- Notifications -->
+    <string name="overlay_notification_title">Miss Minutes is on your screen</string>
+    <string name="overlay_notification_text">Tap Stop Miss Minutes to make her disappear and stop everything she is doing.</string>
+    <string name="action_open">Open</string>
+    <string name="action_stop">Stop Miss Minutes</string>
+    <string name="bring_back_title">Miss Minutes stopped</string>
+    <string name="bring_back_text">Tap to bring her back.</string>
+    <string name="overlay_permission_title">Miss Minutes needs one permission</string>
+    <string name="overlay_permission_text">Tap to allow Display over other apps so she can appear on your screen.</string>
+
+    <!-- Overlay and her menu -->
+    <string name="overlay_description">Miss Minutes. Touch and hold for her menu.</string>
+    <string name="menu_open">Open Miss Minutes</string>
+    <string name="menu_roaming">Roaming</string>
+    <string name="menu_hide_hour">Hide for 1 hour</string>
+    <string name="menu_stop">Stop Miss Minutes</string>
+    <string name="level_docked">Docked</string>
+    <string name="level_calm">Calm</string>
+    <string name="level_lively">Lively</string>
+    <string name="level_wild">Wild</string>
+
+    <!-- Dashboard header and messages -->
+    <string name="header_status_running">She is on your screen.</string>
+    <string name="header_status_docked">She is standing still on your screen.</string>
+    <string name="header_status_paused">Paused while the screen is off or locked.</string>
+    <string name="header_status_hidden">Hidden for now.</string>
+    <string name="header_status_stopped">Miss Minutes is stopped.</string>
+    <string name="header_status_off">She is not on your screen.</string>
+    <string name="header_status_needs_overlay">She needs Display over other apps.</string>
+    <string name="dashboard_overlay_denied">She can only live inside the app until you allow Display over other apps.</string>
+    <string name="dashboard_notifications_denied">Notifications are off, so the Stop button in the notification shade is not shown. You can still stop her from this app or from her menu.</string>
+    <string name="dashboard_webview_unsupported">Update Android System WebView to use Miss Minutes.</string>
+
+    <!-- Confirmations (loosening needs a tap in a native dialog; tightening never asks) -->
+    <string name="dialog_cancel">Cancel</string>
+    <string name="dialog_allow">Allow</string>
+    <string name="dialog_proactive_title">Let her react on her own?</string>
+    <string name="dialog_proactive_message">She will show small reactions, an emotion or a gesture and never text or speech, when something happens such as plugging in the charger. You can turn this off at any time.</string>
+    <string name="dialog_share_title">Share system details with online models?</string>
+    <string name="dialog_share_message">When you ask her something, the online model you chose may be told which apps you have or your battery and network state. Turn this off to keep them private.</string>
+    <string name="dialog_mode_title">Give her more freedom?</string>
+    <string name="dialog_mode_suggest_message">Suggest mode lets her run low-risk helpers such as timers and notes by herself. Anything else still asks you first.</string>
+    <string name="dialog_mode_authorized_message">Authorized mode lets her use the permissions you have granted without asking each time, up to 20 automatic actions an hour. Files, commands and messages to other people are not available on Android.</string>
 </resources>

@@ -21,7 +21,7 @@ import {
 import { HAND_REACH, HAND_SHAPES, type HandShape } from './hands';
 import type { TickResult } from './ticker';
 
-export type Locomotion = 'idle' | 'walk' | 'drag' | 'fall';
+export type Locomotion = 'idle' | 'walk' | 'drag' | 'fall' | 'hang' | 'sit-edge' | 'climb' | 'peek' | 'nap' | 'run' | 'teleport' | 'think';
 
 export interface RigInputs {
   emotion: Emotion;
@@ -181,6 +181,11 @@ export class RigEngine {
   private walkBlend = 0;
   private dragBlend = 0;
   private fallBlend = 0;
+  private hangBlend = 0;
+  private peekBlend = 0;
+  private napBlend = 0;
+  private runBlend = 0;
+  private thinkBlend = 0;
   private readonly shoeDir: [number, number] = [1, 1];
   private squash = { y: 1, v: 0 };
   private hopT = -1;
@@ -358,10 +363,17 @@ export class RigEngine {
 
     // Locomotion blends.
     const dragging = inp.locomotion === 'drag' || inp.locomotion === 'fall';
-    this.walkBlend = damp(this.walkBlend, inp.locomotion === 'walk' ? 1 : 0, 9, dt);
+    const isWalking = inp.locomotion === 'walk' || inp.locomotion === 'run';
+    this.walkBlend = damp(this.walkBlend, isWalking ? 1 : 0, 9, dt);
     this.dragBlend = damp(this.dragBlend, dragging ? 1 : 0, 12, dt);
     this.fallBlend = damp(this.fallBlend, inp.locomotion === 'fall' ? 1 : 0, 10, dt);
-    if (inp.locomotion === 'walk') this.walkPhase = (this.walkPhase + (Math.max(0, inp.speed) * dt) / CYCLE_TRAVEL) % 1;
+    this.hangBlend = damp(this.hangBlend, inp.locomotion === 'hang' ? 1 : 0, 4, dt);
+    this.peekBlend = damp(this.peekBlend, inp.locomotion === 'peek' ? 1 : 0, 4, dt);
+    this.napBlend = damp(this.napBlend, inp.locomotion === 'nap' ? 1 : 0, 4, dt);
+    this.runBlend = damp(this.runBlend, inp.locomotion === 'run' ? 1 : 0, 6, dt);
+    this.thinkBlend = damp(this.thinkBlend, inp.locomotion === 'think' ? 1 : 0, 4, dt);
+    const walkSpeedMultiplier = 1 + this.runBlend * 0.7;
+    if (isWalking) this.walkPhase = (this.walkPhase + (Math.max(0, inp.speed) * walkSpeedMultiplier * dt) / CYCLE_TRAVEL) % 1;
 
     // Yaw: coin-like turns toward the facing side.
     const side = inp.facing === 0 ? this.lastSide : inp.facing;
@@ -380,6 +392,7 @@ export class RigEngine {
     const busy = this.computeAndWrite({ t, dt, blink, idleTime: reduced ? 0 : t, walkPhase: this.walkPhase, reduced });
 
     const moving = busy || faceMoving || this.blinkT >= 0 || this.walkBlend > 0.01 || this.dragBlend > 0.01 ||
+      this.hangBlend > 0.01 || this.peekBlend > 0.01 || this.napBlend > 0.01 || this.runBlend > 0.01 || this.thinkBlend > 0.01 ||
       Math.abs(this.squash.y - 1) > 0.002 || Math.abs(this.squash.v) > 0.01 || inp.isSpeaking ||
       this.vis.open > 0.01 || Math.abs(this.yaw - yawTarget) > 0.01;
     this.settled = moving ? 0 : this.settled + dt;

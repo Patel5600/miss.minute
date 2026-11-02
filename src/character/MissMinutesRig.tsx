@@ -229,7 +229,11 @@ export function MissMinutesRig({
   }), []);
 
   const tone = (EXPRESSIONS[emotion]?.tone ?? 0) > 0.5 ? ' mm-tone-red' : '';
-  const svgClass = `mm-rig mm-skin-${skin}${tone}${reduced ? ' mm-reduced' : ''}${className ? ` ${className}` : ''}`;
+  const locoClass = locomotion === 'teleport' ? ' mm-teleport'
+    : locomotion === 'think' ? ' mm-thinking'
+    : locomotion === 'nap' ? ' mm-napping'
+    : '';
+  const svgClass = `mm-rig mm-skin-${skin}${tone}${locoClass}${reduced ? ' mm-reduced' : ''}${className ? ` ${className}` : ''}`;
 
   return (
     <RigMarkup

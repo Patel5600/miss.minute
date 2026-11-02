@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Same palette as the web layer (native/mobile/web/src/dashboard/theme.css). -->
+    <color name="mm_base">#0D0905</color>
+    <color name="mm_raised">#1A130C</color>
+    <color name="mm_line">#33261A</color>
+    <color name="mm_cream">#EEEDDB</color>
+    <color name="mm_muted">#A99A85</color>
+    <color name="mm_face">#FF711C</color>
+    <color name="mm_stop">#C62828</color>
+    <color name="mm_stop_pressed">#8E1B1B</color>
+    <color name="mm_icon_background">#0D0905</color>
+</resources>

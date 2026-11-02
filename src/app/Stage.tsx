@@ -3,6 +3,9 @@ import { Phone, PhoneOff } from 'lucide-react';
 import type { Emotion, Gesture, MouthFrame } from '../types';
 import { MissMinutesRig, VIEW_BOX, type MissMinutesRigHandle, type RigSkin } from '../character/MissMinutesRig';
 import type { Locomotion } from '../character/MissMinutesRig';
+import { BrainDirector, type BrainContext } from './BrainDirector';
+import { ThoughtBubble } from '../character/ThoughtBubble';
+import { subscribeTick } from '../character/rig/ticker';
 
 export type StageStatus = 'idle' | 'listening' | 'thinking' | 'speaking' | 'working' | 'approval';
 
@@ -32,8 +35,6 @@ const STATUS_TEXT: Record<StageStatus, string> = {
   approval: 'Needs your OK',
 };
 
-const IDLE_GESTURES: Gesture[] = ['wave', 'hips', 'think', 'shrug', 'point', 'present'];
-
 /**
  * The stage: Miss Minutes projected in a TVA room, the way the live-action stills show her.
  * Between conversations she lives a little: strolls, turns, glances around and gestures.
@@ -46,51 +47,138 @@ export function Stage({ emotion, gesture, gestureKey, speaking, mouth, status, l
     locomotion: 'idle', facing: 0, speed: 0, ms: 0,
   });
   const [idleGesture, setIdleGesture] = useState<{ g: Gesture; k: number }>({ g: 'none', k: 0 });
+  const [brainEmotion, setBrainEmotion] = useState<Emotion>('cheerful');
+  const [brainLocomotion, setBrainLocomotion] = useState<Locomotion>('idle');
+
   const busy = status !== 'idle' || speaking;
   const busyRef = useRef(busy);
   busyRef.current = busy;
+  const speakingRef = useRef(speaking);
+  speakingRef.current = speaking;
+  const xRef = useRef(x);
+  xRef.current = x;
 
-  // Walk back to centre whenever she gets busy, so she faces the owner to talk.
-  useEffect(() => {
-    if (!busy || x === 0) return;
-    strollTo(0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [busy]);
+  const lastInteraction = useRef(Date.now());
+  const visibleStart = useRef(Date.now());
 
-  const strollTo = useCallback((target: number) => {
+  const brain = useRef(new BrainDirector());
+
+  const getContext = useCallback((): BrainContext => {
     const el = floor.current;
-    if (!el) return;
-    const width = el.clientWidth;
-    const scale = Math.min(width / VIEW_BOX.w, el.clientHeight / VIEW_BOX.h);
-    setX(current => {
-      const distance = Math.abs(target - current);
-      if (distance < 4) return current;
-      const pxPerSec = 70;
-      const ms = (distance / pxPerSec) * 1000;
-      setWalk({ locomotion: 'walk', facing: target > current ? 1 : -1, speed: pxPerSec / Math.max(scale, 0.1), ms });
-      window.setTimeout(() => setWalk({ locomotion: 'idle', facing: 0, speed: 0, ms: 0 }), ms);
-      return target;
-    });
+    const width = el?.clientWidth ?? 400;
+    const height = el?.clientHeight ?? 400;
+    const scale = Math.min(width / VIEW_BOX.w, height / VIEW_BOX.h);
+    return {
+      x: xRef.current,
+      width,
+      height,
+      scale: Math.max(scale, 0.01),
+      speaking: speakingRef.current,
+      busy: busyRef.current,
+      lastInteractionMs: lastInteraction.current,
+      visibleMs: Date.now() - visibleStart.current,
+    };
   }, []);
 
-  // Idle life: every so often she strolls or does a little gesture.
+  // Wire BrainDirector up to shared animation tick and subscription
   useEffect(() => {
-    let timer = 0;
-    const next = () => {
-      timer = window.setTimeout(() => {
-        if (!busyRef.current && document.visibilityState === 'visible') {
-          const el = floor.current;
-          const room = el ? Math.max(0, el.clientWidth / 2 - el.clientHeight * 0.35) : 0;
-          if (Math.random() < 0.45 && room > 30) strollTo(Math.round((Math.random() * 2 - 1) * room));
-          else setIdleGesture(previous => ({ g: IDLE_GESTURES[Math.floor(Math.random() * IDLE_GESTURES.length)], k: previous.k + 1 }));
+    const unsubBrain = brain.current.subscribe(s => {
+      setBrainLocomotion(s.locomotion);
+      if (s.emotion) {
+        setBrainEmotion(s.emotion);
+      }
+      if (s.gesture && s.gesture !== 'none') {
+        setIdleGesture({ g: s.gesture, k: s.gestureKey });
+      }
+      if (s.locomotion === 'walk') {
+        const distance = Math.abs((s.targetX ?? 0) - xRef.current);
+        const ms = (distance / 70) * 1000;
+        setWalk({ locomotion: 'walk', facing: s.facing, speed: s.walkSpeed, ms });
+        setX(s.targetX);
+        xRef.current = s.targetX;
+      } else {
+        setWalk({ locomotion: s.locomotion, facing: s.facing, speed: s.walkSpeed, ms: 0 });
+        if (s.targetX !== undefined && s.targetX !== xRef.current) {
+          setX(s.targetX);
+          xRef.current = s.targetX;
         }
-        next();
-      }, 7000 + Math.random() * 9000);
-    };
-    next();
-    return () => window.clearTimeout(timer);
-  }, [strollTo]);
+      }
+    });
 
+    const unsubTick = subscribeTick((_now, dt) => {
+      const ctx = getContext();
+      brain.current.frame(dt, ctx);
+      return busyRef.current ? 'busy' : 'idle';
+    });
+
+    return () => {
+      unsubBrain();
+      unsubTick();
+    };
+  }, [getContext]);
+
+  // Track page visibility changes
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible') {
+        visibleStart.current = Date.now();
+        brain.current.event({ type: 'page_visible' }, getContext());
+      } else {
+        brain.current.event({ type: 'page_hidden' }, getContext());
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [getContext]);
+
+  // Track user interactions to keep lastInteractionMs fresh
+  useEffect(() => {
+    const onInteraction = () => {
+      lastInteraction.current = Date.now();
+    };
+    window.addEventListener('pointerdown', onInteraction, { passive: true });
+    window.addEventListener('keydown', onInteraction, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', onInteraction);
+      window.removeEventListener('keydown', onInteraction);
+    };
+  }, []);
+
+  // Return to centre when busy
+  useEffect(() => {
+    if (busy && xRef.current !== 0) {
+      setX(0);
+      xRef.current = 0;
+      setWalk(w => ({ ...w, ms: 0 }));
+    }
+  }, [busy]);
+
+  // On speaking change
+  const prevSpeaking = useRef(speaking);
+  useEffect(() => {
+    if (prevSpeaking.current !== speaking) {
+      prevSpeaking.current = speaking;
+      brain.current.event({ type: speaking ? 'speaking_start' : 'speaking_end' }, getContext());
+    }
+  }, [speaking, getContext]);
+
+  // On busy change
+  const prevBusy = useRef(busy);
+  useEffect(() => {
+    if (prevBusy.current !== busy) {
+      prevBusy.current = busy;
+      brain.current.event({ type: busy ? 'busy_start' : 'busy_end' }, getContext());
+    }
+  }, [busy, getContext]);
+
+  const handlePoke = useCallback(() => {
+    lastInteraction.current = Date.now();
+    rig.current?.hop();
+    brain.current.event({ type: 'poke' }, getContext());
+    onPoke();
+  }, [getContext, onPoke]);
+
+  const activeEmotion = emotion !== 'cheerful' ? emotion : brainEmotion;
   const activeGesture = gesture !== 'none' ? gesture : idleGesture.g;
   const activeKey = gesture !== 'none' ? `c${gestureKey}` : `i${idleGesture.k}`;
 
@@ -128,7 +216,7 @@ export function Stage({ emotion, gesture, gestureKey, speaking, mouth, status, l
 
         <button
           type="button"
-          onClick={() => { rig.current?.hop(); onPoke(); }}
+          onClick={handlePoke}
           aria-label="Miss Minutes"
           className="absolute inset-x-0 bottom-[4%] top-[6%] mx-auto cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
           style={{
@@ -137,9 +225,10 @@ export function Stage({ emotion, gesture, gestureKey, speaking, mouth, status, l
             transition: walk.ms ? `transform ${walk.ms}ms linear` : 'transform 300ms ease-out',
           }}
         >
+          <ThoughtBubble visible={brainLocomotion === 'think' || (status === 'thinking' && !speaking)} />
           <MissMinutesRig
             ref={rig}
-            emotion={emotion}
+            emotion={activeEmotion}
             gesture={activeGesture}
             gestureKey={activeKey}
             isSpeaking={speaking}
