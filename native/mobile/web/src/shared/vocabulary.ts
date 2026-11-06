@@ -29,13 +29,12 @@ export const GESTURES = ['wave', 'shrug', 'point', 'hips', 'present', 'think', '
 /** What the rig can draw today. Everything else needs the handle to report `supports(name)`. */
 export const BASELINE_CAPABILITIES = [
   'idle', 'walk', 'drag', 'fall', 'hop', 'squash',
-  'run', 'hang', 'sit-edge', 'climb', 'jump', 'peek', 'nap', 'teleport', 'think',
   'gesture:wave', 'gesture:shrug', 'gesture:point', 'gesture:hips',
   'gesture:present', 'gesture:think', 'gesture:knock', 'gesture:clap',
 ] as const;
 
 export const CAPABILITY_NAMES = [
-  'idle', 'walk', 'drag', 'fall', 'hop', 'squash', 'run', 'hang', 'sit-edge', 'climb', 'jump', 'peek', 'nap', 'teleport', 'think',
+  'idle', 'walk', 'drag', 'fall', 'hop', 'squash', 'run', 'hang', 'sit-edge', 'climb', 'jump', 'peek', 'nap',
   'gesture:wave', 'gesture:shrug', 'gesture:point', 'gesture:hips', 'gesture:present', 'gesture:think',
   'gesture:knock', 'gesture:clap',
   'stand:look-around', 'stand:stretch', 'stand:foot-tap', 'stand:glance-clock', 'stand:wave-cursor', 'stand:yawn',

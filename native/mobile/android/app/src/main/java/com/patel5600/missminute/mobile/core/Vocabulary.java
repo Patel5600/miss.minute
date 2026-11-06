@@ -22,12 +22,11 @@ public final class Vocabulary {
     /** What the rig can draw today (read from the code). */
     public static final List<String> BASELINE_CAPABILITIES = list(
             "idle", "walk", "drag", "fall", "hop", "squash",
-            "run", "hang", "sit-edge", "climb", "jump", "peek", "nap", "teleport", "think",
             "gesture:wave", "gesture:shrug", "gesture:point", "gesture:hips",
             "gesture:present", "gesture:think", "gesture:knock", "gesture:clap");
 
     public static final List<String> CAPABILITY_NAMES = list(
-            "idle", "walk", "drag", "fall", "hop", "squash", "run", "hang", "sit-edge", "climb", "jump", "peek", "nap", "teleport", "think",
+            "idle", "walk", "drag", "fall", "hop", "squash", "run", "hang", "sit-edge", "climb", "jump", "peek", "nap",
             "gesture:wave", "gesture:shrug", "gesture:point", "gesture:hips", "gesture:present", "gesture:think",
             "gesture:knock", "gesture:clap",
             "stand:look-around", "stand:stretch", "stand:foot-tap", "stand:glance-clock", "stand:wave-cursor",

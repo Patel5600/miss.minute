@@ -7,6 +7,18 @@ import android.os.Looper;
 import android.util.Log;
 import android.view.Choreographer;
 
+import android.graphics.RectF;
+import com.patel5600.missminute.mobile.app_world.behaviour.ActionLibrary;
+import com.patel5600.missminute.mobile.app_world.behaviour.EventRouter;
+import com.patel5600.missminute.mobile.app_world.behaviour.UtilityAI;
+import com.patel5600.missminute.mobile.app_world.lifecycle.ForegroundMonitor;
+import com.patel5600.missminute.mobile.app_world.physics.BallisticSolver;
+import com.patel5600.missminute.mobile.app_world.physics.SpatialPhysics;
+import com.patel5600.missminute.mobile.app_world.spatial.AppRegistry;
+import com.patel5600.missminute.mobile.app_world.spatial.CalibrationOverlay;
+import com.patel5600.missminute.mobile.app_world.spatial.LandingSurface;
+import com.patel5600.missminute.mobile.app_world.spatial.SpatialAnchor;
+import com.patel5600.missminute.mobile.app_world.spatial.SpatialMemory;
 import com.patel5600.missminute.mobile.BuildConfig;
 import com.patel5600.missminute.mobile.app.Settings;
 import com.patel5600.missminute.mobile.core.Behaviour;
@@ -71,6 +83,8 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
         void onWindowRefused();
 
         void onTap();
+
+        void speak(String text);
     }
 
     private static final String TAG = "MMLoop";
@@ -142,6 +156,17 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
     private double dragOffsetY;
     private int jumps;
 
+    private final SpatialPhysics spatialPhysics = new SpatialPhysics();
+    private final SpatialMemory spatialMemory;
+    private final AppRegistry appRegistry;
+    private final EventRouter eventRouter;
+    private final UtilityAI utilityAI;
+    private final ForegroundMonitor foregroundMonitor;
+    private final CalibrationOverlay calibrationOverlay;
+
+    private SpatialAnchor currentAttachedAnchor;
+    private LandingSurface currentAttachedSurface;
+
     private final Runnable tick = new Runnable() {
         @Override
         public void run() {
@@ -161,6 +186,55 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
         this.host = host;
         this.keyguard = context.getSystemService(KeyguardManager.class);
         this.rng = new Mulberry32((System.nanoTime() ^ clock.nowMs()) & 0xFFFFFFFFL);
+
+        this.spatialMemory = new SpatialMemory(context);
+        this.appRegistry = new AppRegistry(context);
+        this.eventRouter = new EventRouter();
+        this.utilityAI = new UtilityAI((System.nanoTime() ^ clock.nowMs()) & 0xFFFFFFFFL);
+        this.foregroundMonitor = new ForegroundMonitor(context, eventRouter);
+        this.calibrationOverlay = new CalibrationOverlay(context, spatialMemory, appRegistry, eventRouter);
+
+        this.spatialPhysics.setListener(new SpatialPhysics.Listener() {
+            @Override
+            public void onSquash(double amount) {
+                CompanionLoop.this.sender.squash(amount);
+            }
+
+            @Override
+            public void onFlightProgress(double progress) {
+            }
+
+            @Override
+            public void onLanded(SpatialAnchor targetAnchor, LandingSurface targetSurface) {
+                currentAttachedAnchor = targetAnchor;
+                currentAttachedSurface = targetSurface;
+                body.locomotion = targetSurface.defaultLocomotion();
+                sendPose();
+                if (targetAnchor != null) {
+                    long now = CompanionLoop.this.clock.nowMs();
+                    spatialMemory.recordVisit(targetAnchor.packageId, now);
+                    AppRegistry.AppEntry entry = appRegistry.find(targetAnchor.packageId);
+                    if (entry != null && entry.contextualQuote != null && rng.chance(0.6)) {
+                        CompanionLoop.this.host.speak(entry.contextualQuote);
+                    }
+                }
+            }
+
+            @Override
+            public void onFallSettled() {
+                currentAttachedAnchor = null;
+                currentAttachedSurface = null;
+                body.locomotion = Locomotion.STAND;
+                sendPose();
+            }
+        });
+
+        this.eventRouter.setListener(new EventRouter.Listener() {
+            @Override
+            public void onEvent(EventRouter.DeviceEvent event) {
+                onDeviceEvent(event);
+            }
+        });
     }
 
     // ---- lifecycle ---------------------------------------------------------------------------
@@ -482,7 +556,75 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
         actEndMs = now + director.nextGapMs(effectiveLevel());
     }
 
+    void startCalibration() {
+        if (calibrationOverlay != null && world != null) {
+            calibrationOverlay.showCalibrationHud(world, body.x, body.y, new CalibrationOverlay.CalibrationCallback() {
+                @Override
+                public void onAnchorCalibrated(SpatialAnchor anchor) {
+                    if (anchor != null) {
+                        host.speak("Calibrated " + anchor.appName + ", sugar! Now I can jump all over it!");
+                    }
+                }
+
+                @Override
+                public void onCalibrationCancelled() {
+                }
+            });
+        }
+    }
+
+    private void onDeviceEvent(EventRouter.DeviceEvent event) {
+        if (!running || !isDrawn()) {
+            return;
+        }
+        long now = clock.nowMs();
+        if (event.type == EventRouter.EventType.FOREGROUND_APP_CHANGED) {
+            String pkg = event.stringData;
+            if (pkg != null && !foregroundMonitor.isLauncher(pkg)) {
+                body.x = world.maxX() - 10;
+                body.y = world.ceilTop();
+                body.locomotion = Locomotion.HANG;
+                currentAttachedAnchor = null;
+                currentAttachedSurface = null;
+                spatialPhysics.clearAttachment();
+                sendPose();
+                syncWindow();
+                host.speak("Ooh, switchin' apps to " + pkg + "! I'll perch up here outta your way, sugar!");
+            }
+        } else if (event.type == EventRouter.EventType.ACTION_COMPLETED) {
+            endBehaviour(now);
+        } else if (event.type == EventRouter.EventType.USER_TOUCH) {
+            interact();
+            wake();
+        } else if (event.type == EventRouter.EventType.LAUNCHER_PAGE_CHANGED) {
+            spatialMemory.setActivePage(event.intData);
+        }
+    }
+
     private void chooseNext(long now) {
+        if (spatialMemory != null && appRegistry != null && utilityAI != null) {
+            List<SpatialAnchor> validAnchors = spatialMemory.getValidAnchors();
+            boolean isLauncher = foregroundMonitor.isLauncherInForeground();
+            ActionLibrary.ActionCandidate choice = utilityAI.selectBestAction(
+                    world,
+                    body,
+                    currentAttachedAnchor,
+                    currentAttachedSurface,
+                    validAnchors,
+                    spatialMemory,
+                    appRegistry,
+                    power,
+                    effectiveLevel(),
+                    null,
+                    isLauncher,
+                    now
+            );
+            if (choice != null && choice.kind != ActionLibrary.ActionKind.NO_ACTION) {
+                executeActionCandidate(choice, now);
+                return;
+            }
+        }
+
         DirectorContext ctx = new DirectorContext(world, body, effectiveLevel(), effective, power,
                 Calendar.getInstance().get(Calendar.HOUR_OF_DAY), now - lastInteractionMs);
         BehaviourPlan next = director.choose(ctx);
@@ -491,6 +633,65 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
             return;
         }
         begin(next, now);
+    }
+
+    private void executeActionCandidate(ActionLibrary.ActionCandidate choice, long now) {
+        switch (choice.kind) {
+            case JUMP_TO_APP:
+                if (choice.targetAnchor != null && choice.targetSurface != null) {
+                    boolean launched = spatialPhysics.launchJump(body, world, choice.targetAnchor, choice.targetSurface, now);
+                    if (launched) {
+                        body.locomotion = Locomotion.JUMP;
+                        setAct(Act.AIR);
+                        jumps++;
+                        sendPose();
+                    } else {
+                        actEndMs = now + 1000;
+                    }
+                }
+                break;
+            case SIT_ON_APP:
+            case CLIMB_ICON:
+            case HANG_FROM_ICON:
+            case PEEK_BEHIND_ICON:
+                currentAttachedAnchor = choice.targetAnchor;
+                currentAttachedSurface = choice.targetSurface;
+                spatialPhysics.setAttached(choice.targetAnchor, choice.targetSurface);
+                float[] pos = choice.targetAnchor.getAttachment(choice.targetSurface, world.boxW, world.boxH, world.footInset);
+                body.x = pos[0];
+                body.y = pos[1];
+                body.locomotion = choice.locomotion;
+                setAct(Act.STAND);
+                actEndMs = now + choice.durationMs;
+                sendPose();
+                syncWindow();
+                break;
+            case WAVE_FROM_ICON:
+                setAct(Act.GESTURE);
+                actEndMs = now + choice.durationMs;
+                sender.gesture("wave");
+                break;
+            case SPEAK_CONTEXTUAL:
+                if (choice.speechText != null) {
+                    host.speak(choice.speechText);
+                }
+                actEndMs = now + choice.durationMs;
+                break;
+            case RETREAT_TO_EDGE:
+                body.x = world.maxX() - 10;
+                body.y = world.ceilTop();
+                body.locomotion = Locomotion.HANG;
+                currentAttachedAnchor = null;
+                currentAttachedSurface = null;
+                spatialPhysics.clearAttachment();
+                setAct(Act.STAND);
+                actEndMs = now + choice.durationMs;
+                sendPose();
+                syncWindow();
+                break;
+            default:
+                break;
+        }
     }
 
     private void begin(BehaviourPlan next, long now) {
@@ -652,6 +853,14 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
     }
 
     private void advancePhysics(double dt, long now) {
+        if (spatialPhysics.getPhase() != SpatialPhysics.Phase.ATTACHED) {
+            spatialPhysics.step(body, world, dt, now);
+            if (spatialPhysics.getPhase() == SpatialPhysics.Phase.ATTACHED) {
+                endBehaviour(now);
+                eventRouter.dispatch(EventRouter.DeviceEvent.actionCompleted(now));
+            }
+            return;
+        }
         boolean jumping = body.locomotion == Locomotion.JUMP;
         for (Physics.Event event : Physics.advance(body, world, dt, physics)) {
             switch (event.type) {

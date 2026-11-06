@@ -494,6 +494,13 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
         }
 
         @Override
+        public void calibrateIcons() {
+            if (loop != null) {
+                loop.startCalibration();
+            }
+        }
+
+        @Override
         public void stop() {
             KillSwitch.trigger(OverlayService.this, KillPath.OVERLAY_MENU);
         }

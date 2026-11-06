@@ -47,8 +47,6 @@ public final class BehaviourCatalog {
         list.add(new Behaviour("nap", Behaviour.Kind.NAP, "nap", RoamingLevel.LIVELY, 2, 90_000, 15_000, 40_000, null));
         list.add(new Behaviour("jump", Behaviour.Kind.JUMP, "jump", RoamingLevel.WILD, 3, 45_000, 800, 1500, null));
         list.add(new Behaviour("peek", Behaviour.Kind.PEEK, "peek", RoamingLevel.WILD, 2, 60_000, 3000, 8000, null));
-        list.add(new Behaviour("teleport", Behaviour.Kind.TELEPORT, "teleport", RoamingLevel.WILD, 2, 60_000, 400, 800, null));
-        list.add(new Behaviour("think", Behaviour.Kind.THINK, "think", RoamingLevel.CALM, 4, 20_000, 3000, 8000, null));
         return new BehaviourCatalog(list);
     }
 }

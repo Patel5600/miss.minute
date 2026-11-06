@@ -43,6 +43,8 @@ final class OverlayMenu {
 
         void hideForOneHour();
 
+        void calibrateIcons();
+
         /** The red button: the same kill switch as the notification and the in-app button. */
         void stop();
 
@@ -197,6 +199,14 @@ final class OverlayMenu {
                     public void run() {
                         dismiss();
                         actions.hideForOneHour();
+                    }
+                }));
+        card.addView(row("Calibrate App Icons", context.getColor(R.color.mm_cream), 0,
+                density, buttons, new Runnable() {
+                    @Override
+                    public void run() {
+                        dismiss();
+                        actions.calibrateIcons();
                     }
                 }));
         card.addView(row(context.getString(R.string.menu_stop), 0xFFFFFFFF, context.getColor(R.color.mm_stop),
