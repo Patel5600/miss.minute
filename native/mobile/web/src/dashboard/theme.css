@@ -1,6 +1,7 @@
-/* Tailwind v4, scoped to native/mobile/web only (never scans src/ of the desktop app). */
+/* Tailwind v4, scanning both native/mobile/web and src/ so desktop panels and chat components work */
 @import "tailwindcss" source(none);
 @source "../../";
+@source "../../../../src";
 
 @theme {
   --color-face: #ff711c;
@@ -33,3 +34,24 @@ body {
   padding-left: env(safe-area-inset-left);
   padding-right: env(safe-area-inset-right);
 }
+
+/* Scrollbars in the TVA palette */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: rgba(40, 20, 10, 0.4); border-radius: 6px; }
+::-webkit-scrollbar-thumb { background: rgba(217, 119, 6, 0.4); border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(245, 158, 11, 0.7); }
+
+/* Her replies are markdown */
+.mm-md > * + * { margin-top: 0.5em; }
+.mm-md p { margin: 0; }
+.mm-md ul, .mm-md ol { margin: 0.25em 0; padding-left: 1.25em; }
+.mm-md ul { list-style: disc; }
+.mm-md ol { list-style: decimal; }
+.mm-md li + li { margin-top: 0.15em; }
+.mm-md a { color: #fbbf24; text-decoration: underline; }
+.mm-md strong { color: #fde68a; }
+.mm-md code { background: rgba(0, 0, 0, 0.5); border-radius: 4px; padding: 0 4px; font-size: 0.9em; }
+.mm-md pre { background: rgba(0, 0, 0, 0.6); border: 1px solid rgba(146, 64, 14, 0.5); border-radius: 8px; padding: 8px; overflow-x: auto; }
+.mm-md pre code { background: none; padding: 0; }
+.mm-md table { border-collapse: collapse; font-size: 0.9em; }
+.mm-md th, .mm-md td { border: 1px solid rgba(146, 64, 14, 0.6); padding: 2px 8px; }

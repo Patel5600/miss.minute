@@ -58,7 +58,7 @@ public final class WebHost {
     public static final String ASSET_PATH = "/assets/web/";
 
     static final String CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            + "img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; "
+            + "img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https:; base-uri 'none'; "
             + "form-action 'none'; frame-ancestors 'none'";
 
     private static final String TAG = "MMWeb";
