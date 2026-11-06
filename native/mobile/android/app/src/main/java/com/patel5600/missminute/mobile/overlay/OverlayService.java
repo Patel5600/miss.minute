@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.Service;
 import android.speech.tts.TextToSpeech;
 import java.util.Locale;
+import com.patel5600.missminute.mobile.app_world.voice.ClonedVoicePlayer;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -76,6 +77,7 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
     private volatile boolean pageReady;
     private volatile Visibility visibility = Visibility.HIDDEN;
     private TextToSpeech tts;
+    private ClonedVoicePlayer clonedVoice;
 
     private static final String[] FOURTH_WALL_QUOTES = {
         "Hey! Watch the glass, sugar! You're gonna leave smudges on my side of the screen!",
@@ -92,22 +94,35 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
     };
 
     public void speakFourthWallQuote() {
-        String quote = FOURTH_WALL_QUOTES[(int) (Math.random() * FOURTH_WALL_QUOTES.length)];
-        speak(quote);
+        if (clonedVoice != null) {
+            clonedVoice.playTapQuote();
+        } else {
+            String quote = FOURTH_WALL_QUOTES[(int) (Math.random() * FOURTH_WALL_QUOTES.length)];
+            speak(quote);
+        }
     }
 
     public void speak(String text) {
-        if (tts == null || text == null || text.trim().isEmpty()) {
+        if (text == null || text.trim().isEmpty()) {
             return;
         }
-        Log.i("MMSpeech", "Miss Minutes speaking: " + text);
-        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "mm_speech_" + System.currentTimeMillis());
+        Log.i("MMVoice", "Miss Minutes speaking cloned voice: " + text);
+        if (clonedVoice != null) {
+            clonedVoice.speak(text);
+        } else if (tts != null) {
+            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "mm_speech_" + System.currentTimeMillis());
+        }
     }
 
     private final BroadcastReceiver deviceState = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (loop != null) {
+            if (intent != null && Intent.ACTION_CLOSE_SYSTEM_DIALOGS.equals(intent.getAction())) {
+                String reason = intent.getStringExtra("reason");
+                if (loop != null) {
+                    loop.onSystemDialogClosed(reason);
+                }
+            } else if (loop != null) {
                 loop.refresh();
             }
         }
@@ -186,6 +201,7 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
         super.onCreate();
         instance = this;
         app = MissMinutesApp.from(this);
+        clonedVoice = new ClonedVoicePlayer(this);
         tts = new TextToSpeech(this, status -> {
             if (status == TextToSpeech.SUCCESS) {
                 tts.setLanguage(Locale.US);
@@ -341,6 +357,7 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
         filter.addAction(Intent.ACTION_BATTERY_CHANGED);
         filter.addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED);
         filter.addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED);
+        filter.addAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS);
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(deviceState, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
@@ -378,6 +395,10 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
 
     @Override
     public void onDestroy() {
+        if (clonedVoice != null) {
+            clonedVoice.release();
+            clonedVoice = null;
+        }
         if (tts != null) {
             tts.stop();
             tts.shutdown();

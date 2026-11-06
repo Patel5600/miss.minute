@@ -42,7 +42,6 @@ public final class OverlayWindow {
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                         | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
                 PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.TOP | Gravity.START;
@@ -110,13 +109,15 @@ public final class OverlayWindow {
         return ADDED.get();
     }
 
-    /** Moves the window; does nothing when the rounded position is unchanged. */
+    /** Moves the window; does nothing when the rounded position is unchanged. Never allows negative coordinates. */
     public void moveTo(int xPx, int yPx) {
-        if (params.x == xPx && params.y == yPx) {
+        int clampedX = Math.max(0, xPx);
+        int clampedY = Math.max(0, yPx);
+        if (params.x == clampedX && params.y == clampedY) {
             return;
         }
-        params.x = xPx;
-        params.y = yPx;
+        params.x = clampedX;
+        params.y = clampedY;
         update();
     }
 

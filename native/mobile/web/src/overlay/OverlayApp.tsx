@@ -12,7 +12,9 @@ interface Props {
 
 /** Rendered size of one view-box unit in CSS pixels, from the rig's xMidYMax meet layout. */
 function measureScale(): number {
-  return Math.min(window.innerWidth / VIEW_BOX.w, window.innerHeight / VIEW_BOX.h);
+  const w = window.innerWidth > 0 ? window.innerWidth : VIEW_BOX.w;
+  const h = window.innerHeight > 0 ? window.innerHeight : VIEW_BOX.h;
+  return Math.max(0.1, Math.min(w / VIEW_BOX.w, h / VIEW_BOX.h));
 }
 
 export function OverlayApp({ setFps }: Props) {

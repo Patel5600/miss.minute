@@ -324,12 +324,30 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
         }
     }
 
+    void onSystemDialogClosed(String reason) {
+        if ("recentapps".equals(reason) || "homekey".equals(reason)) {
+            refresh();
+            if ("recentapps".equals(reason)) {
+                if (act == Act.WALK || act == Act.AIR) {
+                    body.locomotion = Locomotion.STAND;
+                    setAct(Act.STAND);
+                    actEndMs = clock.nowMs() + 3000;
+                    sendPose();
+                    syncWindow();
+                }
+            }
+        }
+    }
+
     // ---- power and visibility --------------------------------------------------------------
 
     /** Re-reads the power state and the settings and applies the result. Main thread. */
     void refresh() {
         if (!running) {
             return;
+        }
+        if (foregroundMonitor != null) {
+            foregroundMonitor.pollForegroundChange();
         }
         long now = clock.nowMs();
         PowerInputs inputs = powerSource.get();
@@ -645,6 +663,7 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
                         setAct(Act.AIR);
                         jumps++;
                         sendPose();
+                        host.speak("jump");
                     } else {
                         actEndMs = now + 1000;
                     }
@@ -665,6 +684,11 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
                 actEndMs = now + choice.durationMs;
                 sendPose();
                 syncWindow();
+                if (choice.kind == ActionLibrary.ActionKind.SIT_ON_APP) {
+                    host.speak("sit");
+                } else if (choice.kind == ActionLibrary.ActionKind.HANG_FROM_ICON) {
+                    host.speak("hang");
+                }
                 break;
             case WAVE_FROM_ICON:
                 setAct(Act.GESTURE);
@@ -856,6 +880,7 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
         if (spatialPhysics.getPhase() != SpatialPhysics.Phase.ATTACHED) {
             spatialPhysics.step(body, world, dt, now);
             if (spatialPhysics.getPhase() == SpatialPhysics.Phase.ATTACHED) {
+                host.speak("land");
                 endBehaviour(now);
                 eventRouter.dispatch(EventRouter.DeviceEvent.actionCompleted(now));
             }
