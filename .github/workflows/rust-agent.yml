@@ -1,0 +1,33 @@
+name: Rust agent CI
+
+on:
+  push:
+    branches:
+      - main
+      - feat/living-miss-minutes
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rust-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native credential-store build dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libdbus-1-dev
+      - name: Install stable Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Format Rust sources
+        run: cargo +stable fmt --all
+      - name: Run tests
+        run: cargo +stable test --workspace --all-targets
+      - name: Run clippy
+        run: cargo +stable clippy --workspace --all-targets -- -D warnings

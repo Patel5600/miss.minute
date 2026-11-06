@@ -1,0 +1,37 @@
+[project]
+name = "miss-minutes-voice"
+version = "0.1.0"
+description = "Private, local voice engine for the Miss Minutes desktop companion"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  # Zero-shot voice-cloning TTS (MIT). English Nano/Turbo models; every clip carries
+  # Resemble's inaudible PerTh watermark.
+  "chatterbox-tts==0.1.7",
+  # Kyutai Pocket TTS (MIT code, CC-BY-4.0 weights): 100M-parameter CPU voice cloning with
+  # streaming output. Benchmarked against Chatterbox by miss_voice.benchmark.
+  "pocket-tts==4.0.1",
+  # resemble-perth imports pkg_resources, which Python 3.12 venvs do not ship.
+  "setuptools<81",
+  # Reference preparation and output verification only.
+  "faster-whisper==1.2.1",
+  "demucs==4.1.0",
+  "av>=12",
+  "soundfile>=0.12",
+]
+
+[tool.uv]
+package = false
+# Windows-only for now. demucs caps torch below 2.3 on Intel macOS, which cannot
+# coexist with chatterbox-tts' torch==2.6.0 pin, so the universal lock would fail.
+environments = ["sys_platform == 'win32'"]
+# chatterbox-tts pins a Gradio demo UI and Chinese/Japanese text helpers. The English
+# Nano/Turbo code paths never import them, so keep those wheels out of the environment.
+override-dependencies = [
+  "gradio; sys_platform == 'never'",
+  "spacy-pkuseg; sys_platform == 'never'",
+  "pykakasi; sys_platform == 'never'",
+  # pocket-tts needs numpy 2. chatterbox-tts 0.1.7 asks for numpy<2 only on Python < 3.13 and
+  # numpy>=2 on 3.13+, so its code runs on numpy 2; every other dependency here accepts it.
+  # miss_voice.benchmark re-renders with Chatterbox after the upgrade to prove it still works.
+  "numpy>=2,<2.4",
+]
