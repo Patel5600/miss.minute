@@ -1111,6 +1111,10 @@ pub fn run() {
             let bounds = Arc::clone(&state.avatar_bounds);
             let dragging = Arc::clone(&state.avatar_dragging);
             app.manage(state);
+            // Register per-module states so their Tauri commands can resolve
+            // `tauri::State<'_, T>` at runtime (panics if missing).
+            app.manage(provider::ProviderState::default());
+            app.manage(openrouter::OpenRouterState::default());
 
             create_avatar_window(app.handle())?;
             create_tray(app)?;
