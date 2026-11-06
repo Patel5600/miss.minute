@@ -47,27 +47,24 @@ public final class World {
         return BODY_HALF_WIDTH * boxW;
     }
 
-    /** Window top when her feet stand on the floor line above the gesture bar: strictly within screen bounds. */
+    /** Window top when her feet stand on the floor line above the gesture bar. */
     public double floorTop() {
-        double top = screenH - Math.max(0.0, insetBottom) - boxH;
-        return Math.max(0.0, top);
+        return screenH - insetBottom - boxH + footInset;
     }
 
     /** Window top when she hangs at the top edge, below the status bar and cutout. */
     public double ceilTop() {
-        return Math.max(0.0, insetTop);
+        return insetTop;
     }
 
-    /** Smallest window left that keeps her body out of the left gesture zone and strictly >= 0. */
+    /** Smallest window left that keeps her body out of the left gesture zone. */
     public double minX() {
-        double left = Math.max(0.0, insetLeft + gestureLeft);
-        return Math.min(left, Math.max(0.0, screenW - boxW));
+        return Math.max(0, insetLeft + gestureLeft) + bodyHalf() - boxW / 2;
     }
 
-    /** Largest window left that keeps her body out of the right gesture zone and strictly <= screenW - boxW. */
+    /** Largest window left that keeps her body out of the right gesture zone. */
     public double maxX() {
-        double rightLimit = screenW - Math.max(0.0, insetRight + gestureRight) - boxW;
-        return Math.max(minX(), rightLimit);
+        return screenW - Math.max(0, insetRight + gestureRight) - bodyHalf() - boxW / 2;
     }
 
     public boolean contains(double x, double y) {
