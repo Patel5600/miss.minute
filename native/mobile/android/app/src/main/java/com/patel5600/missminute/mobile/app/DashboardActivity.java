@@ -57,6 +57,7 @@ public final class DashboardActivity extends Activity implements UiBridge {
     private LinearLayout root;
     private FrameLayout pageHolder;
     private TextView status;
+    private Button stopButton;
 
     private final KillSwitch.Listener killListener = new KillSwitch.Listener() {
         @Override
@@ -107,21 +108,21 @@ public final class DashboardActivity extends Activity implements UiBridge {
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         header.addView(status, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        Button stop = new Button(this);
-        stop.setText(R.string.action_stop);
-        stop.setContentDescription(getString(R.string.action_stop));
-        stop.setAllCaps(false);
-        stop.setTextColor(Color.WHITE);
-        stop.setTypeface(Typeface.DEFAULT_BOLD);
-        stop.setTextSize(14);
-        stop.setMinHeight(dp(48));
-        stop.setMinimumHeight(dp(48));
-        stop.setPadding(dp(14), 0, dp(14), 0);
+        stopButton = new Button(this);
+        stopButton.setText(R.string.action_stop);
+        stopButton.setContentDescription(getString(R.string.action_stop));
+        stopButton.setAllCaps(false);
+        stopButton.setTextColor(Color.WHITE);
+        stopButton.setTypeface(Typeface.DEFAULT_BOLD);
+        stopButton.setTextSize(14);
+        stopButton.setMinHeight(dp(48));
+        stopButton.setMinimumHeight(dp(48));
+        stopButton.setPadding(dp(14), 0, dp(14), 0);
         GradientDrawable red = new GradientDrawable();
         red.setColor(getColor(R.color.mm_stop));
         red.setCornerRadius(dp(10));
-        stop.setBackground(red);
-        stop.setOnClickListener(new View.OnClickListener() {
+        stopButton.setBackground(red);
+        stopButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 // The same kill switch as the notification and her menu. No page is involved.
@@ -132,7 +133,7 @@ public final class DashboardActivity extends Activity implements UiBridge {
         LinearLayout.LayoutParams stopParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         stopParams.setMarginStart(dp(8));
-        header.addView(stop, stopParams);
+        header.addView(stopButton, stopParams);
 
         root.addView(header, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -286,6 +287,12 @@ public final class DashboardActivity extends Activity implements UiBridge {
 
     /** One line about her in the native header, derived from facts and not from the page. */
     private void refreshHeader() {
+        boolean running = OverlayService.isRunning();
+        if (stopButton != null) {
+            // The native header is an emergency Stop control, not a permanent Stop button.
+            // Starting/stopping the companion is handled by the dashboard's actual service switch.
+            stopButton.setVisibility(running ? View.VISIBLE : View.GONE);
+        }
         int text;
         if (OverlayService.isRunning()) {
             switch (OverlayService.visibilityName()) {
