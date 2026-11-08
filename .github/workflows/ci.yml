@@ -55,4 +55,4 @@ jobs:
         run: npm run build:mobile
       - name: Run Android unit tests and assemble APK
         working-directory: native/mobile/android
-        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+        run: bash ./gradlew --no-daemon testDebugUnitTest assembleDebug
