@@ -149,6 +149,7 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
      */
     public static StartResult start(Context context) {
         CompanionRuntime runtime = CompanionRuntime.process();
+        runtime.requestStart();
         if (!android.provider.Settings.canDrawOverlays(context)) {
             runtime.markPermissionBlocked("android.permission.SYSTEM_ALERT_WINDOW");
             if (instance != null) {
@@ -161,7 +162,6 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
         app.killSwitch().clearKillFlag();
         app.settings().setHiddenUntilMs(0);
         app.settings().setDesiredRunning(true);
-        runtime.requestStart();
         try {
             context.startForegroundService(new Intent(context, OverlayService.class).setAction(ACTION_START));
             return StartResult.STARTED;
@@ -449,15 +449,13 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
         instance = null;
         CompanionRuntime runtime = CompanionRuntime.process();
         CompanionRuntime.State state = runtime.snapshot().state;
-        if (state != CompanionRuntime.State.FAILED
+        boolean wanted = app != null && app.settings().desiredRunning();
+        boolean killed = app != null && app.killSwitch().state().killed;
+        if (state == CompanionRuntime.State.STOPPING || !wanted || killed) {
+            runtime.markStopped();
+        } else if (state != CompanionRuntime.State.FAILED
                 && state != CompanionRuntime.State.PERMISSION_BLOCKED) {
-            boolean wanted = app != null && app.settings().desiredRunning();
-            boolean killed = app != null && app.killSwitch().state().killed;
-            if (state == CompanionRuntime.State.STOPPING || !wanted || killed) {
-                runtime.markStopped();
-            } else {
-                runtime.markRecovering();
-            }
+            runtime.markRecovering();
         }
         super.onDestroy();
     }
