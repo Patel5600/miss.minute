@@ -11,7 +11,23 @@ import type { Mode, RoamingLevel } from './vocabulary.ts';
 export type OverlayVisibility = 'ACTIVE' | 'DOCKED' | 'PAUSED' | 'HIDDEN' | 'NONE';
 const VISIBILITIES: readonly OverlayVisibility[] = ['ACTIVE', 'DOCKED', 'PAUSED', 'HIDDEN', 'NONE'];
 
+export type RuntimeState = 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'FAILED' | 'PERMISSION_BLOCKED' | 'RECOVERING';
+
+export interface RuntimeStatus {
+  eventId: string;
+  serviceInstanceId: string | null;
+  revision: number;
+  monotonicTimestampNanos: number;
+  state: RuntimeState;
+  reason: string | null;
+}
+
+const RUNTIME_STATES: readonly RuntimeState[] = [
+  'STOPPED', 'STARTING', 'RUNNING', 'STOPPING', 'FAILED', 'PERMISSION_BLOCKED', 'RECOVERING',
+];
+
 export interface OverlayStatus {
+  runtime: RuntimeStatus | null;
   running: boolean;
   windowShown: boolean;
   pageReady: boolean;
@@ -63,11 +79,26 @@ function num(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+export function parseRuntimeStatus(raw: unknown): RuntimeStatus | null {
+  if (!isObject(raw) || !(RUNTIME_STATES as readonly unknown[]).includes(raw.state)) return null;
+  return {
+    eventId: typeof raw.eventId === 'string' ? raw.eventId : '',
+    serviceInstanceId: typeof raw.serviceInstanceId === 'string' ? raw.serviceInstanceId : null,
+    revision: Math.max(0, num(raw.revision, 0)),
+    monotonicTimestampNanos: Math.max(0, num(raw.monotonicTimestampNanos, 0)),
+    state: raw.state as RuntimeState,
+    reason: typeof raw.reason === 'string' ? raw.reason : null,
+  };
+}
+
 export function parseOverlayStatus(raw: unknown): OverlayStatus {
   const p: Record<string, unknown> = isObject(raw) ? raw : {};
+  const runtime = parseRuntimeStatus(p.runtime);
   const visibility = (VISIBILITIES as readonly unknown[]).includes(p.visibility) ? (p.visibility as OverlayVisibility) : 'NONE';
+  const running = runtime ? runtime.state === 'RUNNING' : bool(p.running, false);
   return {
-    running: bool(p.running, false),
+    runtime,
+    running,
     windowShown: bool(p.windowShown, false),
     pageReady: bool(p.pageReady, false),
     visibility,
@@ -218,6 +249,26 @@ export function describeOverlay(status: OverlayStatus, now: number = Date.now(),
     hiddenByTimer: false,
     notificationsOff: !status.notificationPermission,
   };
+  switch (status.runtime?.state) {
+    case 'STARTING':
+      return { ...base, headline: 'Starting Miss Minutes', detail: 'Android accepted the start request. Waiting for the foreground service and overlay to become ready.', tone: 'idle' };
+    case 'STOPPING':
+      return { ...base, headline: 'Stopping Miss Minutes', detail: 'The foreground service is shutting down.', tone: 'idle' };
+    case 'RECOVERING':
+      return { ...base, headline: 'Reconnecting Miss Minutes', detail: 'The companion service is recovering after process interruption.', tone: 'idle' };
+    case 'FAILED':
+      return { ...base, headline: 'Miss Minutes could not start', detail: status.runtime.reason ?? 'The Android service reported a startup failure.', tone: 'warn' };
+    case 'PERMISSION_BLOCKED':
+      return {
+        ...base,
+        headline: 'Display permission required',
+        detail: status.runtime.reason ?? 'Android blocked the overlay service because a required permission is missing.',
+        tone: 'warn',
+        needsOverlayPermission: true,
+      };
+    default:
+      break;
+  }
   if (!status.running) {
     if (!status.overlayPermission) {
       return {
