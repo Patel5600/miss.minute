@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Home as HomeIcon, MessageSquare, Layers, Settings as SettingsIcon } from 'lucide-react';
 import { Home } from './screens/Home.tsx';
-import { Chat } from './screens/Chat.tsx';
-import { Panels } from './screens/Panels.tsx';
-import { Settings } from './screens/Settings.tsx';
+const Chat = lazy(() => import('./screens/Chat.tsx').then(module => ({ default: module.Chat })));
+const Panels = lazy(() => import('./screens/Panels.tsx').then(module => ({ default: module.Panels })));
+const Settings = lazy(() => import('./screens/Settings.tsx').then(module => ({ default: module.Settings })));
 import { initializeSettings, loadSettings } from '@desktop/agent/settings';
 import { startScheduler } from '@desktop/agent/scheduler';
 import { speaker } from '@desktop/app/speaker';
@@ -50,7 +50,7 @@ export function App() {
   return (
     <div className="safe-x flex min-h-dvh flex-col bg-base text-cream">
       <main className="safe-top min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-3 pb-3 pt-2 sm:px-4 sm:pb-4 sm:pt-3">
-        {tab?.render()}
+        <Suspense fallback={<div role="status" className="mx-auto mt-8 w-full max-w-sm rounded-xl border border-line bg-raised p-4 text-center text-sm text-muted">Opening section…</div>}>{tab?.render()}</Suspense>
       </main>
       <nav
         aria-label="Sections"
