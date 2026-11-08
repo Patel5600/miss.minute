@@ -43,6 +43,8 @@ dependencies {
     implementation("androidx.sqlite:sqlite:2.7.0")
     // WebViewAssetLoader and WebViewCompat.addWebMessageListener for the overlay and dashboard.
     implementation("androidx.webkit:webkit:1.18.0")
+    // Strong biometric prompt with CryptoObject support on API 26+.
+    implementation("androidx.biometric:biometric:1.1.0")
 
     testImplementation("junit:junit:4.13.2")
     // The real org.json: Android's stub jar returns defaults on the JVM.
