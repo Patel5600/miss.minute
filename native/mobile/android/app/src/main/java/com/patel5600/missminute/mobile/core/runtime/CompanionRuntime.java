@@ -98,7 +98,7 @@ public final class CompanionRuntime {
             if (!newInstance && current.state == next && equal(current.reason, reason)) {
                 return current;
             }
-            if (!allowed(current.state, next)) {
+            if (!allowed(current.state, next) && !(newInstance && current.state == next)) {
                 throw new IllegalStateException("illegal companion transition " + current.state + " -> " + next);
             }
             revision++;
