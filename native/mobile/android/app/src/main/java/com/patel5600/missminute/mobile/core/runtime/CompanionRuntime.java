@@ -56,16 +56,23 @@ public final class CompanionRuntime {
     /** Called exactly once by each new Android Service instance. */
     public Snapshot beginServiceInstance(boolean recovering) {
         synchronized (lock) {
-            serviceInstanceId = UUID.randomUUID().toString();
+            // Reuse the ID allocated for an explicit start request. A sticky restart from STOPPED
+            // has no pending request, so it receives a fresh service-instance ID here.
+            if (serviceInstanceId == null || recovering || current.state != State.STARTING) {
+                serviceInstanceId = UUID.randomUUID().toString();
+            }
         }
         return publish(recovering ? State.RECOVERING : State.STARTING, null, true);
     }
 
     /** An explicit user start request, before Android invokes Service.onCreate(). */
     public Snapshot requestStart() {
-        State state = snapshot().state;
-        if (state == State.STARTING || state == State.RUNNING || state == State.RECOVERING) {
-            return snapshot();
+        synchronized (lock) {
+            if (current.state == State.STARTING || current.state == State.RUNNING
+                    || current.state == State.RECOVERING) {
+                return current;
+            }
+            serviceInstanceId = UUID.randomUUID().toString();
         }
         return publish(State.STARTING, null, false);
     }
