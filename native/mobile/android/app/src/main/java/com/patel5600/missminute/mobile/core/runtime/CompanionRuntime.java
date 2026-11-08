@@ -131,7 +131,8 @@ public final class CompanionRuntime {
     private static boolean allowed(State from, State to) {
         switch (from) {
             case STOPPED:
-                return to == State.STARTING || to == State.PERMISSION_BLOCKED || to == State.FAILED\n                        || to == State.RECOVERING;
+                return to == State.STARTING || to == State.PERMISSION_BLOCKED || to == State.FAILED
+                        || to == State.RECOVERING;
             case STARTING:
                 return to == State.RUNNING || to == State.STOPPING || to == State.FAILED
                         || to == State.PERMISSION_BLOCKED || to == State.RECOVERING || to == State.STOPPED;
