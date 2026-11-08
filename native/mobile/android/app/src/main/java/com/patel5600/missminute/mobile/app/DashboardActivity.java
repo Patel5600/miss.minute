@@ -1,7 +1,6 @@
 package com.patel5600.missminute.mobile.app;
 
 import android.Manifest;
-import android.app.Activity;
 import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.res.Configuration;
@@ -20,6 +19,8 @@ import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+
+import androidx.fragment.app.FragmentActivity;
 
 import com.patel5600.missminute.mobile.BuildConfig;
 import com.patel5600.missminute.mobile.MainActivity;
@@ -47,7 +48,7 @@ import org.json.JSONObject;
  * that always works, even if the page hangs, above the dashboard page. It also owns the permission
  * flows: notifications, and Display over other apps (checked again in onResume).
  */
-public final class DashboardActivity extends Activity implements UiBridge {
+public final class DashboardActivity extends FragmentActivity implements UiBridge {
     /** Debug builds only: start her as if the owner pressed the button (adb am start --ez ... true). */
     static final String EXTRA_DEBUG_AUTOSTART = "com.patel5600.missminute.debug.AUTOSTART";
     private static final int REQUEST_NOTIFICATIONS = 4201;
