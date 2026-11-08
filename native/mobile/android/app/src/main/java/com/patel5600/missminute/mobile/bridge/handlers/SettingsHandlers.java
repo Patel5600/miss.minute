@@ -4,7 +4,6 @@ import android.content.Context;
 
 import androidx.fragment.app.FragmentActivity;
 
-import com.patel5600.missminute.mobile.R;
 import com.patel5600.missminute.mobile.app.MissMinutesApp;
 import com.patel5600.missminute.mobile.app.OwnerAuthenticator;
 import com.patel5600.missminute.mobile.bridge.BridgeRouter;
@@ -23,9 +22,9 @@ import org.json.JSONObject;
 
 /**
  * settings.get, settings.set and app.openMetadataWatcher. A value from the page is checked by
- * {@link SettingsRules} first. Switching on {@code proactive} or {@code share_system_with_remote}
- * gives her more freedom, so it waits for a tap in a native dialog; switching off never asks.
- * Those two live in the permission file, where a kill resets them.
+ * {@link SettingsRules} first. Enabling {@code proactive} or {@code share_system_with_remote}
+ * loosens policy and therefore requires a strong biometric proof; disabling either one is an
+ * immediate restriction. Those values are persisted with the other owner permission choices.
  */
 public final class SettingsHandlers {
     private SettingsHandlers() {
