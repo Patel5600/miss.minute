@@ -95,7 +95,8 @@ export function rigLocomotion(native: string): RigLocomotion {
     case 'WALK':
       return 'walk';
     case 'RUN':
-      return 'run';
+      // The current SVG rig exposes idle/walk/drag/fall only; native RUN remains a faster walk pose.
+      return 'walk';
     case 'DRAGGED':
       return 'drag';
     case 'FALL':
