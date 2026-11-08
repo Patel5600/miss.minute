@@ -22,6 +22,9 @@ import java.security.Signature;
 import java.security.cert.Certificate;
 import java.security.spec.ECGenParameterSpec;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * One-operation owner authentication. The biometric result is not treated as an authorization
@@ -33,6 +36,14 @@ public final class OwnerAuthenticator {
     private static final String KEY_ALIAS = "com.patel5600.missminute.owner-auth.ecdsa.v1";
     private static final long CHALLENGE_TTL_MS = 90_000L;
     private static final int AUTHENTICATORS = BiometricManager.Authenticators.BIOMETRIC_STRONG;
+    private static final AtomicBoolean IN_FLIGHT = new AtomicBoolean(false);
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    // Keystore IPC and ECDSA work must never run on Android's UI thread.
+    private static final ExecutorService CRYPTO = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "mm-owner-keystore");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     public interface Callback {
         void onAuthenticated(String proofId);
@@ -50,110 +61,131 @@ public final class OwnerAuthenticator {
             callback.onFailure("The authorization screen is no longer active.");
             return;
         }
-
-        final BiometricManager manager = BiometricManager.from(activity);
-        int availability = manager.canAuthenticate(AUTHENTICATORS);
-        if (availability != BiometricManager.BIOMETRIC_SUCCESS) {
-            callback.onFailure(availabilityMessage(availability));
+        if (!IN_FLIGHT.compareAndSet(false, true)) {
+            callback.onFailure("Another owner authorization is already in progress.");
             return;
         }
 
-        final OwnerAuthProof.Challenge challenge;
-        final KeyPair keyPair;
-        final Signature signature;
+        final AtomicBoolean completed = new AtomicBoolean(false);
+        final Handler main = MAIN;
+        final Runnable release = () -> IN_FLIGHT.set(false);
+        final java.util.function.Consumer<String> fail = reason -> main.post(() -> {
+            if (completed.compareAndSet(false, true)) {
+                release.run();
+                callback.onFailure(reason);
+            }
+        });
+
         try {
-            challenge = OwnerAuthProof.create(action, target, SystemClock.elapsedRealtime(), new SecureRandom());
-            keyPair = loadOrCreateKeyPair();
-            signature = Signature.getInstance("SHA256withECDSA");
-            signature.initSign(keyPair.getPrivate());
-        } catch (Exception error) {
-            callback.onFailure(safeKeyError(error));
-            return;
-        }
+            CRYPTO.execute(() -> {
+                try {
+                    int availability = BiometricManager.from(activity).canAuthenticate(AUTHENTICATORS);
+                    if (availability != BiometricManager.BIOMETRIC_SUCCESS) {
+                        fail.accept(availabilityMessage(availability));
+                        return;
+                    }
 
-        // A prompt may complete while an Activity is being recreated. Keep transaction
-        // completion on the main thread even if its original Activity instance is gone;
-        // the permission write is still protected by the native proof and revision check.
-        final Handler mainHandler = new Handler(Looper.getMainLooper());
-        Executor mainExecutor = command -> mainHandler.post(command);
+                    // All potentially blocking Keystore/provider calls are performed off-main.
+                    final OwnerAuthProof.Challenge challenge = OwnerAuthProof.create(
+                            action, target, SystemClock.elapsedRealtime(), new SecureRandom());
+                    final KeyPair keyPair = loadOrCreateKeyPair();
+                    final Signature signature = Signature.getInstance("SHA256withECDSA");
+                    signature.initSign(keyPair.getPrivate());
 
-        BiometricPrompt prompt = new BiometricPrompt(activity, mainExecutor,
-                new BiometricPrompt.AuthenticationCallback() {
-                    private boolean completed;
-
-                    private void failOnce(String reason) {
-                        if (!completed) {
-                            completed = true;
-                            callback.onFailure(reason);
+                    main.post(() -> {
+                        if (completed.get()) return;
+                        if (activity.isFinishing() || activity.isDestroyed()) {
+                            fail.accept("The authorization screen was closed before authentication.");
+                            return;
                         }
-                    }
 
-                    @Override
-                    public void onAuthenticationError(int errorCode, CharSequence errString) {
-                        failOnce(errorCode == BiometricPrompt.ERROR_USER_CANCELED
-                                || errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON
-                                ? "Owner authentication was canceled."
-                                : "Biometric authentication failed: " + safePromptError(errorCode));
-                    }
+                        Executor mainExecutor = command -> main.post(command);
+                        BiometricPrompt prompt = new BiometricPrompt(activity, mainExecutor,
+                                new BiometricPrompt.AuthenticationCallback() {
+                            @Override
+                            public void onAuthenticationError(int errorCode, CharSequence errString) {
+                                fail.accept(errorCode == BiometricPrompt.ERROR_USER_CANCELED
+                                        || errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON
+                                        ? "Owner authentication was canceled."
+                                        : "Biometric authentication failed: " + safePromptError(errorCode));
+                            }
 
-                    @Override
-                    public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
-                        if (completed) return;
+                            @Override
+                            public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
+                                if (completed.get()) return;
+                                if (SystemClock.elapsedRealtime() - challenge.issuedAtElapsedMs > CHALLENGE_TTL_MS) {
+                                    fail.accept("The authorization challenge expired. Try again.");
+                                    return;
+                                }
+                                int authenticationType = result.getAuthenticationType();
+                                // AndroidX may report UNKNOWN on API 26-29 even though this prompt
+                                // accepts BIOMETRIC_STRONG only. The auth-per-use Signature operation
+                                // is the proof on those releases. On API 30+ reject unknown methods.
+                                if (authenticationType == BiometricPrompt.AUTHENTICATION_RESULT_TYPE_DEVICE_CREDENTIAL
+                                        || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                                        && authenticationType != BiometricPrompt.AUTHENTICATION_RESULT_TYPE_BIOMETRIC)) {
+                                    fail.accept("A strong biometric is required for this operation.");
+                                    return;
+                                }
+                                BiometricPrompt.CryptoObject crypto = result.getCryptoObject();
+                                final Signature signer = crypto == null ? null : crypto.getSignature();
+                                if (signer == null) {
+                                    fail.accept("The authenticated cryptographic operation was not returned.");
+                                    return;
+                                }
+                                try {
+                                    CRYPTO.execute(() -> {
+                                        try {
+                                            signer.update(challenge.encoded());
+                                            byte[] signed = signer.sign();
+                                            boolean verified = OwnerAuthProof.verify(
+                                                    keyPair.getPublic(), challenge.encoded(), signed);
+                                            java.util.Arrays.fill(signed, (byte) 0);
+                                            if (!verified) {
+                                                fail.accept("The owner authentication proof could not be verified.");
+                                                return;
+                                            }
+                                            main.post(() -> {
+                                                if (completed.compareAndSet(false, true)) {
+                                                    release.run();
+                                                    callback.onAuthenticated(challenge.auditId());
+                                                }
+                                            });
+                                        } catch (Exception error) {
+                                            fail.accept(safeKeyError(error));
+                                        }
+                                    });
+                                } catch (RuntimeException rejected) {
+                                    fail.accept("The owner authentication operation could not be scheduled.");
+                                }
+                            }
+
+                            @Override
+                            public void onAuthenticationFailed() {
+                                // A failed biometric attempt is not terminal. Android keeps the prompt open.
+                            }
+                        });
+
+                        BiometricPrompt.PromptInfo promptInfo = new BiometricPrompt.PromptInfo.Builder()
+                                .setTitle("Authorize Miss Minutes")
+                                .setSubtitle("Verify this permission change")
+                                .setDescription("A strong biometric is required. This does not grant Android permissions.")
+                                .setAllowedAuthenticators(AUTHENTICATORS)
+                                .setNegativeButtonText("Cancel")
+                                .build();
                         try {
-                            if (SystemClock.elapsedRealtime() - challenge.issuedAtElapsedMs > CHALLENGE_TTL_MS) {
-                                failOnce("The authorization challenge expired. Try again.");
-                                return;
-                            }
-                            int authenticationType = result.getAuthenticationType();
-                            // AndroidX may report UNKNOWN on API 26-29 even though this prompt
-                            // accepts BIOMETRIC_STRONG only. The auth-per-use Signature operation
-                            // is the proof on those releases. On API 30+ reject unknown methods.
-                            if (authenticationType == BiometricPrompt.AUTHENTICATION_RESULT_TYPE_DEVICE_CREDENTIAL
-                                    || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-                                    && authenticationType != BiometricPrompt.AUTHENTICATION_RESULT_TYPE_BIOMETRIC)) {
-                                failOnce("A strong biometric is required for this operation.");
-                                return;
-                            }
-                            BiometricPrompt.CryptoObject crypto = result.getCryptoObject();
-                            Signature signer = crypto == null ? null : crypto.getSignature();
-                            if (signer == null) {
-                                failOnce("The authenticated cryptographic operation was not returned.");
-                                return;
-                            }
-                            signer.update(challenge.encoded());
-                            byte[] signed = signer.sign();
-                            boolean verified = OwnerAuthProof.verify(
-                                    keyPair.getPublic(), challenge.encoded(), signed);
-                            java.util.Arrays.fill(signed, (byte) 0);
-                            if (!verified) {
-                                failOnce("The owner authentication proof could not be verified.");
-                                return;
-                            }
-                            completed = true;
-                            callback.onAuthenticated(challenge.auditId());
-                        } catch (Exception error) {
-                            failOnce(safeKeyError(error));
+                            prompt.authenticate(promptInfo, new BiometricPrompt.CryptoObject(signature));
+                        } catch (RuntimeException error) {
+                            fail.accept("Could not start biometric authentication.");
                         }
-                    }
-
-                    @Override
-                    public void onAuthenticationFailed() {
-                        // A failed biometric attempt is not terminal. Android keeps the prompt open
-                        // so the owner can retry; no policy or persistent state is changed here.
-                    }
-                });
-
-        BiometricPrompt.PromptInfo promptInfo = new BiometricPrompt.PromptInfo.Builder()
-                .setTitle("Authorize Miss Minutes")
-                .setSubtitle("Verify this permission change")
-                .setDescription("A strong biometric is required. This does not grant Android permissions.")
-                .setAllowedAuthenticators(AUTHENTICATORS)
-                .setNegativeButtonText("Cancel")
-                .build();
-        try {
-            prompt.authenticate(promptInfo, new BiometricPrompt.CryptoObject(signature));
-        } catch (RuntimeException error) {
-            callback.onFailure("Could not start biometric authentication.");
+                    });
+                } catch (Exception error) {
+                    fail.accept(safeKeyError(error));
+                }
+            });
+        } catch (RuntimeException rejected) {
+            release.run();
+            callback.onFailure("The owner authentication worker is unavailable.");
         }
     }
 
