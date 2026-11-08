@@ -131,7 +131,7 @@ public final class CompanionRuntime {
     private static boolean allowed(State from, State to) {
         switch (from) {
             case STOPPED:
-                return to == State.STARTING || to == State.PERMISSION_BLOCKED || to == State.FAILED;
+                return to == State.STARTING || to == State.PERMISSION_BLOCKED || to == State.FAILED\n                        || to == State.RECOVERING;
             case STARTING:
                 return to == State.RUNNING || to == State.STOPPING || to == State.FAILED
                         || to == State.PERMISSION_BLOCKED || to == State.RECOVERING || to == State.STOPPED;
@@ -187,6 +187,16 @@ public final class CompanionRuntime {
             this.monotonicTimestampNanos = monotonicTimestampNanos;
             this.state = state;
             this.reason = reason;
+        }
+
+        public JSONObject toJson() throws JSONException {
+            return new JSONObject()
+                    .put("eventId", eventId)
+                    .put("serviceInstanceId", serviceInstanceId == null ? JSONObject.NULL : serviceInstanceId)
+                    .put("revision", revision)
+                    .put("monotonicTimestampNanos", monotonicTimestampNanos)
+                    .put("state", state.name())
+                    .put("reason", reason == null ? JSONObject.NULL : reason);
         }
     }
 }
