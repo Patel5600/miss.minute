@@ -11,7 +11,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Every published transition has a unique event ID, service-instance ID, monotonic
  * timestamp, and strictly increasing process revision.
  */
-public final class CompanionRuntime {\n    private static final CompanionRuntime PROCESS = new CompanionRuntime();\n\n    public static CompanionRuntime process() { return PROCESS; }
+public final class CompanionRuntime {
+    private static final CompanionRuntime PROCESS = new CompanionRuntime();
+
+    public static CompanionRuntime process() { return PROCESS; }
     public enum State {
         STOPPED,
         STARTING,
