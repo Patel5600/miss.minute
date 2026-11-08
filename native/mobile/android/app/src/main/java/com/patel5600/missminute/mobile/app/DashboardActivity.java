@@ -37,6 +37,7 @@ import com.patel5600.missminute.mobile.core.kill.KillPath;
 import com.patel5600.missminute.mobile.core.kill.KillState;
 import com.patel5600.missminute.mobile.core.protocol.Protocol;
 import com.patel5600.missminute.mobile.core.protocol.Role;
+import com.patel5600.missminute.mobile.core.runtime.CompanionRuntime;
 import com.patel5600.missminute.mobile.kill.KillSwitch;
 import com.patel5600.missminute.mobile.overlay.OverlayService;
 
@@ -59,6 +60,7 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
     private FrameLayout pageHolder;
     private TextView status;
     private Button stopButton;
+    private CompanionRuntime.Registration runtimeRegistration;
 
     private final KillSwitch.Listener killListener = new KillSwitch.Listener() {
         @Override
@@ -71,6 +73,24 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
                         push("kill.happened", new JSONObject().put("atMs", state.atMs).put("path", state.path.wireName));
                     } catch (JSONException ignored) {
                         // the page learns of the kill from its next status request
+                    }
+                }
+            });
+        }
+    };
+
+    private final CompanionRuntime.Listener runtimeListener = new CompanionRuntime.Listener() {
+        @Override
+        public void onChanged(final CompanionRuntime.Snapshot snapshot) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (isFinishing() || isDestroyed()) return;
+                    refreshHeader();
+                    try {
+                        push("state.changed", new JSONObject().put("runtime", snapshot.toJson()));
+                    } catch (JSONException ignored) {
+                        // The dashboard reconciles against the authoritative status on its next refresh.
                     }
                 }
             });
@@ -230,6 +250,7 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
     protected void onStart() {
         super.onStart();
         app.killSwitch().addListener(killListener);
+        runtimeRegistration = CompanionRuntime.process().observe(runtimeListener, true);
     }
 
     @Override
@@ -249,6 +270,10 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
     @Override
     protected void onStop() {
         app.killSwitch().removeListener(killListener);
+        if (runtimeRegistration != null) {
+            runtimeRegistration.unregister();
+            runtimeRegistration = null;
+        }
         super.onStop();
     }
 
@@ -286,36 +311,52 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
         }
     }
 
-    /** One line about her in the native header, derived from facts and not from the page. */
+    /** Status is rendered from the service-owned state machine, never from the page's last tap. */
     private void refreshHeader() {
-        boolean running = OverlayService.isRunning();
+        CompanionRuntime.Snapshot runtime = CompanionRuntime.process().snapshot();
+        boolean running = runtime.state == CompanionRuntime.State.RUNNING
+                || runtime.state == CompanionRuntime.State.RECOVERING;
         if (stopButton != null) {
-            // The native header is an emergency Stop control, not a permanent Stop button.
-            // Starting/stopping the companion is handled by the dashboard's actual service switch.
             stopButton.setVisibility(running ? View.VISIBLE : View.GONE);
+            stopButton.setEnabled(runtime.state == CompanionRuntime.State.RUNNING
+                    || runtime.state == CompanionRuntime.State.RECOVERING);
         }
-        int text;
-        if (OverlayService.isRunning()) {
-            switch (OverlayService.visibilityName()) {
-                case "DOCKED":
-                    text = R.string.header_status_docked;
-                    break;
-                case "PAUSED":
-                    text = R.string.header_status_paused;
-                    break;
-                case "HIDDEN":
-                    text = R.string.header_status_hidden;
-                    break;
-                default:
-                    text = R.string.header_status_running;
-                    break;
-            }
-        } else if (app.killSwitch().state().killed) {
-            text = R.string.header_status_stopped;
-        } else if (!android.provider.Settings.canDrawOverlays(this)) {
-            text = R.string.dashboard_overlay_denied;
-        } else {
-            text = R.string.header_status_off;
+
+        CharSequence text;
+        switch (runtime.state) {
+            case STARTING:
+                text = "Starting Miss Minutes…";
+                break;
+            case RUNNING:
+                switch (OverlayService.visibilityName()) {
+                    case "DOCKED": text = getString(R.string.header_status_docked); break;
+                    case "PAUSED": text = getString(R.string.header_status_paused); break;
+                    case "HIDDEN": text = getString(R.string.header_status_hidden); break;
+                    default: text = getString(R.string.header_status_running); break;
+                }
+                break;
+            case STOPPING:
+                text = "Stopping Miss Minutes…";
+                break;
+            case FAILED:
+                text = "Miss Minutes failed: " + (runtime.reason == null ? "unknown error" : runtime.reason);
+                break;
+            case PERMISSION_BLOCKED:
+                text = "Display over other apps permission required";
+                break;
+            case RECOVERING:
+                text = "Reconnecting Miss Minutes…";
+                break;
+            case STOPPED:
+            default:
+                if (app.killSwitch().state().killed) {
+                    text = getString(R.string.header_status_stopped);
+                } else if (!android.provider.Settings.canDrawOverlays(this)) {
+                    text = getString(R.string.dashboard_overlay_denied);
+                } else {
+                    text = getString(R.string.header_status_off);
+                }
+                break;
         }
         status.setText(text);
     }
