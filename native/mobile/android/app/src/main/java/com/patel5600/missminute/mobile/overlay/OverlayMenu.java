@@ -20,6 +20,7 @@ import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.ScrollView;
 
 import com.patel5600.missminute.mobile.BuildConfig;
 import com.patel5600.missminute.mobile.R;
@@ -92,18 +93,30 @@ final class OverlayMenu {
 
         final List<View> buttons = new ArrayList<>();
         root = new MenuFrame(context);
-        root.addView(buildCard(density, current, buttons),
-                new FrameLayout.LayoutParams(cardWidth, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout card = buildCard(density, current, buttons);
+        card.measure(View.MeasureSpec.makeMeasureSpec(cardWidth, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        int naturalCardHeight = card.getMeasuredHeight();
+        int top = Math.round((float) (world.insetTop * density));
+        int bottomInset = Math.round((float) (world.insetBottom * density));
+        int availableHeight = Math.max(1, screenHeight - top - bottomInset - 2 * margin);
+        int cardHeight = Math.min(naturalCardHeight, availableHeight);
+
+        // A short screen never pushes the menu under the system navigation area. The content
+        // scrolls within the safe viewport instead of extending beyond the physical display.
+        ScrollView scroller = new ScrollView(context);
+        scroller.setFillViewport(true);
+        scroller.setVerticalScrollBarEnabled(false);
+        scroller.addView(card, new ScrollView.LayoutParams(cardWidth, naturalCardHeight));
+        root.addView(scroller, new FrameLayout.LayoutParams(cardWidth, cardHeight));
         root.measure(View.MeasureSpec.makeMeasureSpec(cardWidth, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(screenHeight, View.MeasureSpec.AT_MOST));
-        int cardHeight = root.getMeasuredHeight();
+                View.MeasureSpec.makeMeasureSpec(cardHeight, View.MeasureSpec.EXACTLY));
 
         int x = anchorX + anchorWidth / 2 - cardWidth / 2;
         x = Math.max(margin, Math.min(x, screenWidth - cardWidth - margin));
         boolean herInLowerHalf = anchorY + anchorHeight / 2 > screenHeight / 2;
         int y = herInLowerHalf ? anchorY - cardHeight - margin : anchorY + anchorHeight + margin;
-        int top = Math.round((float) (world.insetTop * density));
-        int bottom = screenHeight - Math.round((float) (world.insetBottom * density)) - cardHeight;
+        int bottom = screenHeight - bottomInset - cardHeight;
         y = Math.max(top, Math.min(y, Math.max(top, bottom)));
 
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
@@ -187,7 +200,7 @@ final class OverlayMenu {
                 }
             });
             buttons.add(chip);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, Math.round(40 * density), 1f);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, Math.round(48 * density), 1f);
             lp.setMarginEnd(Math.round(4 * density));
             levels.addView(chip, lp);
         }
