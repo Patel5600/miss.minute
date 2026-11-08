@@ -33,3 +33,26 @@ jobs:
         run: npm run build
       - name: Lint
         run: npm run lint
+
+  android-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Build mobile WebView assets
+        run: npm run build:mobile
+      - name: Run Android unit tests and assemble APK
+        working-directory: native/mobile/android
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
