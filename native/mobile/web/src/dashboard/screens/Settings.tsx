@@ -558,19 +558,22 @@ function AndroidSettingsTab() {
   const native = useNativeState();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
 
   const info = native.info;
   const ready = native.phase === 'ready' && info !== null;
 
-  async function run(action: () => Promise<unknown>): Promise<void> {
+  async function run(action: () => Promise<unknown>, pendingMessage = 'Applying Android setting…'): Promise<void> {
     setBusy(true);
     setMessage(null);
+    setProgress(pendingMessage);
     try {
       await action();
     } catch (error) {
       setMessage(describeError(error));
     } finally {
       setBusy(false);
+      setProgress(null);
       await native.refresh();
     }
   }
@@ -588,6 +591,12 @@ function AndroidSettingsTab() {
           {message}
         </div>
       )}
+      {progress && (
+        <div role="status" aria-live="polite" className="flex items-center gap-2 rounded-xl border border-face/30 bg-face/10 px-4 py-3 text-sm text-cream">
+          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-face" />
+          <span>{progress}</span>
+        </div>
+      )}
 
       <Section
         title="Permission Mode"
@@ -603,7 +612,15 @@ function AndroidSettingsTab() {
                 role="radio"
                 aria-checked={selected}
                 disabled={busy || !ready}
-                onClick={() => void run(() => setMode(mode))}
+                onClick={() => {
+                  const raising = info?.mode != null && MODES.indexOf(mode) > MODES.indexOf(info.mode);
+                  void run(
+                    () => setMode(mode),
+                    raising
+                      ? 'Waiting for strong biometric verification, then saving the permission mode…'
+                      : 'Saving the stricter permission mode…',
+                  );
+                }}
                 className={`rounded-xl border px-4 py-3 text-left transition-colors disabled:opacity-50 ${
                   selected ? 'border-face bg-face/10' : 'border-line bg-base/40 hover:border-face/30'
                 }`}
@@ -626,7 +643,11 @@ function AndroidSettingsTab() {
           label="React on her own"
           description="Spontaneous small emotions and gestures when events occur. Never speaks unprompted."
           disabled={busy || !ready}
-          onChange={next => void run(() => setSetting('proactive', next))}
+          onChange={next => void run(
+            () => setSetting('proactive', next),
+            next ? 'Waiting for strong biometric verification, then enabling spontaneous reactions…'
+              : 'Disabling spontaneous reactions…',
+          )}
         />
       </Section>
 
