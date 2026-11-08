@@ -132,6 +132,18 @@ export function Home() {
 
   const info = native.info;
   const ready = native.phase === 'ready' && info !== null;
+  const runtimeState = info?.overlay.runtime?.state ?? null;
+  const transitionPending = runtimeState === 'STARTING' || runtimeState === 'STOPPING' || runtimeState === 'RECOVERING';
+  const companionSwitchChecked = runtimeState
+    ? runtimeState === 'STARTING' || runtimeState === 'RUNNING' || runtimeState === 'STOPPING' || runtimeState === 'RECOVERING'
+    : (info?.overlay.running ?? false);
+  const companionSwitchLabel = runtimeState === 'STARTING'
+    ? 'Starting Miss Minutes…'
+    : runtimeState === 'STOPPING'
+      ? 'Stopping Miss Minutes…'
+      : runtimeState === 'RECOVERING'
+        ? 'Reconnecting Miss Minutes…'
+        : 'Show her on my screen';
   const description = info ? describeOverlay(info.overlay) : null;
 
   async function run(action: () => Promise<void>): Promise<void> {
@@ -192,9 +204,9 @@ export function Home() {
 
       <section aria-label="On my screen" className="rounded-2xl border border-line bg-raised px-4 pb-4 pt-2">
         <Switch
-          checked={info?.overlay.running ?? false}
-          label="Show her on my screen"
-          disabled={busy || !ready}
+          checked={companionSwitchChecked}
+          label={companionSwitchLabel}
+          disabled={busy || !ready || transitionPending}
           onChange={(next) => void run(next ? turnOn : async () => void (await stopOverlay()))}
         />
         {description && (
