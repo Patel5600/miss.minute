@@ -251,6 +251,13 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
                 Log.d(RECOVERY_TAG, "restarted after the process was killed");
             }
         }
+        // A Stop that races an outstanding start request wins. Do not resurrect a service
+        // whose desired-running bit was already cleared while Android was dispatching the intent.
+        if (intent != null && ACTION_START.equals(intent.getAction()) && !app.settings().desiredRunning()) {
+            CompanionRuntime.process().requestStop();
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         if (!enterForeground()) {
             return START_NOT_STICKY;
         }
