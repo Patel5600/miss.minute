@@ -1,6 +1,8 @@
 package com.patel5600.missminute.mobile.app;
 
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
@@ -69,12 +71,11 @@ public final class OwnerAuthenticator {
             return;
         }
 
-        Executor mainExecutor = command -> {
-            if (activity.isFinishing() || activity.isDestroyed()) {
-                return;
-            }
-            activity.runOnUiThread(command);
-        };
+        // A prompt may complete while an Activity is being recreated. Keep transaction
+        // completion on the main thread even if its original Activity instance is gone;
+        // the permission write is still protected by the native proof and revision check.
+        final Handler mainHandler = new Handler(Looper.getMainLooper());
+        Executor mainExecutor = command -> mainHandler.post(command);
 
         BiometricPrompt prompt = new BiometricPrompt(activity, mainExecutor,
                 new BiometricPrompt.AuthenticationCallback() {
@@ -103,8 +104,13 @@ public final class OwnerAuthenticator {
                                 failOnce("The authorization challenge expired. Try again.");
                                 return;
                             }
-                            if (result.getAuthenticationType()
-                                    != BiometricPrompt.AUTHENTICATION_RESULT_TYPE_BIOMETRIC) {
+                            int authenticationType = result.getAuthenticationType();
+                            // AndroidX may report UNKNOWN on API 26-29 even though this prompt
+                            // accepts BIOMETRIC_STRONG only. The auth-per-use Signature operation
+                            // is the proof on those releases. On API 30+ reject unknown methods.
+                            if (authenticationType == BiometricPrompt.AUTHENTICATION_RESULT_TYPE_DEVICE_CREDENTIAL
+                                    || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                                    && authenticationType != BiometricPrompt.AUTHENTICATION_RESULT_TYPE_BIOMETRIC)) {
                                 failOnce("A strong biometric is required for this operation.");
                                 return;
                             }
