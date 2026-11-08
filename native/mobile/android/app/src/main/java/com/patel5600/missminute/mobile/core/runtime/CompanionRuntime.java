@@ -1,6 +1,9 @@
 package com.patel5600.missminute.mobile.core.runtime;
 
 import java.util.UUID;
+
+import org.json.JSONException;
+import org.json.JSONObject;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -8,7 +11,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Every published transition has a unique event ID, service-instance ID, monotonic
  * timestamp, and strictly increasing process revision.
  */
-public final class CompanionRuntime {
+public final class CompanionRuntime {\n    private static final CompanionRuntime PROCESS = new CompanionRuntime();\n\n    public static CompanionRuntime process() { return PROCESS; }
     public enum State {
         STOPPED,
         STARTING,
