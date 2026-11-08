@@ -34,6 +34,7 @@ import com.patel5600.missminute.mobile.core.RoamingLevel;
 import com.patel5600.missminute.mobile.core.SettingsRules;
 import com.patel5600.missminute.mobile.core.Visibility;
 import com.patel5600.missminute.mobile.core.World;
+import com.patel5600.missminute.mobile.core.runtime.CompanionRuntime;
 import com.patel5600.missminute.mobile.core.kill.KillPath;
 import com.patel5600.missminute.mobile.core.protocol.Message;
 import com.patel5600.missminute.mobile.core.protocol.Role;
@@ -59,7 +60,7 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
     public static final String ACTION_START = "com.patel5600.missminute.action.OVERLAY_START";
     public static final String ACTION_BRING_BACK = "com.patel5600.missminute.action.OVERLAY_BRING_BACK";
 
-    public enum StartResult { STARTED, NEEDS_OVERLAY_PERMISSION }
+    public enum StartResult { STARTED, NEEDS_OVERLAY_PERMISSION, FAILED }
 
     private static final String RECOVERY_TAG = "MMRecovery";
     private static final long HIDE_FOR_ONE_HOUR_MS = 60L * 60 * 1000;
@@ -147,25 +148,44 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
      * records that she should stay running, and starts the service. Call from the foreground.
      */
     public static StartResult start(Context context) {
+        CompanionRuntime runtime = CompanionRuntime.process();
         if (!android.provider.Settings.canDrawOverlays(context)) {
+            runtime.markPermissionBlocked("android.permission.SYSTEM_ALERT_WINDOW");
+            if (instance != null) {
+                MissMinutesApp.from(context).settings().setDesiredRunning(false);
+                context.stopService(new Intent(context, OverlayService.class));
+            }
             return StartResult.NEEDS_OVERLAY_PERMISSION;
         }
         MissMinutesApp app = MissMinutesApp.from(context);
         app.killSwitch().clearKillFlag();
         app.settings().setHiddenUntilMs(0);
         app.settings().setDesiredRunning(true);
-        context.startForegroundService(new Intent(context, OverlayService.class).setAction(ACTION_START));
-        return StartResult.STARTED;
+        runtime.requestStart();
+        try {
+            context.startForegroundService(new Intent(context, OverlayService.class).setAction(ACTION_START));
+            return StartResult.STARTED;
+        } catch (RuntimeException error) {
+            runtime.markFailed("foreground_service_start_rejected");
+            return StartResult.FAILED;
+        }
     }
 
     /** The owner turned her off. Not a kill: no audit record, nothing else is stopped. */
     public static void stop(Context context) {
         MissMinutesApp.from(context).settings().setDesiredRunning(false);
+        CompanionRuntime runtime = CompanionRuntime.process();
+        if (instance != null) {
+            runtime.requestStop();
+        }
         context.stopService(new Intent(context, OverlayService.class));
+        if (instance == null) {
+            runtime.markStopped();
+        }
     }
 
     public static boolean isRunning() {
-        return instance != null;
+        return CompanionRuntime.process().snapshot().state == CompanionRuntime.State.RUNNING;
     }
 
     public static boolean isWindowShown() {
@@ -200,6 +220,7 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
     public void onCreate() {
         super.onCreate();
         instance = this;
+        CompanionRuntime.process().beginServiceInstance(false);
         app = MissMinutesApp.from(this);
         clonedVoice = new ClonedVoicePlayer(this);
         tts = new TextToSpeech(this, status -> {
@@ -221,9 +242,11 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
                 if (BuildConfig.DEBUG) {
                     Log.d(RECOVERY_TAG, "restart refused desired=" + wanted + " killed=" + killed);
                 }
+                CompanionRuntime.process().requestStop();
                 stopSelf();
                 return START_NOT_STICKY;
             }
+            CompanionRuntime.process().markRecovering();
             if (BuildConfig.DEBUG) {
                 Log.d(RECOVERY_TAG, "restarted after the process was killed");
             }
@@ -232,14 +255,19 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
             return START_NOT_STICKY;
         }
         if (!android.provider.Settings.canDrawOverlays(this)) {
+            CompanionRuntime.process().markPermissionBlocked("android.permission.SYSTEM_ALERT_WINDOW");
             Notifications.postNeedsOverlayPermission(this);
             stopSelf();
             return START_NOT_STICKY;
         }
         if (loop == null && !buildOverlay()) {
+            if (CompanionRuntime.process().snapshot().state != CompanionRuntime.State.FAILED) {
+                CompanionRuntime.process().markFailed("overlay_initialization_failed");
+            }
             stopSelf();
             return START_NOT_STICKY;
         }
+        CompanionRuntime.process().markRunning();
         return START_STICKY;
     }
 
@@ -259,6 +287,7 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
                 Log.w(RECOVERY_TAG, "startForeground refused: " + e.getClass().getSimpleName());
             }
             Notifications.postBringBack(this);
+            CompanionRuntime.process().markFailed("foreground_service_start_rejected");
             stopSelf();
             return false;
         }
@@ -411,6 +440,18 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
         }
         stopForeground(STOP_FOREGROUND_REMOVE);
         instance = null;
+        CompanionRuntime runtime = CompanionRuntime.process();
+        CompanionRuntime.State state = runtime.snapshot().state;
+        if (state != CompanionRuntime.State.FAILED
+                && state != CompanionRuntime.State.PERMISSION_BLOCKED) {
+            boolean wanted = app != null && app.settings().desiredRunning();
+            boolean killed = app != null && app.killSwitch().state().killed;
+            if (state == CompanionRuntime.State.STOPPING || !wanted || killed) {
+                runtime.markStopped();
+            } else {
+                runtime.markRecovering();
+            }
+        }
         super.onDestroy();
     }
 
@@ -485,6 +526,7 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
     public void onWindowRefused() {
         // Android would not add the window: the permission was taken away, or one exists already.
         if (!android.provider.Settings.canDrawOverlays(this)) {
+            CompanionRuntime.process().markPermissionBlocked("android.permission.SYSTEM_ALERT_WINDOW");
             Notifications.postNeedsOverlayPermission(this);
             app.settings().setDesiredRunning(false);
             stopSelf();
