@@ -26,7 +26,7 @@ export function Panels() {
   };
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-4">
+    <div className="mx-auto flex w-full min-w-0 max-w-2xl flex-col gap-4">
       {/* Sub-nav pills */}
       <div className="flex gap-1.5 overflow-x-auto pb-1" role="tablist">
         {SUB_PANELS.map(({ id, label, icon: Icon }) => (
@@ -48,7 +48,7 @@ export function Panels() {
         ))}
       </div>
 
-      <div className="rounded-2xl border border-line bg-raised/80 p-3 sm:p-4">
+      <div className="w-full min-w-0 overflow-hidden rounded-2xl border border-line bg-raised/80 p-3 sm:p-4">
         {active === 'timeline' && <SacredTimeline />}
         {active === 'toolbelt' && <Toolbelt />}
         {active === 'dossier' && (
