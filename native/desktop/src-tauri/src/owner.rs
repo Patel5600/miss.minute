@@ -61,6 +61,12 @@ struct StoredTrustedDevice {
 pub struct OwnerStatus {
     pub enrolled: bool,
     pub authenticated: bool,
+    /// True when the engine is in `OwnerCandidate` state: a local recognition signal was
+    /// observed but device-backed authentication has not completed. Maps to the 🟡 UI state.
+    pub owner_candidate: bool,
+    /// Raw Rust AuthState as a snake_case string for the UI status pill.
+    pub auth_state: String,
+    pub session_id: Option<String>,
     pub platform: &'static str,
 }
 
@@ -113,9 +119,24 @@ impl DesktopAuthority {
         if !authenticated {
             self.session_id = None;
         }
+        let raw_state = self.engine.state();
+        let auth_state = match raw_state {
+            miss_minute_identity::AuthState::Unenrolled           => "unenrolled",
+            miss_minute_identity::AuthState::Locked               => "locked",
+            miss_minute_identity::AuthState::OwnerCandidate        => "owner_candidate",
+            miss_minute_identity::AuthState::AuthenticationPending => "authentication_pending",
+            miss_minute_identity::AuthState::OwnerAuthenticated    => "owner_authenticated",
+            miss_minute_identity::AuthState::StepUpRequired        => "step_up_required",
+            miss_minute_identity::AuthState::GuestActive           => "guest_active",
+            miss_minute_identity::AuthState::Revoked               => "revoked",
+            miss_minute_identity::AuthState::DeviceUntrusted       => "device_untrusted",
+        };
         OwnerStatus {
             enrolled: self.device.is_some(),
             authenticated,
+            owner_candidate: raw_state == miss_minute_identity::AuthState::OwnerCandidate,
+            auth_state: auth_state.to_owned(),
+            session_id: if authenticated { self.session_id.clone() } else { None },
             platform: if cfg!(windows) {
                 "windows-webauthn"
             } else {
