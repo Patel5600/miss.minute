@@ -7,19 +7,17 @@
 //! (`list_apps`, `system_info`) run directly through `desktop_run`.
 //!
 //! Every proposal, decision and result is appended to `desktop-audit.jsonl` in the app data
-//! directory. File contents, command output and secrets are never written to the audit log.
+//! directory. File contents and secrets are never written to the audit log.
 
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
     sync::{Mutex, OnceLock},
-    time::{Duration, Instant},
 };
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::Manager;
 
 use crate::util::{app_data_dir, now_ms, open_in_browser};
@@ -49,13 +47,25 @@ const PROPOSAL_TTL_MS: i64 = 10 * 60 * 1000;
 const MAX_PROPOSALS: usize = 32;
 const MAX_READ_BYTES: u64 = 256 * 1024;
 const MAX_WRITE_BYTES: usize = 2 * 1024 * 1024;
-const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_LIST_ENTRIES: usize = 200;
 const MAX_COPY_ENTRIES: usize = 5_000;
-const DEFAULT_COMMAND_SECS: u64 = 60;
-const MAX_COMMAND_SECS: u64 = 300;
 const MAX_ARG_CHARS: usize = 1024;
-const MAX_COMMAND_CHARS: usize = 8 * 1024;
+
+/// Proposal tools are an explicit capability registry. Keep this list limited to typed actions
+/// with dedicated validation and executors; arbitrary process or shell execution is forbidden.
+const PROPOSABLE_TOOLS: &[&str] = &[
+    "open_app",
+    "open_url",
+    "open_path",
+    "list_directory",
+    "read_text_file",
+    "write_text_file",
+    "make_directory",
+    "move_path",
+    "copy_path",
+    "delete_path",
+    "inspect_foreground_ui",
+];
 
 #[derive(Clone, Debug)]
 enum WriteMode {
@@ -74,7 +84,7 @@ enum Action {
     MovePath { from: PathBuf, to: PathBuf },
     CopyPath { from: PathBuf, to: PathBuf },
     DeletePath { path: PathBuf },
-    RunCommand { command: String, cwd: PathBuf, timeout_secs: u64 },
+    InspectForegroundUi,
 }
 
 struct Stored {
@@ -90,19 +100,16 @@ fn store() -> &'static Mutex<HashMap<String, Stored>> {
 // ── Commands ──────────────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn desktop_propose(
-    tool: String,
-    args: serde_json::Value,
-    window: tauri::WebviewWindow,
-) -> Result<DesktopProposal, String> {
+pub async fn desktop_propose(tool: String, args: serde_json::Value, window: tauri::WebviewWindow) -> Result<DesktopProposal, String> {
     crate::require_dashboard(&window)?;
+    let state = window.try_state::<crate::DesktopState>().ok_or_else(|| "Desktop authority state is unavailable.".to_owned())?;
+    crate::require_capability(&state, miss_minute_identity::capabilities::DEVICE_CONTROL)?;
     let app = window.app_handle().clone();
     let tool_name = tool.clone();
     let args_copy = args.clone();
-    let (action, preview, content_preview, risk) =
-        tauri::async_runtime::spawn_blocking(move || plan(&app, &tool_name, &args_copy))
-            .await
-            .map_err(|error| format!("Could not prepare the action: {error}"))??;
+    let (action, preview, content_preview, risk) = tauri::async_runtime::spawn_blocking(move || plan(&app, &tool_name, &args_copy))
+        .await
+        .map_err(|error| format!("Could not prepare the action: {error}"))??;
 
     let proposal = DesktopProposal {
         id: uuid::Uuid::new_v4().to_string(),
@@ -123,19 +130,20 @@ pub async fn desktop_propose(
         }
         proposals.insert(proposal.id.clone(), Stored { proposal: proposal.clone(), action });
     }
-    audit(window.app_handle(), json!({
-        "event": "proposed", "id": proposal.id, "tool": proposal.tool, "risk": proposal.risk, "preview": proposal.preview,
-    }));
+    audit(
+        window.app_handle(),
+        json!({
+            "event": "proposed", "id": proposal.id, "tool": proposal.tool, "risk": proposal.risk, "preview": proposal.preview,
+        }),
+    );
     Ok(proposal)
 }
 
 #[tauri::command]
-pub async fn desktop_run(
-    tool: String,
-    args: serde_json::Value,
-    window: tauri::WebviewWindow,
-) -> Result<DesktopActionResult, String> {
+pub async fn desktop_run(tool: String, args: serde_json::Value, window: tauri::WebviewWindow) -> Result<DesktopActionResult, String> {
     crate::require_dashboard(&window)?;
+    let state = window.try_state::<crate::DesktopState>().ok_or_else(|| "Desktop authority state is unavailable.".to_owned())?;
+    crate::require_capability(&state, miss_minute_identity::capabilities::DEVICE_CONTROL)?;
     let result = tauri::async_runtime::spawn_blocking(move || match tool.as_str() {
         "list_apps" => list_apps(args.get("query").and_then(Value::as_str)),
         "system_info" => system_info(),
@@ -149,11 +157,49 @@ pub async fn desktop_run(
 #[tauri::command]
 pub async fn desktop_approve(id: String, window: tauri::WebviewWindow) -> Result<DesktopActionResult, String> {
     crate::require_dashboard(&window)?;
+    let state = window.try_state::<crate::DesktopState>().ok_or_else(|| "Desktop authority state is unavailable.".to_owned())?;
+    crate::require_capability(&state, miss_minute_identity::capabilities::DEVICE_CONTROL)?;
+    let pending = {
+        let proposals = store().lock().map_err(|_| "Desktop action state is unavailable.".to_owned())?;
+        proposals.get(&id).map(|stored| stored.proposal.clone())
+    }
+    .ok_or_else(|| "That action is no longer waiting for approval.".to_owned())?;
+    if pending.expires_at_unix_ms <= now_ms() {
+        store().lock().map_err(|_| "Desktop action state is unavailable.".to_owned())?.remove(&id);
+        audit(window.app_handle(), json!({ "event": "expired", "id": id, "tool": pending.tool }));
+        return Err("That approval expired. Ask her again.".to_owned());
+    }
+
+    // Renderer-side approval is not an authorization boundary: a compromised page could call
+    // this Tauri command directly. Require a native OS dialog for the exact stored proposal.
+    // The dialog includes only the host-generated preview and can never substitute arguments.
+    if !confirm_proposal_native(&window, &pending)? {
+        store().lock().map_err(|_| "Desktop action state is unavailable.".to_owned())?.remove(&id);
+        audit(window.app_handle(), json!({ "event": "rejected", "id": id, "tool": pending.tool }));
+        return Err("The desktop action was declined.".to_owned());
+    }
+
+    // The owner may lock or the session may expire while the native dialog is open. Validate
+    // the proposal's stored risk (never renderer-supplied retry arguments) after that dialog.
+    let risk = match pending.risk.as_str() {
+        "low" => miss_minute_identity::Risk::Low,
+        "medium" => miss_minute_identity::Risk::Elevated,
+        "high" => miss_minute_identity::Risk::High,
+        "critical" => miss_minute_identity::Risk::Critical,
+        _ => return Err("That desktop action has an unknown risk level and was denied.".to_owned()),
+    };
+    {
+        let mut authority = state.owner.lock().map_err(|_| "Desktop authority is unavailable.".to_owned())?;
+        if matches!(risk, miss_minute_identity::Risk::High | miss_minute_identity::Risk::Critical) {
+            authority.require_step_up(&window)?;
+        }
+        authority.authorize_confirmed(miss_minute_identity::capabilities::DEVICE_CONTROL, risk, true)?;
+    }
     let stored = {
         let mut proposals = store().lock().map_err(|_| "Desktop action state is unavailable.".to_owned())?;
         proposals.remove(&id)
     }
-    .ok_or_else(|| "That action is no longer waiting for approval.".to_owned())?;
+    .ok_or_else(|| "That action was already handled or is no longer waiting for approval.".to_owned())?;
 
     let app = window.app_handle().clone();
     if stored.proposal.expires_at_unix_ms <= now_ms() {
@@ -168,15 +214,74 @@ pub async fn desktop_approve(id: String, window: tauri::WebviewWindow) -> Result
         .map_err(|error| format!("The action failed: {error}"))?;
     let result = match outcome {
         Ok(result) => result,
-        Err(message) => DesktopActionResult { ok: false, summary: message, output: None },
+        Err(message) => DesktopActionResult {
+            ok: false,
+            summary: message,
+            output: None,
+        },
     };
     audit(&app, json!({ "event": "result", "id": id, "tool": stored.proposal.tool, "ok": result.ok, "summary": result.summary }));
     Ok(result)
 }
 
+#[cfg(windows)]
+fn confirm_proposal_native(window: &tauri::WebviewWindow, proposal: &DesktopProposal) -> Result<bool, String> {
+    let preview = proposal.preview.chars().take(2400).collect::<String>();
+    let message = format!(
+        "Miss Minutes is requesting permission to run this desktop action.\n\nAction: {}\nRisk: {}\n\n{}\n\nApprove only if this exact action is intended.",
+        proposal.tool, proposal.risk, preview
+    );
+    show_native_confirmation(window, "Approve Miss Minutes desktop action", &message)
+}
+
+#[cfg(windows)]
+fn confirm_screen_capture_native(window: &tauri::WebviewWindow) -> Result<bool, String> {
+    show_native_confirmation(
+        window,
+        "Allow Miss Minutes to view the screen?",
+        "A screenshot of the current desktop will be captured and may be sent to the selected AI provider. Continue only if you intend to share the visible screen.",
+    )
+}
+
+#[cfg(windows)]
+fn show_native_confirmation(window: &tauri::WebviewWindow, title: &str, message: &str) -> Result<bool, String> {
+    use windows::{
+        Win32::UI::WindowsAndMessaging::{
+            IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_SETFOREGROUND, MB_TASKMODAL, MB_YESNO,
+            MessageBoxW,
+        },
+        core::PCWSTR,
+    };
+
+    let hwnd = window.hwnd().map_err(|error| format!("Cannot show native confirmation: {error}"))?;
+    let message: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
+    let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+    let result = unsafe {
+        MessageBoxW(
+            Some(hwnd),
+            PCWSTR(message.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TASKMODAL,
+        )
+    };
+    Ok(result == IDYES)
+}
+
+#[cfg(not(windows))]
+fn confirm_proposal_native(_: &tauri::WebviewWindow, _: &DesktopProposal) -> Result<bool, String> {
+    Err("Native confirmation for desktop actions is unavailable on this platform.".to_owned())
+}
+
+#[cfg(not(windows))]
+fn confirm_screen_capture_native(_: &tauri::WebviewWindow) -> Result<bool, String> {
+    Err("Native confirmation for screen capture is unavailable on this platform.".to_owned())
+}
+
 #[tauri::command]
 pub fn desktop_reject(id: String, window: tauri::WebviewWindow) -> Result<(), String> {
     crate::require_dashboard(&window)?;
+    let state = window.try_state::<crate::DesktopState>().ok_or_else(|| "Desktop authority state is unavailable.".to_owned())?;
+    crate::require_capability(&state, miss_minute_identity::capabilities::DEVICE_CONTROL)?;
     let removed = store().lock().map_err(|_| "Desktop action state is unavailable.".to_owned())?.remove(&id);
     if let Some(stored) = removed {
         audit(window.app_handle(), json!({ "event": "rejected", "id": id, "tool": stored.proposal.tool }));
@@ -187,16 +292,15 @@ pub fn desktop_reject(id: String, window: tauri::WebviewWindow) -> Result<(), St
 #[tauri::command]
 pub fn desktop_audit(limit: Option<u32>, window: tauri::WebviewWindow) -> Result<Vec<serde_json::Value>, String> {
     crate::require_dashboard(&window)?;
+    let state = window.try_state::<crate::DesktopState>().ok_or_else(|| "Desktop authority state is unavailable.".to_owned())?;
+    crate::require_capability(&state, miss_minute_identity::capabilities::DEVICE_CONTROL)?;
     let path = app_data_dir(window.app_handle())?.join("desktop-audit.jsonl");
-    let Ok(file) = std::fs::File::open(&path) else { return Ok(Vec::new()) };
+    let Ok(file) = std::fs::File::open(&path) else {
+        return Ok(Vec::new());
+    };
     let lines: Vec<String> = BufReader::new(file).lines().map_while(Result::ok).collect();
     let limit = limit.unwrap_or(100).clamp(1, 1000) as usize;
-    Ok(lines
-        .iter()
-        .rev()
-        .take(limit)
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .collect())
+    Ok(lines.iter().rev().take(limit).filter_map(|line| serde_json::from_str::<Value>(line).ok()).collect())
 }
 
 /// Captures the primary screen as a PNG data URL (at most 1600 px wide). Only ever called
@@ -204,10 +308,16 @@ pub fn desktop_audit(limit: Option<u32>, window: tauri::WebviewWindow) -> Result
 #[tauri::command]
 pub async fn capture_screen(window: tauri::WebviewWindow) -> Result<String, String> {
     crate::require_dashboard(&window)?;
+    let state = window.try_state::<crate::DesktopState>().ok_or_else(|| "Desktop authority state is unavailable.".to_owned())?;
+    crate::require_capability(&state, miss_minute_identity::capabilities::DEVICE_CONTROL)?;
+    if !confirm_screen_capture_native(&window)? {
+        audit(window.app_handle(), json!({ "event": "screen-capture-declined" }));
+        return Err("Screen capture was declined.".to_owned());
+    }
+    // Lock or expiry while the dialog is visible must stop this capture.
+    crate::require_capability(&state, miss_minute_identity::capabilities::DEVICE_CONTROL)?;
     let app = window.app_handle().clone();
-    let data = tauri::async_runtime::spawn_blocking(screenshot)
-        .await
-        .map_err(|error| format!("Screen capture failed: {error}"))??;
+    let data = tauri::async_runtime::spawn_blocking(screenshot).await.map_err(|error| format!("Screen capture failed: {error}"))??;
     audit(&app, json!({ "event": "screen-captured" }));
     Ok(data)
 }
@@ -217,16 +327,21 @@ pub async fn capture_screen(window: tauri::WebviewWindow) -> Result<String, Stri
 type Plan = (Action, String, Option<String>, &'static str);
 
 fn plan(app: &tauri::AppHandle, tool: &str, args: &Value) -> Result<Plan, String> {
+    if !PROPOSABLE_TOOLS.contains(&tool) {
+        return Err(format!("Unknown desktop tool \"{tool}\"."));
+    }
     let guard = Guard::new(app);
     match tool {
         "open_app" => {
             let name = text_arg(args, "name")?;
             let apps = start_menu_entries();
-            let app_entry = best_app_match(&apps, &name)
-                .ok_or_else(|| format!("I couldn't find an app called \"{name}\" in your Start menu."))?;
+            let app_entry = best_app_match(&apps, &name).ok_or_else(|| format!("I couldn't find an app called \"{name}\" in your Start menu."))?;
             let target = app_entry.1.to_string_lossy().into_owned();
             Ok((
-                Action::OpenTarget { target: target.clone(), what: app_entry.0.clone() },
+                Action::OpenTarget {
+                    target: target.clone(),
+                    what: app_entry.0.clone(),
+                },
                 format!("Open {} ({target}).", app_entry.0),
                 None,
                 "low",
@@ -240,7 +355,10 @@ fn plan(app: &tauri::AppHandle, tool: &str, args: &Value) -> Result<Plan, String
             }
             let url = parsed.to_string();
             Ok((
-                Action::OpenTarget { target: url.clone(), what: url.clone() },
+                Action::OpenTarget {
+                    target: url.clone(),
+                    what: url.clone(),
+                },
                 format!("Open {url} in your default browser."),
                 None,
                 "low",
@@ -251,12 +369,22 @@ fn plan(app: &tauri::AppHandle, tool: &str, args: &Value) -> Result<Plan, String
             let shown = display(&path);
             let kind = if path.is_dir() { "folder" } else { "file" };
             Ok((
-                Action::OpenTarget { target: shown.clone(), what: shown.clone() },
+                Action::OpenTarget {
+                    target: shown.clone(),
+                    what: shown.clone(),
+                },
                 format!("Open the {kind} {shown} with its default program."),
                 None,
                 "low",
             ))
         }
+        "inspect_foreground_ui" => Ok((
+            Action::InspectForegroundUi,
+            "Read accessible names and control roles from the foreground window. Password controls and field values are excluded; the result is shared with Miss Minutes and the selected AI provider."
+                .to_owned(),
+            None,
+            "medium",
+        )),
         "list_directory" => {
             let path = resolve_existing(&text_arg(args, "path")?)?;
             if !path.is_dir() {
@@ -264,7 +392,10 @@ fn plan(app: &tauri::AppHandle, tool: &str, args: &Value) -> Result<Plan, String
             }
             Ok((
                 Action::ListDirectory { path: path.clone() },
-                format!("List what is inside {} (names, sizes and dates; nothing is changed). Up to {MAX_LIST_ENTRIES} items are sent to your AI provider.", display(&path)),
+                format!(
+                    "List what is inside {} (names, sizes and dates; nothing is changed). Up to {MAX_LIST_ENTRIES} items are sent to your AI provider.",
+                    display(&path)
+                ),
                 None,
                 "medium",
             ))
@@ -274,25 +405,21 @@ fn plan(app: &tauri::AppHandle, tool: &str, args: &Value) -> Result<Plan, String
             if !path.is_file() {
                 return Err(format!("{} is not a file.", display(&path)));
             }
-            let max_bytes = args
-                .get("max_bytes")
-                .and_then(Value::as_u64)
-                .unwrap_or(MAX_READ_BYTES)
-                .clamp(1, MAX_READ_BYTES);
+            let max_bytes = args.get("max_bytes").and_then(Value::as_u64).unwrap_or(MAX_READ_BYTES).clamp(1, MAX_READ_BYTES);
             Ok((
                 Action::ReadTextFile { path: path.clone(), max_bytes },
-                format!("Read the text of {} (up to {} KB) and share it with Miss Minutes and your AI provider. Nothing is changed.", display(&path), max_bytes / 1024),
+                format!(
+                    "Read the text of {} (up to {} KB) and share it with Miss Minutes and your AI provider. Nothing is changed.",
+                    display(&path),
+                    max_bytes / 1024
+                ),
                 None,
                 "medium",
             ))
         }
         "write_text_file" => {
             let path = resolve_target(&text_arg(args, "path")?)?;
-            let content = args
-                .get("content")
-                .and_then(Value::as_str)
-                .ok_or("write_text_file needs \"content\".")?
-                .to_owned();
+            let content = args.get("content").and_then(Value::as_str).ok_or("write_text_file needs \"content\".")?.to_owned();
             if content.len() > MAX_WRITE_BYTES {
                 return Err("That text is too large to write (2 MB limit).".to_owned());
             }
@@ -304,7 +431,9 @@ fn plan(app: &tauri::AppHandle, tool: &str, args: &Value) -> Result<Plan, String
                 "create" => WriteMode::Create,
                 "overwrite" => WriteMode::Overwrite,
                 "append" => WriteMode::Append,
-                other => return Err(format!("Unknown write mode \"{other}\" (use create, overwrite or append).")),
+                other => {
+                    return Err(format!("Unknown write mode \"{other}\" (use create, overwrite or append)."));
+                }
             };
             let shown = display(&path);
             let preview = match mode {
@@ -314,10 +443,7 @@ fn plan(app: &tauri::AppHandle, tool: &str, args: &Value) -> Result<Plan, String
                     }
                     format!("Create the new file {shown} with the text below.")
                 }
-                WriteMode::Overwrite if path.exists() => format!(
-                    "Replace everything in {shown} with the text below. The current version is kept as {}.",
-                    display(&backup_path(&path))
-                ),
+                WriteMode::Overwrite if path.exists() => format!("Replace everything in {shown} with the text below. The current version is kept as {}.", display(&backup_path(&path))),
                 WriteMode::Overwrite => format!("Create the new file {shown} with the text below."),
                 WriteMode::Append => format!("Add the text below to the end of {shown}."),
             };
@@ -349,9 +475,19 @@ fn plan(app: &tauri::AppHandle, tool: &str, args: &Value) -> Result<Plan, String
             guard.check_write(&to)?;
             if tool == "move_path" {
                 guard.check_remove(&from)?;
-                Ok((Action::MovePath { from: from.clone(), to: to.clone() }, format!("Move {} to {}.", display(&from), display(&to)), None, "medium"))
+                Ok((
+                    Action::MovePath { from: from.clone(), to: to.clone() },
+                    format!("Move {} to {}.", display(&from), display(&to)),
+                    None,
+                    "medium",
+                ))
             } else {
-                Ok((Action::CopyPath { from: from.clone(), to: to.clone() }, format!("Copy {} to {}.", display(&from), display(&to)), None, "medium"))
+                Ok((
+                    Action::CopyPath { from: from.clone(), to: to.clone() },
+                    format!("Copy {} to {}.", display(&from), display(&to)),
+                    None,
+                    "medium",
+                ))
             }
         }
         "delete_path" => {
@@ -365,38 +501,22 @@ fn plan(app: &tauri::AppHandle, tool: &str, args: &Value) -> Result<Plan, String
                 "high",
             ))
         }
-        "run_command" => {
-            let command = args
-                .get("command")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or("run_command needs a \"command\".")?
-                .to_owned();
-            if command.len() > MAX_COMMAND_CHARS || command.contains('\0') {
-                return Err("That command is too long or contains invalid characters.".to_owned());
-            }
-            let cwd = match args.get("cwd").and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()) {
-                Some(raw) => resolve_existing(raw)?,
-                None => home_dir()?,
-            };
-            if !cwd.is_dir() {
-                return Err(format!("{} is not a folder.", display(&cwd)));
-            }
-            let timeout_secs = args
-                .get("timeout_seconds")
-                .and_then(Value::as_u64)
-                .unwrap_or(DEFAULT_COMMAND_SECS)
-                .clamp(1, MAX_COMMAND_SECS);
-            Ok((
-                Action::RunCommand { command: command.clone(), cwd: cwd.clone(), timeout_secs },
-                format!("Run this PowerShell command in {} (it is stopped after {timeout_secs} seconds, and anything it starts closes when Miss Minutes closes):", display(&cwd)),
-                Some(command),
-                "high",
-            ))
-        }
         "list_apps" | "system_info" => Err(format!("\"{tool}\" is read-only and runs without approval.")),
         other => Err(format!("Unknown desktop tool \"{other}\".")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PROPOSABLE_TOOLS;
+
+    #[test]
+    fn desktop_proposals_are_an_explicit_typed_allowlist() {
+        assert!(PROPOSABLE_TOOLS.contains(&"open_app"));
+        assert!(PROPOSABLE_TOOLS.contains(&"delete_path"));
+        assert!(!PROPOSABLE_TOOLS.contains(&"run_command"));
+        assert!(!PROPOSABLE_TOOLS.contains(&"powershell"));
+        assert!(!PROPOSABLE_TOOLS.contains(&"execute_shell"));
     }
 }
 
@@ -471,18 +591,13 @@ fn lower(path: &Path) -> PathBuf {
 const KNOWN_FOLDERS: [&str; 6] = ["desktop", "documents", "downloads", "pictures", "music", "videos"];
 
 fn home_dir() -> Result<PathBuf, String> {
-    std::env::var_os("USERPROFILE")
-        .map(PathBuf::from)
-        .ok_or_else(|| "Your user folder could not be found.".to_owned())
+    std::env::var_os("USERPROFILE").map(PathBuf::from).ok_or_else(|| "Your user folder could not be found.".to_owned())
 }
 
 #[cfg(windows)]
 fn known_folder(name: &str) -> Option<PathBuf> {
     use windows::Win32::System::Com::CoTaskMemFree;
-    use windows::Win32::UI::Shell::{
-        FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Videos,
-        KNOWN_FOLDER_FLAG, SHGetKnownFolderPath,
-    };
+    use windows::Win32::UI::Shell::{FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Videos, KNOWN_FOLDER_FLAG, SHGetKnownFolderPath};
     let id = match name {
         "desktop" => FOLDERID_Desktop,
         "documents" => FOLDERID_Documents,
@@ -572,9 +687,7 @@ fn strip_verbatim(path: PathBuf) -> PathBuf {
 
 fn resolve_existing(raw: &str) -> Result<PathBuf, String> {
     let path = expand(raw)?;
-    let canonical = path
-        .canonicalize()
-        .map_err(|_| format!("{} does not exist.", display(&path)))?;
+    let canonical = path.canonicalize().map_err(|_| format!("{} does not exist.", display(&path)))?;
     Ok(strip_verbatim(canonical))
 }
 
@@ -589,9 +702,7 @@ fn resolve_target(raw: &str) -> Result<PathBuf, String> {
     }
     let parent = path.parent().ok_or("That path has no folder.")?;
     let name = path.file_name().ok_or("That path has no name.")?;
-    let parent = parent
-        .canonicalize()
-        .map_err(|_| format!("The folder {} does not exist.", display(parent)))?;
+    let parent = parent.canonicalize().map_err(|_| format!("The folder {} does not exist.", display(parent)))?;
     Ok(strip_verbatim(parent).join(name))
 }
 
@@ -608,7 +719,11 @@ fn backup_path(path: &Path) -> PathBuf {
 // ── Execution ─────────────────────────────────────────────────────────────────────────────
 
 fn done(summary: impl Into<String>, output: Option<String>) -> Result<DesktopActionResult, String> {
-    Ok(DesktopActionResult { ok: true, summary: summary.into(), output })
+    Ok(DesktopActionResult {
+        ok: true,
+        summary: summary.into(),
+        output,
+    })
 }
 
 fn execute(action: Action) -> Result<DesktopActionResult, String> {
@@ -636,13 +751,23 @@ fn execute(action: Action) -> Result<DesktopActionResult, String> {
             }
             let more = total.saturating_sub(rows.len());
             let output = json!({ "path": display(&path), "entries": rows, "more": more }).to_string();
-            done(format!("Listed {} items in {}{}.", total, display(&path), if more > 0 { format!(" (showing {MAX_LIST_ENTRIES})") } else { String::new() }), Some(output))
+            done(
+                format!(
+                    "Listed {} items in {}{}.",
+                    total,
+                    display(&path),
+                    if more > 0 { format!(" (showing {MAX_LIST_ENTRIES})") } else { String::new() }
+                ),
+                Some(output),
+            )
         }
         Action::ReadTextFile { path, max_bytes } => {
             let mut file = std::fs::File::open(&path).map_err(|error| format!("Cannot open {}: {error}", display(&path)))?;
             let size = file.metadata().map(|m| m.len()).unwrap_or(0);
             let mut bytes = Vec::new();
-            Read::take(&mut file, max_bytes).read_to_end(&mut bytes).map_err(|error| format!("Cannot read {}: {error}", display(&path)))?;
+            Read::take(&mut file, max_bytes)
+                .read_to_end(&mut bytes)
+                .map_err(|error| format!("Cannot read {}: {error}", display(&path)))?;
             if bytes.iter().take(8192).any(|b| *b == 0) {
                 return Err(format!("{} looks like a binary file, not text.", display(&path)));
             }
@@ -653,38 +778,36 @@ fn execute(action: Action) -> Result<DesktopActionResult, String> {
                 Some(text),
             )
         }
-        Action::WriteTextFile { path, content, mode } => {
-            match mode {
-                WriteMode::Create => {
-                    let mut file = std::fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&path)
-                        .map_err(|error| format!("Cannot create {}: {error}", display(&path)))?;
-                    file.write_all(content.as_bytes()).map_err(|error| format!("Cannot write {}: {error}", display(&path)))?;
-                    done(format!("Created {}.", display(&path)), None)
-                }
-                WriteMode::Overwrite => {
-                    let mut note = String::new();
-                    if path.exists() {
-                        let backup = backup_path(&path);
-                        std::fs::copy(&path, &backup).map_err(|error| format!("Cannot back up {}: {error}", display(&path)))?;
-                        note = format!(" The old version is in {}.", display(&backup));
-                    }
-                    crate::util::atomic_write(&path, content.as_bytes())?;
-                    done(format!("Saved {}.{note}", display(&path)), None)
-                }
-                WriteMode::Append => {
-                    let mut file = std::fs::OpenOptions::new()
-                        .append(true)
-                        .create(true)
-                        .open(&path)
-                        .map_err(|error| format!("Cannot open {}: {error}", display(&path)))?;
-                    file.write_all(content.as_bytes()).map_err(|error| format!("Cannot write {}: {error}", display(&path)))?;
-                    done(format!("Added to {}.", display(&path)), None)
-                }
+        Action::WriteTextFile { path, content, mode } => match mode {
+            WriteMode::Create => {
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .map_err(|error| format!("Cannot create {}: {error}", display(&path)))?;
+                file.write_all(content.as_bytes()).map_err(|error| format!("Cannot write {}: {error}", display(&path)))?;
+                done(format!("Created {}.", display(&path)), None)
             }
-        }
+            WriteMode::Overwrite => {
+                let mut note = String::new();
+                if path.exists() {
+                    let backup = backup_path(&path);
+                    std::fs::copy(&path, &backup).map_err(|error| format!("Cannot back up {}: {error}", display(&path)))?;
+                    note = format!(" The old version is in {}.", display(&backup));
+                }
+                crate::util::atomic_write(&path, content.as_bytes())?;
+                done(format!("Saved {}.{note}", display(&path)), None)
+            }
+            WriteMode::Append => {
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(&path)
+                    .map_err(|error| format!("Cannot open {}: {error}", display(&path)))?;
+                file.write_all(content.as_bytes()).map_err(|error| format!("Cannot write {}: {error}", display(&path)))?;
+                done(format!("Added to {}.", display(&path)), None)
+            }
+        },
         Action::MakeDirectory { path } => {
             std::fs::create_dir_all(&path).map_err(|error| format!("Cannot create {}: {error}", display(&path)))?;
             done(format!("Created the folder {}.", display(&path)), None)
@@ -693,11 +816,13 @@ fn execute(action: Action) -> Result<DesktopActionResult, String> {
             if to.exists() {
                 return Err(format!("{} already exists; nothing was moved.", display(&to)));
             }
-            std::fs::rename(&from, &to).or_else(|_| {
-                // Across drives rename fails: copy, then send the original to the Recycle Bin.
-                copy_recursive(&from, &to, &mut 0)?;
-                recycle(&from)
-            }).map_err(|error| format!("Cannot move {}: {error}", display(&from)))?;
+            std::fs::rename(&from, &to)
+                .or_else(|_| {
+                    // Across drives rename fails: copy, then send the original to the Recycle Bin.
+                    copy_recursive(&from, &to, &mut 0)?;
+                    recycle(&from)
+                })
+                .map_err(|error| format!("Cannot move {}: {error}", display(&from)))?;
             done(format!("Moved {} to {}.", display(&from), display(&to)), None)
         }
         Action::CopyPath { from, to } => {
@@ -712,7 +837,153 @@ fn execute(action: Action) -> Result<DesktopActionResult, String> {
             recycle(&path).map_err(|error| format!("Cannot recycle {}: {error}", display(&path)))?;
             done(format!("Moved {} to the Recycle Bin.", display(&path)), None)
         }
-        Action::RunCommand { command, cwd, timeout_secs } => run_powershell(&command, &cwd, timeout_secs),
+        Action::InspectForegroundUi => inspect_foreground_ui(),
+    }
+}
+
+#[cfg(windows)]
+fn inspect_foreground_ui() -> Result<DesktopActionResult, String> {
+    let output = windows_accessibility::snapshot()?;
+    let count = serde_json::from_str::<Value>(&output)
+        .ok()
+        .and_then(|value| value.get("elements").and_then(Value::as_array).map(Vec::len))
+        .unwrap_or(0);
+    done(format!("Read {count} accessible controls from the foreground window."), Some(output))
+}
+
+#[cfg(not(windows))]
+fn inspect_foreground_ui() -> Result<DesktopActionResult, String> {
+    Err("Foreground UI Automation is currently available on Windows only.".to_owned())
+}
+
+#[cfg(windows)]
+mod windows_accessibility {
+    use serde_json::json;
+    use windows::{
+        Win32::Foundation::{HWND, LPARAM},
+        Win32::{
+            System::{
+                Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize},
+                Threading::GetCurrentProcessId,
+            },
+            UI::{
+                Accessibility::{CUIAutomation, IUIAutomation, TreeScope_Subtree},
+                WindowsAndMessaging::{EnumWindows, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible},
+            },
+        },
+        core::BOOL,
+    };
+
+    const MAX_ELEMENTS: usize = 120;
+    const MAX_TEXT_CHARS: usize = 160;
+
+    struct ComApartment;
+
+    impl Drop for ComApartment {
+        fn drop(&mut self) {
+            unsafe { CoUninitialize() };
+        }
+    }
+
+    pub(super) fn snapshot() -> Result<String, String> {
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED)
+                .ok()
+                .map_err(|error| format!("Could not initialize UI Automation: {error}"))?;
+            let _apartment = ComApartment;
+            read_foreground_window()
+        }
+    }
+
+    unsafe fn read_foreground_window() -> Result<String, String> {
+        let mut hwnd = unsafe { GetForegroundWindow() };
+        let mut target_source = "foreground";
+        let mut process_id = window_process_id(hwnd);
+        if hwnd.0.is_null() || process_id == unsafe { GetCurrentProcessId() } {
+            hwnd = window_behind_companion()?;
+            process_id = window_process_id(hwnd);
+            target_source = "topmost external window behind Miss Minutes";
+        }
+        if hwnd.0.is_null() {
+            return Err("There is no foreground application window to inspect.".to_owned());
+        }
+
+        let title_length = unsafe { GetWindowTextLengthW(hwnd) }.clamp(0, 4096) as usize;
+        let mut title_buffer = vec![0u16; title_length.saturating_add(1)];
+        let title_read = unsafe { GetWindowTextW(hwnd, &mut title_buffer) }.max(0) as usize;
+        let title = String::from_utf16_lossy(&title_buffer[..title_read.min(title_buffer.len())]);
+
+        let automation: IUIAutomation = unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }.map_err(|error| format!("Windows UI Automation could not start: {error}"))?;
+        let root = unsafe { automation.ElementFromHandle(hwnd) }.map_err(|error| format!("Windows could not expose this window's accessible controls: {error}"))?;
+        let condition = unsafe { automation.CreateTrueCondition() }.map_err(|error| format!("Windows UI Automation could not create a query: {error}"))?;
+        let elements = unsafe { root.FindAll(TreeScope_Subtree, &condition) }.map_err(|error| format!("Windows could not read the accessibility tree: {error}"))?;
+        let length = unsafe { elements.Length() }.map_err(|error| format!("Windows could not count accessible controls: {error}"))?.max(0) as usize;
+
+        let mut rows = Vec::with_capacity(length.min(MAX_ELEMENTS));
+        for index in 0..length.min(MAX_ELEMENTS) {
+            let Ok(element) = (unsafe { elements.GetElement(index as i32) }) else { continue };
+            // Fail closed when password status cannot be determined. Never read UIA Value.
+            if unsafe { element.CurrentIsPassword() }.map(|flag| flag.as_bool()).unwrap_or(true) {
+                continue;
+            }
+            let name = unsafe { element.CurrentName() }.map(|value| value.to_string()).unwrap_or_default();
+            let automation_id = unsafe { element.CurrentAutomationId() }.map(|value| value.to_string()).unwrap_or_default();
+            if name.trim().is_empty() && automation_id.trim().is_empty() {
+                continue;
+            }
+            let control_type = unsafe { element.CurrentControlType() }.map(|value| value.0).unwrap_or_default();
+            let bounds = unsafe { element.CurrentBoundingRectangle() }.ok();
+            rows.push(json!({
+                "name": truncate(&name),
+                "automation_id": truncate(&automation_id),
+                "control_type": control_type,
+                "enabled": unsafe { element.CurrentIsEnabled() }.map(|value| value.as_bool()).ok(),
+                "bounds": bounds.map(|rect| json!({ "left": rect.left, "top": rect.top, "right": rect.right, "bottom": rect.bottom })),
+            }));
+        }
+
+        Ok(json!({
+            "window_title": truncate(&title),
+            "window_process_id": process_id,
+            "target_source": target_source,
+            "elements": rows,
+            "truncated": length > MAX_ELEMENTS,
+            "password_values_read": false,
+        })
+        .to_string())
+    }
+
+    fn window_process_id(hwnd: HWND) -> u32 {
+        let mut process_id = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
+        process_id
+    }
+
+    fn window_behind_companion() -> Result<HWND, String> {
+        struct Search {
+            owner_pid: u32,
+            candidate: Option<HWND>,
+        }
+        unsafe extern "system" fn visit(hwnd: HWND, parameter: LPARAM) -> BOOL {
+            let search = unsafe { &mut *(parameter.0 as *mut Search) };
+            if search.candidate.is_none() && unsafe { IsWindowVisible(hwnd) }.as_bool() && window_process_id(hwnd) != search.owner_pid {
+                search.candidate = Some(hwnd);
+            }
+            BOOL(1)
+        }
+
+        let mut search = Search {
+            owner_pid: unsafe { GetCurrentProcessId() },
+            candidate: None,
+        };
+        unsafe { EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize)) }.map_err(|error| format!("Windows could not locate the last application window: {error}"))?;
+        search
+            .candidate
+            .ok_or_else(|| "Put the application you want Miss Minutes to inspect in front, then ask again.".to_owned())
+    }
+
+    fn truncate(value: &str) -> String {
+        value.chars().take(MAX_TEXT_CHARS).collect()
     }
 }
 
@@ -741,11 +1012,8 @@ fn copy_recursive(from: &Path, to: &Path, count: &mut usize) -> Result<(), Strin
 
 #[cfg(windows)]
 fn recycle(path: &Path) -> Result<(), String> {
+    use windows::Win32::UI::Shell::{FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING, SHFILEOPSTRUCTW, SHFileOperationW};
     use windows::core::PCWSTR;
-    use windows::Win32::UI::Shell::{
-        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING, FO_DELETE,
-        SHFILEOPSTRUCTW,
-    };
     // pFrom is a list of NUL-terminated paths ending with an extra NUL.
     let mut from: Vec<u16> = path.as_os_str().to_string_lossy().encode_utf16().collect();
     from.push(0);
@@ -773,92 +1041,6 @@ fn recycle(_path: &Path) -> Result<(), String> {
     Err("Moving to the trash is supported on Windows only.".to_owned())
 }
 
-fn run_powershell(command: &str, cwd: &Path, timeout_secs: u64) -> Result<DesktopActionResult, String> {
-    let mut process = Command::new("powershell.exe");
-    process
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command])
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        process.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    // Spawned into the app's job object: the command and everything it starts end with the app,
-    // which also lets the kill switch stop it.
-    let mut child = crate::job::spawn_in_job(&mut process).map_err(|error| format!("Cannot start PowerShell: {error}"))?;
-    let stdout = child.stdout.take().ok_or("PowerShell output is unavailable.")?;
-    let stderr = child.stderr.take().ok_or("PowerShell errors are unavailable.")?;
-    let read_capped = |mut stream: Box<dyn Read + Send>| {
-        std::thread::spawn(move || {
-            let mut kept = Vec::new();
-            let mut chunk = [0u8; 8192];
-            let mut dropped = 0usize;
-            while let Ok(n) = stream.read(&mut chunk) {
-                if n == 0 {
-                    break;
-                }
-                let room = MAX_OUTPUT_BYTES.saturating_sub(kept.len());
-                kept.extend_from_slice(&chunk[..n.min(room)]);
-                dropped += n.saturating_sub(room);
-            }
-            (String::from_utf8_lossy(&kept).into_owned(), dropped)
-        })
-    };
-    let out_reader = read_capped(Box::new(stdout));
-    let err_reader = read_capped(Box::new(stderr));
-
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    let mut timed_out = false;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() >= deadline => {
-                timed_out = true;
-                // Kill the whole tree: commands often start child processes.
-                let _ = Command::new("taskkill")
-                    .args(["/PID", &child.id().to_string(), "/T", "/F"])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                let _ = child.kill();
-                break child.wait().ok();
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(error) => return Err(format!("Lost track of PowerShell: {error}")),
-        }
-    };
-    let (out, out_dropped) = out_reader.join().unwrap_or_default();
-    let (err, err_dropped) = err_reader.join().unwrap_or_default();
-    let code = status.and_then(|s| s.code());
-    let mut output = String::new();
-    if !out.trim().is_empty() {
-        output.push_str(out.trim_end());
-        if out_dropped > 0 {
-            output.push_str(&format!("\n… ({out_dropped} more bytes not shown)"));
-        }
-    }
-    if !err.trim().is_empty() {
-        if !output.is_empty() {
-            output.push_str("\n\n");
-        }
-        output.push_str("[errors]\n");
-        output.push_str(err.trim_end());
-        if err_dropped > 0 {
-            output.push_str(&format!("\n… ({err_dropped} more bytes not shown)"));
-        }
-    }
-    let ok = !timed_out && code == Some(0);
-    let summary = if timed_out {
-        format!("The command was stopped after {timeout_secs} seconds.")
-    } else {
-        format!("The command finished with exit code {}.", code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_owned()))
-    };
-    Ok(DesktopActionResult { ok, summary, output: if output.is_empty() { None } else { Some(output) } })
-}
-
 // ── Read-only queries ─────────────────────────────────────────────────────────────────────
 
 fn start_menu_entries() -> Vec<(String, PathBuf)> {
@@ -874,7 +1056,9 @@ fn start_menu_entries() -> Vec<(String, PathBuf)> {
         if depth > 4 || out.len() > 2000 {
             return;
         }
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -929,7 +1113,10 @@ fn system_info() -> Result<DesktopActionResult, String> {
     let mut info = serde_json::Map::new();
     info.insert("computer".into(), json!(std::env::var("COMPUTERNAME").ok()));
     info.insert("user".into(), json!(std::env::var("USERNAME").ok()));
-    info.insert("cpu".into(), json!(registry_string(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString").map(|s| s.trim().to_owned())));
+    info.insert(
+        "cpu".into(),
+        json!(registry_string(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString").map(|s| s.trim().to_owned())),
+    );
     info.insert("cores".into(), json!(std::thread::available_parallelism().map(|n| n.get()).ok()));
     let build = registry_string(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuild");
     let display_version = registry_string(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "DisplayVersion");
@@ -940,7 +1127,14 @@ fn system_info() -> Result<DesktopActionResult, String> {
         (Some(name), _) => name.clone(),
         _ => "Windows".to_owned(),
     };
-    info.insert("os".into(), json!(format!("{os}{}{}", display_version.map(|v| format!(" {v}")).unwrap_or_default(), build.map(|b| format!(" (build {b})")).unwrap_or_default())));
+    info.insert(
+        "os".into(),
+        json!(format!(
+            "{os}{}{}",
+            display_version.map(|v| format!(" {v}")).unwrap_or_default(),
+            build.map(|b| format!(" (build {b})")).unwrap_or_default()
+        )),
+    );
     info.insert("localTime".into(), json!(chrono::Local::now().format("%A %Y-%m-%d %H:%M").to_string()));
     windows_metrics(&mut info);
     let summary = format!(
@@ -953,37 +1147,49 @@ fn system_info() -> Result<DesktopActionResult, String> {
 
 #[cfg(windows)]
 fn windows_metrics(info: &mut serde_json::Map<String, Value>) {
-    use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
     use windows::Win32::System::SystemInformation::{GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    use windows::core::{HSTRING, PCWSTR};
     const GB: f64 = 1024.0 * 1024.0 * 1024.0;
     // SAFETY: plain Win32 queries filling caller-owned structs.
     unsafe {
-        let mut memory = MEMORYSTATUSEX { dwLength: size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
+        let mut memory = MEMORYSTATUSEX {
+            dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
         if GlobalMemoryStatusEx(&mut memory).is_ok() {
-            info.insert("memoryGB".into(), json!({
-                "total": (memory.ullTotalPhys as f64 / GB * 10.0).round() / 10.0,
-                "free": (memory.ullAvailPhys as f64 / GB * 10.0).round() / 10.0,
-                "usedPercent": memory.dwMemoryLoad,
-            }));
+            info.insert(
+                "memoryGB".into(),
+                json!({
+                    "total": (memory.ullTotalPhys as f64 / GB * 10.0).round() / 10.0,
+                    "free": (memory.ullAvailPhys as f64 / GB * 10.0).round() / 10.0,
+                    "usedPercent": memory.dwMemoryLoad,
+                }),
+            );
         }
         let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_owned()) + "\\";
         let root = HSTRING::from(drive.as_str());
         let (mut free, mut total) = (0u64, 0u64);
         if GetDiskFreeSpaceExW(PCWSTR(root.as_ptr()), Some(&mut free), Some(&mut total), None).is_ok() {
-            info.insert("systemDrive".into(), json!({
-                "drive": drive,
-                "freeGB": (free as f64 / GB * 10.0).round() / 10.0,
-                "totalGB": (total as f64 / GB * 10.0).round() / 10.0,
-            }));
+            info.insert(
+                "systemDrive".into(),
+                json!({
+                    "drive": drive,
+                    "freeGB": (free as f64 / GB * 10.0).round() / 10.0,
+                    "totalGB": (total as f64 / GB * 10.0).round() / 10.0,
+                }),
+            );
         }
         let mut power = SYSTEM_POWER_STATUS::default();
         if GetSystemPowerStatus(&mut power).is_ok() {
-            info.insert("power".into(), json!({
-                "pluggedIn": power.ACLineStatus == 1,
-                "batteryPercent": if power.BatteryLifePercent <= 100 { Some(power.BatteryLifePercent) } else { None },
-            }));
+            info.insert(
+                "power".into(),
+                json!({
+                    "pluggedIn": power.ACLineStatus == 1,
+                    "batteryPercent": if power.BatteryLifePercent <= 100 { Some(power.BatteryLifePercent) } else { None },
+                }),
+            );
         }
         let minutes = GetTickCount64() / 60_000;
         info.insert("uptime".into(), json!(format!("{}h {}m", minutes / 60, minutes % 60)));
@@ -995,8 +1201,8 @@ fn windows_metrics(_info: &mut serde_json::Map<String, Value>) {}
 
 #[cfg(windows)]
 fn registry_string(subkey: &str, value: &str) -> Option<String> {
+    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
     use windows::core::{HSTRING, PCWSTR};
-    use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
     let key = HSTRING::from(subkey);
     let name = HSTRING::from(value);
     let mut buffer = vec![0u16; 512];
@@ -1029,10 +1235,10 @@ fn registry_string(_subkey: &str, _value: &str) -> Option<String> {
 
 #[cfg(windows)]
 fn screenshot() -> Result<String, String> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use windows::Win32::Graphics::Gdi::{
-        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SelectObject,
-        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, SRCCOPY,
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY,
+        SelectObject,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
