@@ -6,6 +6,7 @@ import com.patel5600.missminute.mobile.app.MissMinutesApp;
 import com.patel5600.missminute.mobile.bridge.BridgeRouter;
 import com.patel5600.missminute.mobile.bridge.Handler;
 import com.patel5600.missminute.mobile.core.protocol.Message;
+import com.patel5600.missminute.mobile.core.runtime.CompanionRuntime;
 import com.patel5600.missminute.mobile.overlay.OverlayService;
 
 import org.json.JSONException;
@@ -80,8 +81,10 @@ public final class OverlayHandlers {
     /** Everything the page may know about her overlay. */
     public static JSONObject status(Context context, UiBridge ui) throws JSONException {
         MissMinutesApp app = MissMinutesApp.from(context);
+        CompanionRuntime.Snapshot runtime = CompanionRuntime.process().snapshot();
         return new JSONObject()
-                .put("running", OverlayService.isRunning())
+                .put("running", runtime.state == CompanionRuntime.State.RUNNING)
+                .put("runtime", runtime.toJson())
                 .put("windowShown", OverlayService.isWindowShown())
                 .put("pageReady", OverlayService.isPageReady())
                 .put("visibility", OverlayService.visibilityName())

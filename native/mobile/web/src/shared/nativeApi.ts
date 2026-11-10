@@ -13,7 +13,23 @@ export type CompanionRuntimeState = 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPI
 const VISIBILITIES: readonly OverlayVisibility[] = ['ACTIVE', 'DOCKED', 'PAUSED', 'HIDDEN', 'NONE'];
 const RUNTIME_STATES: readonly CompanionRuntimeState[] = ['STOPPED', 'STARTING', 'RUNNING', 'STOPPING', 'FAILED', 'PERMISSION_BLOCKED', 'RECOVERING'];
 
+export type RuntimeState = 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'FAILED' | 'PERMISSION_BLOCKED' | 'RECOVERING';
+
+export interface RuntimeStatus {
+  eventId: string;
+  serviceInstanceId: string | null;
+  revision: number;
+  monotonicTimestampNanos: number;
+  state: RuntimeState;
+  reason: string | null;
+}
+
+const RUNTIME_STATES: readonly RuntimeState[] = [
+  'STOPPED', 'STARTING', 'RUNNING', 'STOPPING', 'FAILED', 'PERMISSION_BLOCKED', 'RECOVERING',
+];
+
 export interface OverlayStatus {
+  runtime: RuntimeStatus | null;
   running: boolean;
   windowShown: boolean;
   dashboardForeground: boolean;
@@ -99,15 +115,26 @@ function num(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+export function parseRuntimeStatus(raw: unknown): RuntimeStatus | null {
+  if (!isObject(raw) || !(RUNTIME_STATES as readonly unknown[]).includes(raw.state)) return null;
+  return {
+    eventId: typeof raw.eventId === 'string' ? raw.eventId : '',
+    serviceInstanceId: typeof raw.serviceInstanceId === 'string' ? raw.serviceInstanceId : null,
+    revision: Math.max(0, num(raw.revision, 0)),
+    monotonicTimestampNanos: Math.max(0, num(raw.monotonicTimestampNanos, 0)),
+    state: raw.state as RuntimeState,
+    reason: typeof raw.reason === 'string' ? raw.reason : null,
+  };
+}
+
 export function parseOverlayStatus(raw: unknown): OverlayStatus {
   const p: Record<string, unknown> = isObject(raw) ? raw : {};
+  const runtime = parseRuntimeStatus(p.runtime);
   const visibility = (VISIBILITIES as readonly unknown[]).includes(p.visibility) ? (p.visibility as OverlayVisibility) : 'NONE';
-  const runtimeState = (RUNTIME_STATES as readonly unknown[]).includes(p.runtimeState)
-    ? p.runtimeState as CompanionRuntimeState : bool(p.running, false) ? 'RUNNING' : 'STOPPED';
+  const running = runtime ? runtime.state === 'RUNNING' : bool(p.running, false);
   return {
-    // Service existence is not proof that overlay initialization succeeded. The published runtime
-    // state is authoritative; this prevents a STARTING/FAILED service from showing a Stop toggle.
-    running: runtimeState === 'RUNNING' && bool(p.running, false),
+    runtime,
+    running,
     windowShown: bool(p.windowShown, false),
     dashboardForeground: bool(p.dashboardForeground, false),
     pageReady: bool(p.pageReady, false),
@@ -340,17 +367,25 @@ export function describeOverlay(status: OverlayStatus, now: number = Date.now(),
     hiddenByTimer: false,
     notificationsOff: !status.notificationPermission,
   };
-  if (status.runtimeState === 'STARTING' || status.runtimeState === 'RECOVERING') {
-    return { ...base, headline: status.runtimeState === 'RECOVERING' ? 'Recovering' : 'Starting', detail: 'Android is preparing the foreground companion service.', tone: 'idle' };
-  }
-  if (status.runtimeState === 'STOPPING') {
-    return { ...base, headline: 'Stopping', detail: 'Android is closing the companion service.', tone: 'idle' };
-  }
-  if (status.runtimeState === 'FAILED') {
-    return { ...base, headline: 'Could not start', detail: status.runtimeFailure || 'Android did not initialize the companion runtime.', tone: 'warn' };
-  }
-  if (status.runtimeState === 'PERMISSION_BLOCKED') {
-    return { ...base, headline: 'Permission needed', detail: status.runtimeFailure || 'Allow Display over other apps to start the overlay.', tone: 'warn', needsOverlayPermission: !status.overlayPermission };
+  switch (status.runtime?.state) {
+    case 'STARTING':
+      return { ...base, headline: 'Starting Miss Minutes', detail: 'Android accepted the start request. Waiting for the foreground service and overlay to become ready.', tone: 'idle' };
+    case 'STOPPING':
+      return { ...base, headline: 'Stopping Miss Minutes', detail: 'The foreground service is shutting down.', tone: 'idle' };
+    case 'RECOVERING':
+      return { ...base, headline: 'Reconnecting Miss Minutes', detail: 'The companion service is recovering after process interruption.', tone: 'idle' };
+    case 'FAILED':
+      return { ...base, headline: 'Miss Minutes could not start', detail: status.runtime.reason ?? 'The Android service reported a startup failure.', tone: 'warn' };
+    case 'PERMISSION_BLOCKED':
+      return {
+        ...base,
+        headline: 'Display permission required',
+        detail: status.runtime.reason ?? 'Android blocked the overlay service because a required permission is missing.',
+        tone: 'warn',
+        needsOverlayPermission: true,
+      };
+    default:
+      break;
   }
   if (!status.running) {
     if (!status.overlayPermission) {

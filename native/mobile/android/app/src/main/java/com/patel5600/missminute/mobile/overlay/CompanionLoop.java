@@ -138,6 +138,8 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
     private PowerDecision power = PowerPolicy.decide(new PowerInputs(100, true, false, true, true, false));
     private Visibility visibility = Visibility.HIDDEN;
     private PowerTier lastTier;
+    /** Last requested level after device power policy has been applied. */
+    private RoamingLevel lastEffectiveLevel;
 
     private Act act = Act.GAP;
     private long actEndMs;
@@ -366,12 +368,53 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
             }
         }
         power = decision;
+        reconcileRoamingChange(now);
         applyVisibility(next);
         applyCap();
         // While the screen is off nothing needs to wake up: the screen-on broadcast calls refresh().
         main.removeCallbacks(tick);
         if (inputs.screenOn) {
             main.postDelayed(tick, TICK_MS);
+        }
+    }
+
+    /**
+     * A settings change must affect the running choreography immediately, not only after a
+     * long-running plan (for example a Wild jump or nap) finishes. Preference callbacks invoke
+     * refresh() on the main thread. Preserve a user drag or an in-flight ballistic action; those
+     * are completed safely before the new level is selected.
+     */
+    private void reconcileRoamingChange(long now) {
+        RoamingLevel next = effectiveLevel();
+        if (lastEffectiveLevel == null) {
+            lastEffectiveLevel = next;
+            return;
+        }
+        if (next == lastEffectiveLevel) {
+            return;
+        }
+        RoamingLevel previous = lastEffectiveLevel;
+        lastEffectiveLevel = next;
+        if (act == Act.DRAG || act == Act.AIR || holding) {
+            return;
+        }
+
+        plan = null;
+        napping = false;
+        body.vx = 0;
+        body.vy = 0;
+        body.grounded = true;
+        body.y = world.floorTop();
+        body.locomotion = Locomotion.STAND;
+        currentAttachedAnchor = null;
+        currentAttachedSurface = null;
+        spatialPhysics.clearAttachment();
+        setAct(Act.GAP);
+        actEndMs = now + 250;
+        sendPose();
+        syncWindow();
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, "roaming level applied " + previous + " -> " + next);
         }
     }
 

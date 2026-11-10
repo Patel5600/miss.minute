@@ -6,7 +6,7 @@ import type { Emotion, Gesture, MouthFrame } from '@desktop/types';
 import { BASELINE_CAPABILITIES, CAPABILITY_NAMES, STATES } from './vocabulary.ts';
 import type { OverlayState } from './vocabulary.ts';
 
-export type RigLocomotion = 'idle' | 'walk' | 'drag' | 'fall' | 'hang' | 'sit-edge' | 'climb' | 'peek' | 'nap' | 'run' | 'teleport' | 'think';
+export type RigLocomotion = 'idle' | 'walk' | 'drag' | 'fall';
 
 export interface RigHandleLike {
   supports?: (name: string) => boolean;
@@ -93,29 +93,16 @@ const EMOTION_NAMES: readonly string[] = [
 export function rigLocomotion(native: string): RigLocomotion {
   switch (native) {
     case 'WALK':
-      return 'walk';
     case 'RUN':
-      return 'run';
+      // The SVG rig currently has no separate run cycle; preserve the native speed while using its walk gait.
+      return 'walk';
     case 'DRAGGED':
       return 'drag';
     case 'FALL':
     case 'THROWN':
       return 'fall';
-    case 'HANG':
-      return 'hang';
-    case 'CLIMB':
-      return 'climb';
-    case 'SIT_EDGE':
-      return 'sit-edge';
-    case 'PEEK':
-      return 'peek';
-    case 'NAP':
-      return 'nap';
-    case 'TELEPORT':
-      return 'teleport';
-    case 'THINK':
-      return 'think';
     default:
+      // Native choreography can be richer than the current four-motion renderer.
       return 'idle';
   }
 }

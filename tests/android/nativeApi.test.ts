@@ -21,6 +21,7 @@ const clock = (ms: number): string => `T${ms}`;
 
 function status(over: Partial<OverlayStatus> = {}): OverlayStatus {
   return {
+    runtime: null,
     running: true,
     windowShown: true,
     dashboardForeground: false,
@@ -65,21 +66,68 @@ test('a full overlay status is read field by field', () => {
     runtimeFailure: '', roamingLevel: 'CALM', appliedRoamingLevel: null,
   });
   assert.deepEqual(s, {
-    running: false, windowShown: true, dashboardForeground: true, pageReady: true, visibility: 'DOCKED', overlayPermission: true,
+    runtime: null,
+    running: true, windowShown: true, pageReady: true, visibility: 'DOCKED', overlayPermission: true,
     notificationPermission: false, desiredRunning: true, hiddenUntilMs: 99, killed: true,
     runtimeState: 'STOPPED', runtimeRevision: 0, runtimeEventId: '', runtimeServiceInstanceId: '', runtimeMonotonicAtMs: 0,
     runtimeFailure: '', roamingLevel: 'CALM', appliedRoamingLevel: null,
   });
 });
 
-test('runtime state, rather than transient service existence, controls the running switch', () => {
-  for (const runtimeState of ['STARTING', 'STOPPING', 'FAILED', 'PERMISSION_BLOCKED', 'RECOVERING', 'STOPPED'] as const) {
-    const parsed = parseOverlayStatus({ running: true, runtimeState, overlayPermission: true });
-    assert.equal(parsed.running, false, runtimeState);
-    assert.equal(parsed.runtimeState, runtimeState);
-  }
-  assert.equal(parseOverlayStatus({ running: true, runtimeState: 'RUNNING' }).running, true);
-  assert.equal(parseOverlayStatus({ running: false, runtimeState: 'RUNNING' }).running, false);
+test('authoritative runtime state overrides a stale legacy running boolean', () => {
+  const starting = parseOverlayStatus({
+    running: true,
+    runtime: {
+      eventId: 'event-1', serviceInstanceId: 'service-1', revision: 7,
+      monotonicTimestampNanos: 123456, state: 'STARTING', reason: null,
+    },
+    overlayPermission: true,
+  });
+  assert.equal(starting.running, false);
+  assert.equal(starting.runtime?.state, 'STARTING');
+  assert.equal(starting.runtime?.revision, 7);
+  assert.equal(describeOverlay(starting, 0, clock).headline, 'Starting Miss Minutes');
+
+  const failed = parseOverlayStatus({
+    running: true,
+    runtime: {
+      eventId: 'event-2', serviceInstanceId: 'service-1', revision: 8,
+      monotonicTimestampNanos: 123999, state: 'FAILED', reason: 'overlay_initialization_failed',
+    },
+    overlayPermission: true,
+  });
+  assert.equal(failed.running, false);
+  assert.match(describeOverlay(failed, 0, clock).headline, /could not start/);
+  assert.equal(describeOverlay(failed, 0, clock).detail, 'overlay_initialization_failed');
+
+  const recovering = parseOverlayStatus({
+    running: false,
+    runtime: {
+      eventId: 'event-3', serviceInstanceId: 'service-2', revision: 9,
+      monotonicTimestampNanos: 124000, state: 'RECOVERING', reason: null,
+    },
+  });
+  assert.equal(describeOverlay(recovering, 0, clock).headline, 'Reconnecting Miss Minutes');
+});
+
+test('permission-blocked and stopping states remain visible instead of being reported as stopped', () => {
+  const blocked = parseOverlayStatus({
+    runtime: {
+      eventId: 'event-4', serviceInstanceId: null, revision: 10,
+      monotonicTimestampNanos: 124100, state: 'PERMISSION_BLOCKED', reason: 'android.permission.SYSTEM_ALERT_WINDOW',
+    },
+  });
+  const blockedDescription = describeOverlay(blocked, 0, clock);
+  assert.equal(blockedDescription.needsOverlayPermission, true);
+  assert.match(blockedDescription.detail, /SYSTEM_ALERT_WINDOW/);
+
+  const stopping = parseOverlayStatus({
+    runtime: {
+      eventId: 'event-5', serviceInstanceId: 'service-2', revision: 11,
+      monotonicTimestampNanos: 124200, state: 'STOPPING', reason: null,
+    },
+  });
+  assert.equal(describeOverlay(stopping, 0, clock).headline, 'Stopping Miss Minutes');
 });
 
 test('settings fall back to the safe defaults', () => {

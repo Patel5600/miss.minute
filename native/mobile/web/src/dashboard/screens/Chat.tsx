@@ -58,7 +58,7 @@ export function Chat() {
   }, [listening, conversation]);
 
   return (
-    <div className="flex flex-col h-[calc(100dvh-8rem)] min-h-[460px] max-w-2xl mx-auto w-full">
+    <div className="flex min-h-0 h-[calc(100dvh-7rem)] max-h-full flex-col mx-auto w-full min-w-0 max-w-2xl">
       <ChatPanel
         messages={messages}
         chats={chats}

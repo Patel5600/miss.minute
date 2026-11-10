@@ -91,7 +91,7 @@ export function ChatPanel(props: ChatPanelProps) {
   const title = chats.find(c => c.id === chatId)?.title ?? 'New conversation';
 
   return (
-    <div className="flex h-full min-h-[520px] flex-col overflow-hidden rounded-3xl border border-amber-700/40 bg-[#140d07]/90 shadow-[0_20px_60px_rgba(0,0,0,0.5)]">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-3xl border border-amber-700/40 bg-[#140d07]/90 shadow-[0_20px_60px_rgba(0,0,0,0.5)]">
       {/* Header: conversation picker */}
       <div className="relative flex items-center justify-between gap-2 border-b border-amber-800/40 px-4 py-3">
         <button type="button" onClick={() => setShowChats(v => !v)} className="flex min-w-0 items-center gap-2 rounded-lg px-2 py-1 text-left hover:bg-amber-900/30">
@@ -119,13 +119,13 @@ export function ChatPanel(props: ChatPanelProps) {
       </div>
 
       {/* Transcript */}
-      <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4" onClick={() => setShowChats(false)}>
+      <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-3 sm:px-4 sm:py-4" onClick={() => setShowChats(false)}>
         {messages.length === 0 && (
           <div className="flex h-full flex-col items-center justify-center gap-4 py-8 text-center">
             <p className="max-w-sm text-sm text-amber-200/80">Ask her anything, or hand her a job. She keeps your timers, reminders, schedule, notes and to-dos, and remembers what matters to you.</p>
-            <div className="flex max-w-lg flex-wrap justify-center gap-2">
+            <div className="flex w-full max-w-full gap-2 overflow-x-auto overscroll-x-contain pb-2">
               {SUGGESTIONS.map(s => (
-                <button key={s} type="button" onClick={() => submit(s)} className="rounded-full border border-amber-700/50 bg-amber-950/40 px-3 py-1.5 text-xs text-amber-200 hover:border-amber-500 hover:text-amber-50">
+                <button key={s} type="button" onClick={() => submit(s)} className="max-w-[82%] shrink-0 whitespace-normal rounded-xl border border-amber-700/50 bg-amber-950/40 px-3 py-2 text-left text-xs text-amber-200 hover:border-amber-500 hover:text-amber-50">
                   {s}
                 </button>
               ))}
@@ -140,7 +140,7 @@ export function ChatPanel(props: ChatPanelProps) {
       </div>
 
       {/* Composer */}
-      <div className="border-t border-amber-800/40 p-3">
+      <div className="shrink-0 border-t border-amber-800/40 p-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] sm:p-3">
         {attachments.length > 0 && (
           <div className="mb-2 flex gap-2">
             {attachments.map(a => (
@@ -210,7 +210,7 @@ function MessageRow({ message, approvalIds, onDecide }: { message: ChatMessage; 
         <ToolCard key={call.id} call={call} pending={approvalIds.has(call.id)} onDecide={onDecide} />
       ))}
       {(message.text || message.streaming) && (
-        <div className={`max-w-[88%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${mine ? 'rounded-br-md bg-amber-600/30 text-amber-50' : `rounded-bl-md border bg-black/50 text-amber-100 ${message.nexusEventDetected ? 'border-red-600/60' : 'border-amber-800/50'}`}`}>
+        <div className={`min-w-0 max-w-[88%] break-words [overflow-wrap:anywhere] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${mine ? 'rounded-br-md bg-amber-600/30 text-amber-50' : `rounded-bl-md border bg-black/50 text-amber-100 ${message.nexusEventDetected ? 'border-red-600/60' : 'border-amber-800/50'}`}`}>
           {mine ? (
             <p className="whitespace-pre-wrap">{message.text}</p>
           ) : (

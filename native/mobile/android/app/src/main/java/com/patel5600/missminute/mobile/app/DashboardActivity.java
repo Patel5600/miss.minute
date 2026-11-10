@@ -1,8 +1,6 @@
 package com.patel5600.missminute.mobile.app;
 
 import android.Manifest;
-import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.BroadcastReceiver;
@@ -27,6 +25,8 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.fragment.app.FragmentActivity;
+
 import com.patel5600.missminute.mobile.BuildConfig;
 import com.patel5600.missminute.mobile.MainActivity;
 import com.patel5600.missminute.mobile.R;
@@ -46,6 +46,7 @@ import com.patel5600.missminute.mobile.core.kill.KillPath;
 import com.patel5600.missminute.mobile.core.kill.KillState;
 import com.patel5600.missminute.mobile.core.protocol.Protocol;
 import com.patel5600.missminute.mobile.core.protocol.Role;
+import com.patel5600.missminute.mobile.core.runtime.CompanionRuntime;
 import com.patel5600.missminute.mobile.kill.KillSwitch;
 import com.patel5600.missminute.mobile.overlay.OverlayService;
 
@@ -60,8 +61,7 @@ import java.lang.ref.WeakReference;
  * that always works, even if the page hangs, above the dashboard page. It also owns the permission
  * flows: notifications, and Display over other apps (checked again in onResume).
  */
-public final class DashboardActivity extends Activity implements UiBridge {
-    private static WeakReference<DashboardActivity> activeDashboard = new WeakReference<>(null);
+public final class DashboardActivity extends FragmentActivity implements UiBridge {
     /** Debug builds only: start her as if the owner pressed the button (adb am start --ez ... true). */
     static final String EXTRA_DEBUG_AUTOSTART = "com.patel5600.missminute.debug.AUTOSTART";
     private static final int REQUEST_NOTIFICATIONS = 4201;
@@ -74,46 +74,8 @@ public final class DashboardActivity extends Activity implements UiBridge {
     private FrameLayout pageHolder;
     private FrameLayout migrationHolder;
     private TextView status;
-    private Button emergencyStopButton;
-    private Button ownerButton;
-    private Button presenceButton;
-    private long lastRuntimeRevision;
-    private com.patel5600.missminute.mobile.bridge.Handler.Reply migrationReply;
-    private boolean migrationCommandPending;
-    private long migrationGeneration;
-    private String migrationSessionId;
-    private final Runnable migrationTimeout = () -> finishOwnerMigration(false,
-            "Saved data migration timed out. The browser copy was preserved; verify and retry.");
-    private boolean dashboardResumed;
-    private final Handler ownerSessionHandler = new Handler(Looper.getMainLooper());
-    private final Runnable ownerSessionCheck = new Runnable() {
-        @Override public void run() {
-            if (!dashboardResumed) return;
-            if (!OwnerAuthority.hasOwnerSession()) {
-                cancelOwnerMigration("Owner session expired. Verify again to resume migration.");
-                refreshOwnerButton();
-                push("state.changed", new JSONObject());
-                return;
-            }
-            ownerSessionHandler.postDelayed(this, OWNER_SESSION_CHECK_MS);
-        }
-    };
-
-    private final BroadcastReceiver runtimeStateReceiver = new BroadcastReceiver() {
-        @Override public void onReceive(android.content.Context context, Intent intent) {
-            if (intent == null || !OverlayService.ACTION_STATE_CHANGED.equals(intent.getAction())) return;
-            long revision = intent.getLongExtra("revision", 0);
-            if (revision <= lastRuntimeRevision) return;
-            lastRuntimeRevision = revision;
-            refreshHeader();
-            try {
-                push("state.changed", new JSONObject().put("runtimeRevision", revision)
-                        .put("runtimeState", intent.getStringExtra("state")));
-            } catch (JSONException ignored) {
-                push("state.changed", new JSONObject());
-            }
-        }
-    };
+    private Button stopButton;
+    private CompanionRuntime.Registration runtimeRegistration;
 
     private final KillSwitch.Listener killListener = new KillSwitch.Listener() {
         @Override
@@ -128,6 +90,24 @@ public final class DashboardActivity extends Activity implements UiBridge {
                         push("kill.happened", new JSONObject().put("atMs", state.atMs).put("path", state.path.wireName));
                     } catch (JSONException ignored) {
                         // the page learns of the kill from its next status request
+                    }
+                }
+            });
+        }
+    };
+
+    private final CompanionRuntime.Listener runtimeListener = new CompanionRuntime.Listener() {
+        @Override
+        public void onChanged(final CompanionRuntime.Snapshot snapshot) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (isFinishing() || isDestroyed()) return;
+                    refreshHeader();
+                    try {
+                        push("state.changed", new JSONObject().put("runtime", snapshot.toJson()));
+                    } catch (JSONException ignored) {
+                        // The dashboard reconciles against the authoritative status on its next refresh.
                     }
                 }
             });
@@ -168,22 +148,21 @@ public final class DashboardActivity extends Activity implements UiBridge {
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         header.addView(status, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        emergencyStopButton = new Button(this);
-        emergencyStopButton.setText(R.string.action_stop);
-        emergencyStopButton.setContentDescription(getString(R.string.action_stop));
-        emergencyStopButton.setAllCaps(false);
-        emergencyStopButton.setTextColor(Color.WHITE);
-        emergencyStopButton.setTypeface(Typeface.DEFAULT_BOLD);
-        emergencyStopButton.setTextSize(14);
-        emergencyStopButton.setMinHeight(dp(48));
-        emergencyStopButton.setMinimumHeight(dp(48));
-        emergencyStopButton.setPadding(dp(14), 0, dp(14), 0);
+        stopButton = new Button(this);
+        stopButton.setText(R.string.action_stop);
+        stopButton.setContentDescription(getString(R.string.action_stop));
+        stopButton.setAllCaps(false);
+        stopButton.setTextColor(Color.WHITE);
+        stopButton.setTypeface(Typeface.DEFAULT_BOLD);
+        stopButton.setTextSize(14);
+        stopButton.setMinHeight(dp(48));
+        stopButton.setMinimumHeight(dp(48));
+        stopButton.setPadding(dp(14), 0, dp(14), 0);
         GradientDrawable red = new GradientDrawable();
         red.setColor(getColor(R.color.mm_stop));
         red.setCornerRadius(dp(10));
-        emergencyStopButton.setBackground(red);
-        emergencyStopButton.setVisibility(View.GONE);
-        emergencyStopButton.setOnClickListener(new View.OnClickListener() {
+        stopButton.setBackground(red);
+        stopButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 // The same kill switch as the notification and her menu. No page is involved.
@@ -196,54 +175,7 @@ public final class DashboardActivity extends Activity implements UiBridge {
         LinearLayout.LayoutParams stopParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         stopParams.setMarginStart(dp(8));
-        header.addView(emergencyStopButton, stopParams);
-
-        ownerButton = new Button(this);
-        ownerButton.setAllCaps(false);
-        ownerButton.setMinHeight(dp(48));
-        ownerButton.setMinimumHeight(dp(48));
-        refreshOwnerButton();
-        ownerButton.setOnClickListener(v -> {
-            if (OwnerAuthority.hasOwnerSession()) {
-                OwnerAuthority.lock();
-                cancelOwnerMigration("Owner session locked. Verify again to resume migration.");
-                refreshOwnerButton();
-                push("state.changed", new JSONObject());
-                Toast.makeText(this, "Owner session locked.", Toast.LENGTH_SHORT).show();
-            } else if (OwnerAuthority.isEnrolled(this)) {
-                OwnerAuthority.authenticate(this, ownerCallback());
-            } else {
-                new AlertDialog.Builder(this)
-                        .setTitle("Set up owner access")
-                        .setMessage("Enroll this device as the first owner device. A strong device biometric and hardware-backed signing key are required. Private app data is encrypted on this device and accessed only while your owner session is authenticated. Guest chat stays restricted.")
-                        .setNegativeButton("Cancel", null)
-                        .setPositiveButton("Enroll this device", (dialog, which) ->
-                                OwnerAuthority.enrollAndAuthenticate(this, ownerCallback()))
-                        .show();
-            }
-        });
-        LinearLayout.LayoutParams ownerParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        ownerParams.setMarginStart(dp(6));
-        header.addView(ownerButton, ownerParams);
-
-        presenceButton = new Button(this);
-        presenceButton.setAllCaps(false);
-        presenceButton.setText("Face presence");
-        presenceButton.setContentDescription("Start visible face presence detection");
-        presenceButton.setMinHeight(dp(48));
-        presenceButton.setMinimumHeight(dp(48));
-        presenceButton.setOnClickListener(v -> {
-            if (!OwnerAuthority.isEnrolled(this)) {
-                Toast.makeText(this, "Set up owner access before using face presence.", Toast.LENGTH_LONG).show();
-                return;
-            }
-            startActivity(new Intent(this, FacePresenceActivity.class));
-        });
-        LinearLayout.LayoutParams presenceParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        presenceParams.setMarginStart(dp(4));
-        header.addView(presenceButton, presenceParams);
+        header.addView(stopButton, stopParams);
 
         root.addView(header, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -554,10 +486,7 @@ public final class DashboardActivity extends Activity implements UiBridge {
     protected void onStart() {
         super.onStart();
         app.killSwitch().addListener(killListener);
-        IntentFilter filter = new IntentFilter(OverlayService.ACTION_STATE_CHANGED);
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(runtimeStateReceiver, filter, RECEIVER_NOT_EXPORTED);
-        else registerReceiver(runtimeStateReceiver, filter);
-        lastRuntimeRevision = OverlayService.runtimeRevision();
+        runtimeRegistration = CompanionRuntime.process().observe(runtimeListener, true);
     }
 
     @Override
@@ -582,8 +511,10 @@ public final class DashboardActivity extends Activity implements UiBridge {
         dashboardResumed = false;
         ownerSessionHandler.removeCallbacks(ownerSessionCheck);
         app.killSwitch().removeListener(killListener);
-        try { unregisterReceiver(runtimeStateReceiver); } catch (IllegalArgumentException ignored) { }
-        push("state.changed", new JSONObject());
+        if (runtimeRegistration != null) {
+            runtimeRegistration.unregister();
+            runtimeRegistration = null;
+        }
         super.onStop();
     }
 
@@ -694,49 +625,52 @@ public final class DashboardActivity extends Activity implements UiBridge {
         }
     }
 
-    /** One line about her in the native header, derived from facts and not from the page. */
+    /** Status is rendered from the service-owned state machine, never from the page's last tap. */
     private void refreshHeader() {
-        int text;
-        String runtime = OverlayService.runtimeState();
-        boolean running = "RUNNING".equals(runtime) && OverlayService.isRunning();
-        if (emergencyStopButton != null) {
-            emergencyStopButton.setVisibility(running ? View.VISIBLE : View.GONE);
+        CompanionRuntime.Snapshot runtime = CompanionRuntime.process().snapshot();
+        boolean running = runtime.state == CompanionRuntime.State.RUNNING
+                || runtime.state == CompanionRuntime.State.RECOVERING;
+        if (stopButton != null) {
+            stopButton.setVisibility(running ? View.VISIBLE : View.GONE);
+            stopButton.setEnabled(runtime.state == CompanionRuntime.State.RUNNING
+                    || runtime.state == CompanionRuntime.State.RECOVERING);
         }
-        if (running) {
-            switch (OverlayService.visibilityName()) {
-                case "DOCKED":
-                    text = R.string.header_status_docked;
-                    break;
-                case "PAUSED":
-                    text = R.string.header_status_paused;
-                    break;
-                case "HIDDEN":
-                    text = R.string.header_status_hidden;
-                    break;
-                default:
-                    text = R.string.header_status_running;
-                    break;
-            }
-        } else if ("STOPPING".equals(runtime)) {
-            status.setText("Stopping…");
-            return;
-        } else if ("STARTING".equals(runtime) || "RECOVERING".equals(runtime)) {
-            // Never describe a requested or recovering service as Running before the foreground
-            // service and overlay initialization have both completed.
-            status.setText("Starting…");
-            return;
-        } else if ("PERMISSION_BLOCKED".equals(runtime)) {
-            status.setText("Permission needed");
-            return;
-        } else if ("FAILED".equals(runtime)) {
-            status.setText("Could not start");
-            return;
-        } else if (app.killSwitch().state().killed) {
-            text = R.string.header_status_stopped;
-        } else if (!android.provider.Settings.canDrawOverlays(this)) {
-            text = R.string.dashboard_overlay_denied;
-        } else {
-            text = R.string.header_status_off;
+
+        CharSequence text;
+        switch (runtime.state) {
+            case STARTING:
+                text = "Starting Miss Minutes…";
+                break;
+            case RUNNING:
+                switch (OverlayService.visibilityName()) {
+                    case "DOCKED": text = getString(R.string.header_status_docked); break;
+                    case "PAUSED": text = getString(R.string.header_status_paused); break;
+                    case "HIDDEN": text = getString(R.string.header_status_hidden); break;
+                    default: text = getString(R.string.header_status_running); break;
+                }
+                break;
+            case STOPPING:
+                text = "Stopping Miss Minutes…";
+                break;
+            case FAILED:
+                text = "Miss Minutes failed: " + (runtime.reason == null ? "unknown error" : runtime.reason);
+                break;
+            case PERMISSION_BLOCKED:
+                text = "Display over other apps permission required";
+                break;
+            case RECOVERING:
+                text = "Reconnecting Miss Minutes…";
+                break;
+            case STOPPED:
+            default:
+                if (app.killSwitch().state().killed) {
+                    text = getString(R.string.header_status_stopped);
+                } else if (!android.provider.Settings.canDrawOverlays(this)) {
+                    text = getString(R.string.dashboard_overlay_denied);
+                } else {
+                    text = getString(R.string.header_status_off);
+                }
+                break;
         }
         status.setText(text);
     }

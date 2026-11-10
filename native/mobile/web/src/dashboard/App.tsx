@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Home as HomeIcon, MessageSquare, Layers, Settings as SettingsIcon } from 'lucide-react';
 import { Home } from './screens/Home.tsx';
-import { Chat } from './screens/Chat.tsx';
-import { Panels } from './screens/Panels.tsx';
-import { Settings } from './screens/Settings.tsx';
+const Chat = lazy(() => import('./screens/Chat.tsx').then(module => ({ default: module.Chat })));
+const Panels = lazy(() => import('./screens/Panels.tsx').then(module => ({ default: module.Panels })));
+const Settings = lazy(() => import('./screens/Settings.tsx').then(module => ({ default: module.Settings })));
 import { initializeSettings, loadSettings } from '@desktop/agent/settings';
 import { startScheduler } from '@desktop/agent/scheduler';
 import { speaker } from '@desktop/app/speaker';
@@ -49,12 +49,12 @@ export function App() {
 
   return (
     <div className="safe-x flex min-h-dvh flex-col bg-base text-cream">
-      <main className="safe-top flex-1 overflow-y-auto px-4 pb-4 pt-3">
-        {tab?.render()}
+      <main className="safe-top min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-3 pb-3 pt-2 sm:px-4 sm:pb-4 sm:pt-3">
+        <Suspense fallback={<div role="status" className="mx-auto mt-8 w-full max-w-sm rounded-xl border border-line bg-raised p-4 text-center text-sm text-muted">Opening section…</div>}>{tab?.render()}</Suspense>
       </main>
       <nav
         aria-label="Sections"
-        className="safe-bottom safe-x sticky bottom-0 flex border-t border-line bg-raised/95 backdrop-blur z-50"
+        className="safe-bottom safe-x sticky bottom-0 z-50 flex shrink-0 border-t border-line bg-raised/95 backdrop-blur"
       >
         {TABS.map((t) => {
           const Icon = t.icon;
@@ -65,7 +65,7 @@ export function App() {
               type="button"
               aria-current={isActive ? 'page' : undefined}
               onClick={() => setActive(t.id)}
-              className={`flex flex-col items-center justify-center h-14 flex-1 transition-colors ${
+              className={`flex min-h-14 min-w-0 flex-1 flex-col items-center justify-center px-1 py-2 transition-colors ${
                 isActive ? 'text-face' : 'text-muted hover:text-cream'
               }`}
             >
