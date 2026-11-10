@@ -1,0 +1,3 @@
+[workspace]
+members = ["native/agent", "native/identity"]
+resolver = "3"
