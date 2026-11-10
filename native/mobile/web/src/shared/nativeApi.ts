@@ -24,9 +24,6 @@ export interface RuntimeStatus {
   reason: string | null;
 }
 
-const RUNTIME_STATES: readonly RuntimeState[] = [
-  'STOPPED', 'STARTING', 'RUNNING', 'STOPPING', 'FAILED', 'PERMISSION_BLOCKED', 'RECOVERING',
-];
 
 export interface OverlayStatus {
   runtime: RuntimeStatus | null;
@@ -132,6 +129,10 @@ export function parseOverlayStatus(raw: unknown): OverlayStatus {
   const runtime = parseRuntimeStatus(p.runtime);
   const visibility = (VISIBILITIES as readonly unknown[]).includes(p.visibility) ? (p.visibility as OverlayVisibility) : 'NONE';
   const running = runtime ? runtime.state === 'RUNNING' : bool(p.running, false);
+  // runtimeState: prefer the authoritative runtime snapshot; fall back to the legacy flat field.
+  const runtimeState: CompanionRuntimeState = runtime
+    ? (runtime.state as CompanionRuntimeState)
+    : ((RUNTIME_STATES as readonly unknown[]).includes(p.runtimeState) ? (p.runtimeState as CompanionRuntimeState) : 'STOPPED');
   return {
     runtime,
     running,

@@ -67,7 +67,7 @@ test('a full overlay status is read field by field', () => {
   });
   assert.deepEqual(s, {
     runtime: null,
-    running: true, windowShown: true, pageReady: true, visibility: 'DOCKED', overlayPermission: true,
+    running: true, windowShown: true, dashboardForeground: true, pageReady: true, visibility: 'DOCKED', overlayPermission: true,
     notificationPermission: false, desiredRunning: true, hiddenUntilMs: 99, killed: true,
     runtimeState: 'STOPPED', runtimeRevision: 0, runtimeEventId: '', runtimeServiceInstanceId: '', runtimeMonotonicAtMs: 0,
     runtimeFailure: '', roamingLevel: 'CALM', appliedRoamingLevel: null,
@@ -206,12 +206,14 @@ test('the companion steps aside while the dashboard is foregrounded', () => {
 });
 
 test('runtime transitions are reported distinctly and failures stay visible', () => {
-  const starting = describeOverlay(status({ running: false, runtimeState: 'STARTING' }), 0, clock);
-  assert.equal(starting.headline, 'Starting');
-  const failure = describeOverlay(status({ running: false, runtimeState: 'FAILED', runtimeFailure: 'WebView unavailable.' }), 0, clock);
-  assert.equal(failure.headline, 'Could not start');
+  // New describeOverlay reads status.runtime?.state (the authoritative CompanionRuntime snapshot).
+  const runtime = (state: string, reason?: string) => ({ eventId: 'e1', serviceInstanceId: null, revision: 1, monotonicTimestampNanos: 0, state, reason: reason ?? null });
+  const starting = describeOverlay(status({ running: false, runtime: runtime('STARTING') }), 0, clock);
+  assert.equal(starting.headline, 'Starting Miss Minutes');
+  const failure = describeOverlay(status({ running: false, runtime: runtime('FAILED', 'WebView unavailable.') }), 0, clock);
+  assert.equal(failure.headline, 'Miss Minutes could not start');
   assert.match(failure.detail, /WebView unavailable/);
-  const blocked = describeOverlay(status({ running: false, runtimeState: 'PERMISSION_BLOCKED', overlayPermission: false }), 0, clock);
+  const blocked = describeOverlay(status({ running: false, runtime: runtime('PERMISSION_BLOCKED'), overlayPermission: false }), 0, clock);
   assert.equal(blocked.needsOverlayPermission, true);
 });
 

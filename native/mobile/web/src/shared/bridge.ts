@@ -88,6 +88,23 @@ export function isConnected(): boolean {
   return attach() !== null;
 }
 
+/**
+ * Returns true when the page is running inside the Miss Minutes Android WebView host.
+ * Detection uses the virtual hostname that Android's WebViewAssetLoader assigns to each
+ * role (dashboard, overlay, migration), plus `appassets.androidplatform.net` for compatibility.
+ * This is a trust-boundary hint only; actual capability gating uses the native authority engine.
+ */
+export function isAndroidApp(): boolean {
+  if (typeof window === 'undefined') return false;
+  const hostname = window.location?.hostname ?? '';
+  return (
+    hostname === 'dashboard.missminutes.local' ||
+    hostname === 'overlay.missminutes.local' ||
+    hostname === 'appassets.androidplatform.net' ||
+    hostname.endsWith('.missminutes.local')
+  );
+}
+
 export function request(type: string, payload: Payload = {}): Promise<Payload> {
   const port = attach();
   if (!port) return Promise.reject(new BridgeError('unavailable', 'Not running inside the Miss Minutes app'));
