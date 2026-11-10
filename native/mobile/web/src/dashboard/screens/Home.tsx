@@ -1,14 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { MissMinutesRig, VIEW_BOX } from '@desktop/character/MissMinutesRig';
-import type { MissMinutesRigHandle } from '@desktop/character/MissMinutesRig';
-import type { Gesture, Locomotion } from '@desktop/character/MissMinutesRig';
+import { useState } from 'react';
+import { LoaderCircle, Sparkles } from 'lucide-react';
 import {
   ackKillNotice,
+  authenticateOwner,
+  consentToLocalSensors,
   describeError,
   describeKillNotice,
   describeOverlay,
   LEVEL_DETAILS,
   requestOverlayPermission,
+  setupFaceProfile,
+  setupOwnerDevice,
+  setupPresenceCalibration,
+  setupSpeakerProfile,
   setSetting,
   startOverlay,
   stopOverlay,
@@ -17,130 +21,55 @@ import { ROAMING_LEVELS } from '../../shared/vocabulary.ts';
 import { Switch } from '../Switch.tsx';
 import { useNativeState } from '../useNative.ts';
 
-type StageGesture = 'wave' | 'shrug' | 'point' | 'hips' | 'present' | 'think' | 'knock' | 'clap';
-const STAGE_GESTURES: readonly StageGesture[] = ['wave', 'point', 'present', 'clap', 'hips', 'shrug', 'think', 'knock'];
-const IDLE_GESTURES: readonly StageGesture[] = ['wave', 'hips', 'think', 'shrug', 'point', 'present'];
-
 const dateFormat = new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
-
 const TONE_DOT = { ok: 'bg-face', warn: 'bg-red-500', idle: 'bg-muted' } as const;
 
-/** A self-contained Stage for the mobile dashboard: TVA-lit room, idle walking, gaze. */
-function MobileStage({ tap, onTap }: { tap: number; onTap: () => void }) {
-  const rig = useRef<MissMinutesRigHandle | null>(null);
-  const floor = useRef<HTMLDivElement | null>(null);
-  const [x, setX] = useState(0);
-  const [walk, setWalk] = useState<{ locomotion: Locomotion; facing: -1 | 0 | 1; speed: number; ms: number }>({
-    locomotion: 'idle', facing: 0, speed: 0, ms: 0,
-  });
-  const [idleGesture, setIdleGesture] = useState<{ g: Gesture; k: number }>({ g: 'none', k: 0 });
-  const busyRef = useRef(false);
-
-  const strollTo = useCallback((target: number) => {
-    const el = floor.current;
-    if (!el) return;
-    const scale = Math.min(el.clientWidth / VIEW_BOX.w, el.clientHeight / VIEW_BOX.h);
-    setX(current => {
-      const distance = Math.abs(target - current);
-      if (distance < 4) return current;
-      const pxPerSec = 70;
-      const ms = (distance / pxPerSec) * 1000;
-      setWalk({ locomotion: 'walk', facing: target > current ? 1 : -1, speed: pxPerSec / Math.max(scale, 0.1), ms });
-      window.setTimeout(() => setWalk({ locomotion: 'idle', facing: 0, speed: 0, ms: 0 }), ms);
-      return target;
-    });
-  }, []);
-
-  // Idle life: strolls and gestures.
-  useEffect(() => {
-    let timer = 0;
-    const next = () => {
-      timer = window.setTimeout(() => {
-        if (!busyRef.current && document.visibilityState === 'visible') {
-          const el = floor.current;
-          const room = el ? Math.max(0, el.clientWidth / 2 - el.clientHeight * 0.35) : 0;
-          if (Math.random() < 0.4 && room > 20) strollTo(Math.round((Math.random() * 2 - 1) * room));
-          else setIdleGesture(prev => ({ g: IDLE_GESTURES[Math.floor(Math.random() * IDLE_GESTURES.length)] as Gesture, k: prev.k + 1 }));
-        }
-        next();
-      }, 6000 + Math.random() * 8000);
-    };
-    next();
-    return () => window.clearTimeout(timer);
-  }, [strollTo]);
-
-  const tapGesture: Gesture = tap === 0 ? 'none' : (STAGE_GESTURES[(tap - 1) % STAGE_GESTURES.length] ?? 'none');
-  const activeGesture: Gesture = tap > 0 ? tapGesture : idleGesture.g;
-  const activeKey = tap > 0 ? `t${tap}` : `i${idleGesture.k}`;
-
-  return (
-    /* TVA dark room with amber projection glow */
-    <div className="relative overflow-hidden rounded-3xl border border-amber-700/40 bg-[#0b0704] shadow-[0_16px_48px_rgba(0,0,0,0.7)]">
-      {/* Radial amber light from her projection */}
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(65%_55%_at_50%_38%,rgba(255,140,40,0.22),transparent_68%)]" />
-      {/* Dark floor vignette */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/3 bg-[linear-gradient(to_top,rgba(50,25,5,0.6),transparent)]" />
-      {/* TVA grid lines */}
-      <div className="pointer-events-none absolute inset-0 opacity-[0.06] bg-[linear-gradient(to_right,#f59e0b_1px,transparent_1px),linear-gradient(to_bottom,#f59e0b_1px,transparent_1px)] bg-[size:28px_28px]" />
-
-      {/* Character floor — tap anywhere to poke */}
-      <div ref={floor} className="relative h-72 w-full">
-        {/* Ground glow ellipse */}
-        <div className="pointer-events-none absolute bottom-[8%] left-1/2 h-[7%] w-[44%] -translate-x-1/2 rounded-[50%] bg-[radial-gradient(closest-side,rgba(255,160,60,0.4),rgba(255,120,30,0.10)_60%,transparent)]" />
-        {/* Shadow disc */}
-        <div className="pointer-events-none absolute bottom-[6%] left-1/2 h-[3%] w-[28%] -translate-x-1/2 rounded-[50%] border border-amber-500/30 bg-amber-900/25" />
-
-        <button
-          type="button"
-          onClick={() => { rig.current?.hop(); onTap(); }}
-          aria-label="Miss Minutes — tap to poke"
-          className="absolute inset-x-0 bottom-[4%] top-[4%] mx-auto cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-          style={{
-            width: '100%',
-            transform: `translateX(${x}px)`,
-            transition: walk.ms ? `transform ${walk.ms}ms linear` : 'transform 280ms ease-out',
-          }}
-        >
-          <MissMinutesRig
-            ref={rig}
-            skin="hologram"
-            gaze="pointer"
-            emotion="cheerful"
-            gesture={activeGesture}
-            gestureKey={activeKey}
-            facing={walk.facing}
-            locomotion={walk.locomotion}
-            walkSpeed={walk.speed}
-            style={{ width: '100%', height: '100%', display: 'block' }}
-          />
-        </button>
-      </div>
-
-      {/* "Hey y'all" caption */}
-      <p className="pb-3 text-center text-[11px] font-medium uppercase tracking-[0.18em] text-amber-400/80">
-        Tap to poke her
-      </p>
-    </div>
-  );
-}
-
-export function Home() {
+export function Home({ onSetupComplete }: { onSetupComplete?: () => void } = {}) {
   const native = useNativeState();
-  const [tap, setTap] = useState(0);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [actionStatus, setActionStatus] = useState<string | null>(null);
+  const [skippedProfiles, setSkippedProfiles] = useState<{ face: boolean; voice: boolean; presence: boolean }>(() => {
+    try {
+      return {
+        face: localStorage.getItem('mm-setup-skip-face') === '1',
+        voice: localStorage.getItem('mm-setup-skip-voice') === '1',
+        presence: localStorage.getItem('mm-setup-skip-presence') === '1',
+      };
+    } catch { return { face: false, voice: false, presence: false }; }
+  });
 
   const info = native.info;
   const ready = native.phase === 'ready' && info !== null;
   const description = info ? describeOverlay(info.overlay) : null;
+  const setupStep = !info?.sensorConsentGiven ? 'consent'
+    : !info.faceProfileEnrolled && !info.faceProfilePending && !skippedProfiles.face ? 'face'
+      : !info.speakerProfileEnrolled && !info.speakerProfilePending && !skippedProfiles.voice ? 'voice'
+        : !skippedProfiles.presence ? 'presence'
+          : (!info.ownerEnrolled || info.ownerClaimPending) ? 'device' : 'complete';
 
-  async function run(action: () => Promise<void>): Promise<void> {
+  function skipProfile(kind: 'face' | 'voice' | 'presence'): void {
+    const next = { ...skippedProfiles, [kind]: true };
+    setSkippedProfiles(next);
+    try { localStorage.setItem(`mm-setup-skip-${kind}`, '1'); } catch { /* Skip affects onboarding only; authorization is native. */ }
+  }
+
+  async function run(action: () => Promise<void>, requiresOwner = true): Promise<void> {
     setBusy(true);
     setMessage(null);
+    setActionStatus(requiresOwner && info?.ownerEnrolled && !info.ownerAuthenticated
+      ? 'Waiting for device verification…'
+      : 'Applying your change…');
     try {
+      if (requiresOwner && info && !info.ownerEnrolled) {
+        throw new Error('Set up owner access with the Owner setup button above before changing companion settings.');
+      }
+      if (requiresOwner && info?.ownerEnrolled && !info.ownerAuthenticated) await authenticateOwner();
       await action();
+      setActionStatus('Done. Android confirmed the request.');
     } catch (error) {
       setMessage(describeError(error));
+      setActionStatus(null);
     } finally {
       setBusy(false);
       await native.refresh();
@@ -176,13 +105,104 @@ export function Home() {
         </section>
       )}
 
-      <header>
-        <p className="text-sm uppercase tracking-widest text-muted">Today</p>
-        <h1 className="text-4xl font-semibold leading-tight text-cream">{dateFormat.format(new Date())}</h1>
+      <header className="relative overflow-hidden rounded-3xl border border-face/25 bg-[radial-gradient(ellipse_at_top_right,rgba(255,113,28,0.18),transparent_55%),linear-gradient(145deg,#21150c,#120d08_65%)] p-5 shadow-xl shadow-black/20">
+        <div className="relative z-10 flex items-start justify-between gap-4">
+          <div>
+            <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-face"><Sparkles className="h-4 w-4" /> Miss Minutes</p>
+            <h1 className="mt-2 text-2xl font-semibold leading-tight text-cream">Your companion, at a glance.</h1>
+            <p className="mt-1 text-sm text-muted">{dateFormat.format(new Date())}</p>
+          </div>
+          <span className={`mt-1 h-3 w-3 shrink-0 rounded-full ring-4 ring-black/20 ${description ? TONE_DOT[description.tone] : 'bg-muted'}`} aria-label={description?.headline ?? 'Checking status'} />
+        </div>
+        <div className="relative z-10 mt-5 grid grid-cols-2 gap-2">
+          <div className="rounded-2xl border border-white/5 bg-black/20 px-3 py-2.5">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted">Runtime</p>
+            <p className="mt-1 truncate text-sm font-semibold text-cream">{description?.headline ?? 'Checking status'}</p>
+          </div>
+          <div className="rounded-2xl border border-white/5 bg-black/20 px-3 py-2.5">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted">Authority</p>
+            {info?.ownerAuthenticated ? (
+              <p className="mt-1 flex items-center gap-1.5 text-sm font-semibold text-emerald-400">
+                <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-emerald-400/25" />
+                Boss · Authenticated
+              </p>
+            ) : info?.ownerCandidate ? (
+              <p className="mt-1 flex items-center gap-1.5 text-sm font-semibold text-amber-400">
+                <span className="inline-block h-2 w-2 rounded-full bg-amber-400 ring-2 ring-amber-400/25" />
+                Boss Candidate
+              </p>
+            ) : info?.ownerEnrolled ? (
+              <p className="mt-1 flex items-center gap-1.5 text-sm font-semibold text-muted">
+                <span className="inline-block h-2 w-2 rounded-full bg-muted ring-2 ring-muted/25" />
+                Guest Mode
+              </p>
+            ) : (
+              <p className="mt-1 text-sm font-semibold text-muted">Not set up</p>
+            )}
+          </div>
+        </div>
+        <div className="relative z-10 mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+          <span>Mode: {info?.settings.roaming_level?.toLowerCase() ?? 'loading'}</span>
+          <span>{info?.overlay.runtimeState === 'RUNNING' ? 'Runtime connected' : info?.overlay.runtimeState?.toLowerCase() ?? 'checking connection'}</span>
+        </div>
       </header>
 
+      {info && setupStep !== 'complete' && (
+        <section aria-label="First-time owner setup" className="rounded-2xl border border-face/40 bg-face/10 p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-face">First-time setup · {setupStep === 'consent' ? '1 of 5' : setupStep === 'face' ? '2 of 5' : setupStep === 'voice' ? '3 of 5' : setupStep === 'presence' ? '4 of 5' : '5 of 5'}</p>
+          <h2 className="mt-1 text-lg font-semibold text-cream">
+            {setupStep === 'consent' ? 'Choose local sensor setup' : setupStep === 'face' ? 'Enroll face presence' : setupStep === 'voice' ? 'Enroll your voice' : setupStep === 'presence' ? 'Calibrate attention' : 'Verify the owner claim'}
+          </h2>
+          <p className="mt-1 text-sm leading-relaxed text-muted">
+            {setupStep === 'consent'
+              ? 'Review what camera and microphone use means. You can decline, skip either profile, or revoke Android permissions later.'
+              : setupStep === 'face'
+                ? info.faceProfilePending ? 'Face samples are staged locally. They stay inactive until Android verifies the owner claim.' : 'Capture several local samples. Face matching can suggest presence, but cannot unlock private data.'
+                : setupStep === 'voice'
+                  ? info.speakerProfilePending ? 'Voice samples are staged locally. They stay inactive until Android verifies the owner claim.' : 'Record short natural samples. Speaker matching can suggest who is speaking, but cannot grant authority.'
+                  : setupStep === 'presence'
+                    ? 'Optional gaze and head-pose calibration supports interaction only. It is foreground-only and does not identify or authenticate you.'
+                    : 'Android will verify the initial owner claim and create this device’s protected signing key. This activates any staged profiles.'}
+          </p>
+          <button
+            type="button"
+            disabled={busy || !ready}
+            onClick={() => void run(
+              setupStep === 'consent' ? consentToLocalSensors
+                : setupStep === 'face' ? setupFaceProfile
+                  : setupStep === 'voice' ? setupSpeakerProfile
+                    : setupStep === 'presence' ? async () => { await setupPresenceCalibration(); skipProfile('presence'); }
+                      : setupOwnerDevice,
+              false,
+            )}
+            className="mt-3 min-h-12 w-full rounded-xl bg-face px-4 font-semibold text-black disabled:opacity-55"
+          >
+            {setupStep === 'consent' ? 'Review sensor disclosure' : setupStep === 'device' ? 'Verify and activate owner' : setupStep === 'face' ? 'Set up face presence' : setupStep === 'voice' ? 'Set up speaker profile' : 'Open presence calibration'}
+          </button>
+          {setupStep === 'consent' && <p className="mt-2 text-xs text-muted">No background camera or microphone session is started by this step. Android asks separately when each enrollment opens.</p>}
+          {setupStep === 'face' && <>
+            <p className="mt-2 text-xs text-muted">Camera starts only after you open face setup. Face recognition is optional and cannot unlock owner access.</p>
+            <button type="button" onClick={() => skipProfile('face')} className="mt-2 min-h-11 w-full rounded-xl border border-line text-sm text-muted">Skip face for now</button>
+          </>}
+          {setupStep === 'voice' && <>
+            <p className="mt-2 text-xs text-muted">Microphone permission is requested only when you start voice enrollment. Samples are processed locally for the profile.</p>
+            <button type="button" onClick={() => skipProfile('voice')} className="mt-2 min-h-11 w-full rounded-xl border border-line text-sm text-muted">Skip voice for now</button>
+          </>}
+          {setupStep === 'presence' && <button type="button" onClick={() => skipProfile('presence')} className="mt-2 min-h-11 w-full rounded-xl border border-line text-sm text-muted">Skip calibration</button>}
+        </section>
+      )}
+      {info && setupStep === 'complete' && (
+        <section aria-label="Owner setup complete" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-700/40 bg-emerald-950/20 p-4">
+          <div><h2 className="font-semibold text-cream">Owner setup is ready</h2><p className="mt-1 text-sm text-muted">Device verification is the authority anchor. Skipped local profiles can be added later.</p></div>
+          <button type="button" onClick={onSetupComplete} className="min-h-12 rounded-xl bg-face px-4 font-semibold text-black">Continue to settings</button>
+        </section>
+      )}
+
       {/* Miss Minutes Stage — full TVA presentation */}
-      <MobileStage tap={tap} onTap={() => setTap(n => n + 1)} />
+
+      <section aria-label="Live status" className="rounded-2xl border border-line bg-raised px-4 py-3">
+        <p className="text-sm font-semibold text-cream">{description?.detail ?? 'Reading the Android service state.'}</p>
+      </section>
 
       {message && (
         <div role="alert" className="rounded-xl border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm">
@@ -193,19 +213,11 @@ export function Home() {
       <section aria-label="On my screen" className="rounded-2xl border border-line bg-raised px-4 pb-4 pt-2">
         <Switch
           checked={info?.overlay.running ?? false}
-          label="Show her on my screen"
+          label="Run the floating companion"
+          description="She stays out of the dashboard controls and returns over other apps when you leave."
           disabled={busy || !ready}
-          onChange={(next) => void run(next ? turnOn : async () => void (await stopOverlay()))}
+          onChange={(next) => void run(next ? turnOn : async () => void (await stopOverlay()), next)}
         />
-        {description && (
-          <div role="status" className="flex items-start gap-3 rounded-xl bg-base/60 p-3">
-            <span aria-hidden="true" className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${TONE_DOT[description.tone]}`} />
-            <div>
-              <p className="text-sm font-medium text-cream">{description.headline}</p>
-              <p className="text-sm leading-snug text-muted">{description.detail}</p>
-            </div>
-          </div>
-        )}
         {description?.needsOverlayPermission && (
           <button
             type="button"
@@ -235,8 +247,11 @@ export function Home() {
       </section>
 
       <section aria-label="Roaming" className="rounded-2xl border border-line bg-raised p-4">
-        <h2 className="mb-3 font-semibold text-face">How much she roams</h2>
-        <div role="radiogroup" aria-label="Roaming level" className="grid grid-cols-4 gap-2">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 className="font-semibold text-face">How much she roams</h2>
+          {info?.ownerEnrolled && !info.ownerAuthenticated && <span className="rounded-full border border-amber-700/40 bg-amber-950/40 px-2.5 py-1 text-xs text-amber-200">Verify to change</span>}
+        </div>
+        <div role="radiogroup" aria-label="Roaming level" aria-busy={busy} className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {ROAMING_LEVELS.map((level) => {
             const selected = info?.settings.roaming_level === level;
             return (
@@ -246,17 +261,31 @@ export function Home() {
                 role="radio"
                 aria-checked={selected}
                 disabled={busy || !ready}
-                onClick={() => void run(async () => void (await setSetting('roaming_level', level)))}
-                className={`h-12 rounded-xl text-sm font-medium disabled:opacity-50 ${selected ? 'bg-face text-black' : 'bg-line text-cream'}`}
+                onClick={() => void run(async () => {
+                  const updated = await setSetting('roaming_level', level);
+                  if (updated.roaming_level !== level) throw new Error('Android did not confirm the selected roaming mode.');
+                })}
+                className={`min-h-12 rounded-xl border px-3 text-sm font-semibold transition active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-face focus-visible:ring-offset-2 focus-visible:ring-offset-base disabled:cursor-wait disabled:opacity-55 ${selected ? 'border-face bg-face text-black shadow-md shadow-face/15' : 'border-line bg-line/70 text-cream hover:border-face/50'}`}
               >
                 {LEVEL_DETAILS[level].label}
               </button>
             );
           })}
         </div>
+        {busy && <p role="status" className="mt-3 flex min-h-6 items-center gap-2 text-sm text-face"><LoaderCircle className="h-4 w-4 animate-spin" />{actionStatus}</p>}
+        {!busy && actionStatus && <p role="status" className="mt-3 text-sm text-emerald-300">{actionStatus}</p>}
         <p className="mt-3 text-sm leading-snug text-cream/90">
           {info ? LEVEL_DETAILS[info.settings.roaming_level].text : 'Calm is the default.'}
         </p>
+        {info && (
+          <p role="status" className="mt-2 text-xs leading-snug text-muted">
+            {info.overlay.runtimeState === 'RUNNING'
+              ? info.overlay.appliedRoamingLevel === info.settings.roaming_level
+                ? `${info.settings.roaming_level[0]}${info.settings.roaming_level.slice(1).toLowerCase()} is active in the companion runtime.`
+                : `Saved ${info.settings.roaming_level.toLowerCase()}; the runtime currently applies ${info.overlay.appliedRoamingLevel?.toLowerCase() ?? 'its safe limit'}.`
+              : 'Saved. The selected mode applies when the companion starts.'}
+          </p>
+        )}
         <p className="mt-2 text-xs leading-snug text-muted">
           Right now she can stand, walk, hop and do eight gestures. Running, hanging, climbing, sitting on edges, jumping
           and peeking switch on only when her body can draw them.

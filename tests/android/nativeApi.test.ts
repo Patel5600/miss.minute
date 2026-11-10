@@ -23,6 +23,7 @@ function status(over: Partial<OverlayStatus> = {}): OverlayStatus {
   return {
     running: true,
     windowShown: true,
+    dashboardForeground: false,
     pageReady: true,
     visibility: 'ACTIVE',
     overlayPermission: true,
@@ -30,6 +31,14 @@ function status(over: Partial<OverlayStatus> = {}): OverlayStatus {
     desiredRunning: true,
     hiddenUntilMs: 0,
     killed: false,
+    runtimeState: 'RUNNING',
+    runtimeRevision: 3,
+    runtimeEventId: '',
+    runtimeServiceInstanceId: '',
+    runtimeMonotonicAtMs: 0,
+    runtimeFailure: '',
+    roamingLevel: 'CALM',
+    appliedRoamingLevel: 'CALM',
     ...over,
   };
 }
@@ -44,18 +53,33 @@ test('an empty or damaged overlay status reads as "off", never as "on"', () => {
     assert.equal(s.notificationPermission, false);
     assert.equal(s.visibility, 'NONE');
     assert.equal(s.hiddenUntilMs, 0);
+    assert.equal(s.runtimeState, 'STOPPED');
   }
 });
 
 test('a full overlay status is read field by field', () => {
   const s = parseOverlayStatus({
-    running: true, windowShown: true, pageReady: true, visibility: 'DOCKED', overlayPermission: true,
+    running: true, windowShown: true, dashboardForeground: true, pageReady: true, visibility: 'DOCKED', overlayPermission: true,
     notificationPermission: false, desiredRunning: true, hiddenUntilMs: 99, killed: true,
+    runtimeState: 'STOPPED', runtimeRevision: 0, runtimeEventId: '', runtimeServiceInstanceId: '', runtimeMonotonicAtMs: 0,
+    runtimeFailure: '', roamingLevel: 'CALM', appliedRoamingLevel: null,
   });
   assert.deepEqual(s, {
-    running: true, windowShown: true, pageReady: true, visibility: 'DOCKED', overlayPermission: true,
+    running: false, windowShown: true, dashboardForeground: true, pageReady: true, visibility: 'DOCKED', overlayPermission: true,
     notificationPermission: false, desiredRunning: true, hiddenUntilMs: 99, killed: true,
+    runtimeState: 'STOPPED', runtimeRevision: 0, runtimeEventId: '', runtimeServiceInstanceId: '', runtimeMonotonicAtMs: 0,
+    runtimeFailure: '', roamingLevel: 'CALM', appliedRoamingLevel: null,
   });
+});
+
+test('runtime state, rather than transient service existence, controls the running switch', () => {
+  for (const runtimeState of ['STARTING', 'STOPPING', 'FAILED', 'PERMISSION_BLOCKED', 'RECOVERING', 'STOPPED'] as const) {
+    const parsed = parseOverlayStatus({ running: true, runtimeState, overlayPermission: true });
+    assert.equal(parsed.running, false, runtimeState);
+    assert.equal(parsed.runtimeState, runtimeState);
+  }
+  assert.equal(parseOverlayStatus({ running: true, runtimeState: 'RUNNING' }).running, true);
+  assert.equal(parseOverlayStatus({ running: false, runtimeState: 'RUNNING' }).running, false);
 });
 
 test('settings fall back to the safe defaults', () => {
@@ -90,6 +114,19 @@ test('hello is parsed into mode, notice, overlay and settings', () => {
   assert.equal(parseKillNotice('nope'), null);
 });
 
+test('ownerCandidate and authState default safely when absent', () => {
+  const bare = parseHello({});
+  assert.equal(bare.ownerCandidate, false);
+  assert.equal(bare.authState, 'locked');
+  const full = parseHello({ ownerCandidate: true, authState: 'owner_candidate' });
+  assert.equal(full.ownerCandidate, true);
+  assert.equal(full.authState, 'owner_candidate');
+  // Non-boolean ownerCandidate coerces to false
+  assert.equal(parseHello({ ownerCandidate: 'yes' }).ownerCandidate, false);
+  // Non-string authState coerces to 'locked'
+  assert.equal(parseHello({ authState: 42 }).authState, 'locked');
+});
+
 test('without the overlay permission she says she can only live inside the app', () => {
   const d = describeOverlay(status({ running: false, overlayPermission: false, visibility: 'NONE' }), 0, clock);
   assert.equal(d.needsOverlayPermission, true);
@@ -112,6 +149,22 @@ test('a running overlay is described by its visibility', () => {
   assert.match(describeOverlay(status({ visibility: 'DOCKED' }), 0, clock).headline, /standing still/);
   assert.equal(describeOverlay(status({ visibility: 'PAUSED' }), 0, clock).headline, 'Paused');
   assert.equal(describeOverlay(status({ pageReady: false }), 0, clock).headline, 'Starting');
+});
+
+test('the companion steps aside while the dashboard is foregrounded', () => {
+  const d = describeOverlay(status({ dashboardForeground: true, windowShown: false }), 0, clock);
+  assert.equal(d.headline, 'Dashboard open');
+  assert.match(d.detail, /returns when you leave/);
+});
+
+test('runtime transitions are reported distinctly and failures stay visible', () => {
+  const starting = describeOverlay(status({ running: false, runtimeState: 'STARTING' }), 0, clock);
+  assert.equal(starting.headline, 'Starting');
+  const failure = describeOverlay(status({ running: false, runtimeState: 'FAILED', runtimeFailure: 'WebView unavailable.' }), 0, clock);
+  assert.equal(failure.headline, 'Could not start');
+  assert.match(failure.detail, /WebView unavailable/);
+  const blocked = describeOverlay(status({ running: false, runtimeState: 'PERMISSION_BLOCKED', overlayPermission: false }), 0, clock);
+  assert.equal(blocked.needsOverlayPermission, true);
 });
 
 test('hidden by the hour timer offers "Show her now"; hidden for other reasons does not', () => {

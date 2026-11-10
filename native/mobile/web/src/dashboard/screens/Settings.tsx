@@ -4,7 +4,8 @@ import {
   KeyRound, Loader2, RefreshCw, XCircle, Link2
 } from 'lucide-react';
 import type { AIProvider, AISettings, VoiceEngine } from '@desktop/types';
-import { brain, startOpenRouterPairing, type ModelOption } from '@desktop/agent/brain';
+import { brain, listModelsWithStatus, resetChatGptCache, startOpenRouterPairing, type ModelOption } from '@desktop/agent/brain';
+import { pairingSourceFingerprint } from '@desktop/agent/identityFingerprint';
 import {
   PROVIDERS,
   PROVIDER_LABELS,
@@ -14,6 +15,8 @@ import {
   providerNeedsKey,
   removeProviderKey,
   saveProviderKey,
+  defaultSettings,
+  initializeSettings,
   loadSettings,
   saveSettings,
 } from '@desktop/agent/settings';
@@ -23,6 +26,9 @@ import { wipeAll } from '@desktop/store/db';
 import { speaker, useActiveVoice } from '@desktop/app/speaker';
 import {
   describeError,
+  chatGptAccount,
+  chatGptSignIn,
+  chatGptSignOut,
   formatMinutes,
   MODE_DETAILS,
   openMetadataWatcher,
@@ -30,23 +36,28 @@ import {
   setMode,
   setSetting,
 } from '../../shared/nativeApi.ts';
+import type { ChatGptAccount } from '../../shared/nativeApi.ts';
+import type { Mode } from '../../shared/vocabulary.ts';
 import { MODES } from '../../shared/vocabulary.ts';
 import { Switch } from '../Switch.tsx';
 import { useNativeState } from '../useNative.ts';
+import { authenticateOwner } from '../../shared/nativeApi.ts';
+import { request as requestNative } from '../../shared/bridge.ts';
 
-type SettingsTab = 'brain' | 'voice' | 'behavior' | 'android' | 'data';
+type SettingsTab = 'brain' | 'voice' | 'behavior' | 'android' | 'owner' | 'data';
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; icon: typeof Brain }> = [
   { id: 'brain', label: 'Brain', icon: Brain },
   { id: 'voice', label: 'Voice', icon: Volume2 },
   { id: 'behavior', label: 'Behavior', icon: Sparkles },
+  { id: 'owner', label: 'Owner & devices', icon: KeyRound },
   { id: 'android', label: 'Android', icon: Smartphone },
   { id: 'data', label: 'Data', icon: Trash2 },
 ];
 
 const PROVIDER_HELP: Record<AIProvider, string> = {
   'tva-offline': 'Built in. No account or key. Runs timers, reminders, schedule, notes, weather and search locally.',
-  chatgpt: 'Requires the desktop app for desktop OAuth sign-in.',
+  chatgpt: 'Connect your ChatGPT account in the Android app. Sign-in stays in the system browser; tokens stay in Android Keystore-backed storage.',
   openrouter: 'Pair your OpenRouter account or paste an API key. Access hundreds of open & commercial models.',
   openai: 'Your OpenAI API key. Access GPT-4o, GPT-4o-mini, o3-mini and TTS voices.',
   gemini: 'Your Google AI Studio API key. Fast and intelligent with Gemini 2.5 / 3.0.',
@@ -57,9 +68,45 @@ const PROVIDER_HELP: Record<AIProvider, string> = {
 const inputClass =
   'w-full rounded-xl border border-line bg-base px-3.5 py-2.5 text-sm text-cream outline-none focus:border-face transition-colors';
 
-export function Settings() {
+export function Settings({ ownerDataReady = true }: { ownerDataReady?: boolean }) {
+  const native = useNativeState();
+  const ownerUnlocked = ownerDataReady && native.phase === 'ready' && native.info?.ownerAuthenticated === true;
   const [tab, setTab] = useState<SettingsTab>('brain');
-  const [aiSettings, setAiSettings] = useState<AISettings>(() => loadSettings());
+  const [aiSettings, setAiSettings] = useState<AISettings>(() => defaultSettings());
+  const [pairingMessage, setPairingMessage] = useState('');
+  const [unlocking, setUnlocking] = useState(false);
+  const [unlockError, setUnlockError] = useState('');
+
+  async function unlock(): Promise<void> {
+    setUnlocking(true);
+    setUnlockError('');
+    try { await authenticateOwner(); await native.refresh(); }
+    catch (error) { setUnlockError(error instanceof Error ? error.message : 'Owner verification failed.'); }
+    finally { setUnlocking(false); }
+  }
+
+  useEffect(() => {
+    const onPairing = (event: Event) => {
+      const detail = (event as CustomEvent<{ ok?: boolean; message?: string }>).detail;
+      setPairingMessage(detail?.ok ? 'OpenRouter is paired and its key is stored natively.' : detail?.message ?? 'OpenRouter pairing failed.');
+    };
+    window.addEventListener('miss-minutes:openrouter-pairing', onPairing);
+    return () => window.removeEventListener('miss-minutes:openrouter-pairing', onPairing);
+  }, []);
+
+  useEffect(() => {
+    if (!ownerUnlocked) {
+      setAiSettings(defaultSettings());
+      return;
+    }
+    let active = true;
+    void initializeSettings().then(settled => {
+      if (active) setAiSettings(settled);
+    }).catch(() => {
+      if (active) setAiSettings(loadSettings());
+    });
+    return () => { active = false; };
+  }, [ownerUnlocked]);
 
   const updateAiSettings = (patch: Partial<AISettings>) => {
     const next = { ...aiSettings, ...patch };
@@ -68,8 +115,36 @@ export function Settings() {
 
   return (
     <div className="mx-auto flex max-w-md flex-col gap-5 pb-6">
+      {!ownerUnlocked ? <section className="rounded-2xl border border-line bg-raised p-5"><p className="text-xs font-semibold uppercase tracking-widest text-face">Control room</p><h1 className="mt-2 text-xl font-semibold text-cream">{!ownerDataReady && !native.info?.ownerAuthenticated ? 'Owner verification needed' : !ownerDataReady ? 'Securing saved data' : 'Owner settings are locked'}</h1><p className="mt-2 text-sm leading-relaxed text-muted">{!ownerDataReady && !native.info?.ownerAuthenticated ? 'Verify this device to migrate saved records and open private settings. Home controls and temporary guest chat remain available.' : !ownerDataReady ? 'Provider, voice, memory and security settings stay private until saved records finish migrating. Home controls are available now.' : 'Verify on this device to change providers, voice, behavior, memory and security settings.'}</p>{native.info?.ownerEnrolled && !native.info.ownerAuthenticated && <button type="button" disabled={unlocking} onClick={() => void unlock()} className="mt-4 min-h-12 rounded-xl bg-face px-5 font-semibold text-black disabled:opacity-60">{unlocking ? 'Waiting for device verification…' : 'Verify owner'}</button>}{unlockError && <p role="alert" className="mt-3 text-sm text-red-300">{unlockError}</p>}</section> : <>
       <header>
         <h1 className="text-3xl font-semibold leading-tight text-cream">Settings</h1>
+        {/* Authority status pill */}
+        <div className="mt-2 flex items-center gap-2">
+          {native.info?.ownerAuthenticated ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-700/40 bg-emerald-950/30 px-3 py-1 text-xs font-semibold text-emerald-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Boss · Authenticated
+            </span>
+          ) : native.info?.ownerCandidate ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-700/40 bg-amber-950/30 px-3 py-1 text-xs font-semibold text-amber-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-400" /> Boss Candidate
+            </span>
+          ) : native.info?.ownerEnrolled ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-raised px-3 py-1 text-xs font-semibold text-muted">
+              <span className="h-1.5 w-1.5 rounded-full bg-muted" /> Guest Mode
+            </span>
+          ) : null}
+        </div>
+        {/* One-tap Verify Identity for candidate state */}
+        {native.info?.ownerCandidate && !native.info.ownerAuthenticated && (
+          <button
+            type="button"
+            disabled={unlocking}
+            onClick={() => void unlock()}
+            className="mt-3 w-full min-h-11 rounded-xl border border-amber-600/50 bg-amber-950/20 text-sm font-semibold text-amber-300 disabled:opacity-60"
+          >
+            {unlocking ? 'Waiting for device verification…' : '🔑 Verify Identity · Miss Minutes recognized you'}
+          </button>
+        )}
       </header>
 
       {/* Segmented sub-tabs */}
@@ -93,11 +168,14 @@ export function Settings() {
         ))}
       </div>
 
-      {tab === 'brain' && <BrainSettingsTab settings={aiSettings} set={updateAiSettings} />}
+      {tab === 'brain' && <BrainSettingsTab settings={aiSettings} set={updateAiSettings} ownerUnlocked={ownerUnlocked} />}
       {tab === 'voice' && <VoiceSettingsTab settings={aiSettings} set={updateAiSettings} />}
       {tab === 'behavior' && <BehaviorSettingsTab settings={aiSettings} set={updateAiSettings} />}
+      {tab === 'owner' && <OwnerDevicesTab showIdentity />}
       {tab === 'android' && <AndroidSettingsTab />}
       {tab === 'data' && <DataSettingsTab />}
+      </>}
+      {!native.info?.ownerEnrolled && <OwnerDevicesTab showIdentity={false} />}
     </div>
   );
 }
@@ -141,7 +219,211 @@ function SettingToggle({
   );
 }
 
-function BrainSettingsTab({ settings, set }: { settings: AISettings; set: (p: Partial<AISettings>) => void }) {
+function OwnerDevicesTab({ showIdentity }: { showIdentity: boolean }) {
+  const native = useNativeState();
+  const [identity, setIdentity] = useState<{ ownerId?: string; deviceId?: string; recoveryConfigured?: boolean; devices?: Array<{ deviceId: string; platform: string; revoked: boolean; current: boolean }> } | null>(null);
+  const [request, setRequest] = useState('');
+  const [requestToApprove, setRequestToApprove] = useState('');
+  const [receipt, setReceipt] = useState('');
+  const [receiptToImport, setReceiptToImport] = useState('');
+  const [sourceFingerprint, setSourceFingerprint] = useState('');
+  const [fingerprintConfirmed, setFingerprintConfirmed] = useState(false);
+  const [recoveryPassphrase, setRecoveryPassphrase] = useState('');
+  const [recoveryConfirmation, setRecoveryConfirmation] = useState('');
+  const [recoveryKit, setRecoveryKit] = useState('');
+  const [recoveryMaterial, setRecoveryMaterial] = useState('');
+  const [recoveryImportPassphrase, setRecoveryImportPassphrase] = useState('');
+  const [confirmRecoveryRotation, setConfirmRecoveryRotation] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    if (!showIdentity) return;
+    let active = true;
+    void requestNative('owner.identity.summary', {}, 15_000).then(value => {
+      if (active) setIdentity(value as { ownerId?: string; deviceId?: string });
+    }).catch(error => {
+      if (active) setStatus({ ok: false, text: describeError(error) });
+    });
+    return () => { active = false; };
+  }, [showIdentity]);
+
+  useEffect(() => {
+    let active = true;
+    setSourceFingerprint('');
+    setFingerprintConfirmed(false);
+    try {
+      const receipt = JSON.parse(receiptToImport) as { ownerId?: string; sourceDeviceId?: string; sourcePublicKey?: string; sourcePlatform?: string };
+      if (receipt.sourcePlatform === 'windows' && receipt.ownerId && receipt.sourceDeviceId && receipt.sourcePublicKey) {
+        void pairingSourceFingerprint(receipt.ownerId, receipt.sourceDeviceId, receipt.sourcePublicKey)
+          .then(value => { if (active) setSourceFingerprint(value); })
+          .catch(() => { if (active) setSourceFingerprint('Invalid receipt identity'); });
+      }
+    } catch { /* Input is incomplete while the user pastes it. */ }
+    return () => { active = false; };
+  }, [receiptToImport]);
+
+  const createRequest = async () => {
+    setBusy('create'); setStatus(null);
+    try {
+      const result = await requestNative('owner.pairing.request.create', {}, 30_000) as { request?: string };
+      if (!result.request) throw new Error('The app returned no pairing request.');
+      setRequest(result.request);
+      setStatus({ ok: true, text: 'Request created on this phone. Transfer it to the currently enrolled phone.' });
+    } catch (error) { setStatus({ ok: false, text: describeError(error) }); }
+    finally { setBusy(null); }
+  };
+
+  const revokeDevice = async (deviceId: string) => {
+    if (!window.confirm('Revoke this device from the trusted-device registry on this phone? It will require a new pairing ceremony to be trusted here again.')) return;
+    setBusy(`revoke:${deviceId}`); setStatus(null);
+    try {
+      const result = await requestNative('owner.device.revoke', { deviceId }, 120_000) as { status?: string };
+      if (result.status !== 'revoked') throw new Error('The Rust authority did not confirm device revocation.');
+      const updated = await requestNative('owner.identity.summary', {}, 15_000);
+      setIdentity(updated as typeof identity);
+      setStatus({ ok: true, text: 'Device revoked on this phone after fresh biometric verification. Other offline devices will not learn about the revocation until you update their trusted-device registries.' });
+    } catch (error) { setStatus({ ok: false, text: describeError(error) }); }
+    finally { setBusy(null); }
+  };
+
+  const approveRequest = async () => {
+    setBusy('approve'); setStatus(null); setReceipt('');
+    try {
+      const result = await requestNative('owner.pairing.request.approve', { request: requestToApprove.trim() }, 120_000) as { receipt?: string };
+      if (!result.receipt) throw new Error('The app returned no signed pairing receipt.');
+      setReceipt(result.receipt);
+      const details = JSON.parse(result.receipt) as { sourceDeviceId?: string; targetDeviceId?: string };
+      setStatus({ ok: true, text: `Approved ${details.targetDeviceId ?? 'new device'} from enrolled device ${details.sourceDeviceId ?? 'this phone'}. Compare the source device ID on both screens before importing.` });
+    } catch (error) { setStatus({ ok: false, text: describeError(error) }); }
+    finally { setBusy(null); }
+  };
+
+  const importReceipt = async () => {
+    setBusy('import'); setStatus(null);
+    try {
+      const result = await requestNative('owner.pairing.receipt.import', { receipt: receiptToImport.trim() }, 30_000) as { status?: string };
+      if (result.status !== 'paired') throw new Error('The receipt was not accepted.');
+      setReceiptToImport('');
+      setStatus({ ok: true, text: 'This phone is paired. It must authenticate with its own protected device credential.' });
+    } catch (error) { setStatus({ ok: false, text: describeError(error) }); }
+    finally { setBusy(null); }
+  };
+
+  const createRecoveryKit = async () => {
+    setBusy('recovery-create'); setStatus(null); setRecoveryKit('');
+    if (recoveryPassphrase.length < 12 || recoveryPassphrase !== recoveryConfirmation) {
+      setStatus({ ok: false, text: 'Enter matching recovery passphrases of at least 12 printable ASCII characters.' });
+      setBusy(null);
+      return;
+    }
+    try {
+      const result = await requestNative('owner.recovery.create', { passphrase: recoveryPassphrase }, 180_000) as { material?: string };
+      if (!result.material) throw new Error('The encrypted recovery kit was not returned.');
+      setRecoveryKit(result.material);
+      setRecoveryPassphrase('');
+      setRecoveryConfirmation('');
+      setConfirmRecoveryRotation(false);
+      await native.refresh();
+      setStatus({ ok: true, text: 'Recovery kit created. Save it offline and keep its passphrase separately; the private recovery key cannot be downloaded again.' });
+    } catch (error) { setStatus({ ok: false, text: describeError(error) }); }
+    finally { setBusy(null); }
+  };
+
+  const restoreRecoveryKit = async () => {
+    setBusy('recovery-restore'); setStatus(null);
+    try {
+      const result = await requestNative('owner.recovery.restore', {
+        material: recoveryMaterial.trim(), passphrase: recoveryImportPassphrase,
+      }, 180_000) as { status?: string };
+      if (result.status !== 'recovered') throw new Error('The recovery kit was not accepted.');
+      setRecoveryMaterial('');
+      setRecoveryImportPassphrase('');
+      await native.refresh();
+      setStatus({ ok: true, text: 'Device recovered and enrolled. It is still locked; verify with this device’s biometric before accessing owner data.' });
+    } catch (error) { setStatus({ ok: false, text: describeError(error) }); }
+    finally { setBusy(null); }
+  };
+
+  const copy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus({ ok: true, text: 'Copied. Transfer it directly to your other device over a channel you control.' });
+    } catch {
+      setStatus({ ok: false, text: 'Clipboard is unavailable. Select the text and copy it manually.' });
+    }
+  };
+
+  const transferArea = 'min-h-28 w-full resize-y rounded-xl border border-line bg-base p-3 font-mono text-[11px] leading-5 text-cream outline-none focus:border-face';
+  const action = 'min-h-11 rounded-xl bg-face px-4 py-2 text-sm font-semibold text-[#1b1008] transition hover:brightness-110 disabled:cursor-wait disabled:opacity-50';
+  const subAction = 'min-h-10 rounded-lg border border-line px-3 py-2 text-xs font-medium text-cream hover:border-face/60';
+  const claimedSourceId = (() => {
+    try { return receiptToImport ? (JSON.parse(receiptToImport) as { sourceDeviceId?: string }).sourceDeviceId ?? null : null; }
+    catch { return null; }
+  })();
+  const needsFingerprintCheck = (() => {
+    try { return (JSON.parse(receiptToImport) as { sourcePlatform?: string }).sourcePlatform === 'windows'; }
+    catch { return false; }
+  })();
+
+  return <div className="space-y-4">
+    <Section title="Pair a device" hint="Offline pairing. Each phone keeps its own Keystore private key; this flow transfers only public credentials and a signed challenge.">
+      <div className="space-y-4">
+        {showIdentity && identity?.deviceId && <div className="rounded-xl border border-face/30 bg-face/5 p-3"><p className="text-xs font-semibold uppercase tracking-wide text-face">This enrolled device</p><p className="mt-1 break-all font-mono text-xs text-cream" aria-label="Current owner device ID">{identity.deviceId}</p><p className="mt-1 text-[11px] text-muted">Confirm that the signed receipt names this exact source device before importing it on another phone.</p><button type="button" className="mt-2 text-xs font-medium text-face underline" onClick={() => void copy(identity.deviceId!)}>Copy device ID</button></div>}
+        {showIdentity && !!identity?.devices?.length && <div className="rounded-xl border border-line bg-base/50 p-3"><h3 className="text-sm font-semibold text-cream">Trusted devices</h3><ul className="mt-2 space-y-2">{identity.devices.map(device => <li key={device.deviceId} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line/70 p-2"><div className="min-w-0 flex-1"><p className="text-xs font-medium text-cream">{device.current ? 'This device' : `${device.platform} device`} · {device.revoked ? 'Revoked here' : 'Trusted here'}</p><p className="mt-1 break-all font-mono text-[10px] text-muted">{device.deviceId}</p></div>{!device.current && !device.revoked && <button type="button" className={subAction} disabled={busy !== null} onClick={() => void revokeDevice(device.deviceId)}>{busy === `revoke:${device.deviceId}` ? 'Verifying…' : 'Revoke'}</button>}</li>)}</ul><p className="mt-2 text-[11px] leading-5 text-muted">Revocation is stored on this device. Offline devices cannot receive it until their registries are updated.</p></div>}
+        <div className="rounded-xl border border-line bg-base/50 p-3">
+          <p className="text-sm font-semibold text-cream">1 · New phone: create a request</p>
+          <p className="mt-1 text-xs leading-5 text-muted">On the new phone, tap below and send its request to the already enrolled phone.</p>
+          <button type="button" className={`${action} mt-3`} disabled={busy !== null} onClick={() => void createRequest()}>{busy === 'create' ? 'Creating request…' : 'Create request on this phone'}</button>
+          {request && <div className="mt-3 space-y-2"><textarea aria-label="Pairing request" readOnly value={request} className={transferArea} onFocus={event => event.currentTarget.select()} /><button type="button" className={subAction} onClick={() => void copy(request)}>Copy request</button></div>}
+        </div>
+
+        <div className="rounded-xl border border-line bg-base/50 p-3">
+          <p className="text-sm font-semibold text-cream">2 · Enrolled phone: verify and approve</p>
+          <p className="mt-1 text-xs leading-5 text-muted">Paste the request here. Android will require a fresh device biometric before the Rust authority engine commits trust. Compare the source device ID in the signed receipt with the ID shown on this enrolled phone.</p>
+          <textarea aria-label="Pairing request to approve" value={requestToApprove} onChange={event => setRequestToApprove(event.target.value)} placeholder="Paste request from the new phone" className={`${transferArea} mt-3`} />
+          <button type="button" className={`${action} mt-2`} disabled={!requestToApprove.trim() || busy !== null} onClick={() => void approveRequest()}>{busy === 'approve' ? 'Waiting for device verification…' : 'Verify and approve'}</button>
+          {receipt && <div className="mt-3 space-y-2"><textarea aria-label="Signed pairing receipt" readOnly value={receipt} className={transferArea} onFocus={event => event.currentTarget.select()} /><button type="button" className={subAction} onClick={() => void copy(receipt)}>Copy signed receipt</button></div>}
+        </div>
+
+        <div className="rounded-xl border border-line bg-base/50 p-3">
+          <p className="text-sm font-semibold text-cream">3 · New phone: import the signed receipt</p>
+          <textarea aria-label="Signed receipt to import" value={receiptToImport} onChange={event => setReceiptToImport(event.target.value)} placeholder="Paste receipt from your enrolled phone" className={`${transferArea} mt-3`} />
+          {claimedSourceId && <p className="mt-2 break-all text-xs text-amber-200">Receipt claims source device <span className="font-mono">{claimedSourceId}</span>. Compare this ID with the enrolled device before importing.</p>}
+          {sourceFingerprint && <div className="mt-2 space-y-2 rounded-lg border border-amber-700/50 bg-amber-950/30 p-3"><p className="text-xs text-amber-100">Compare this pairing code with the one shown on the Windows desktop that approved this request:</p><p className="font-mono text-base font-bold tracking-widest text-amber-300">{sourceFingerprint}</p><label className="flex items-start gap-2 text-xs leading-5 text-amber-100"><input type="checkbox" checked={fingerprintConfirmed} onChange={event => setFingerprintConfirmed(event.target.checked)} className="mt-1 accent-[#ff711c]" />The code matches the Windows desktop in front of me.</label></div>}
+          <button type="button" className={`${action} mt-2`} disabled={!receiptToImport.trim() || busy !== null || (needsFingerprintCheck && (!sourceFingerprint || sourceFingerprint === 'Invalid receipt identity' || !fingerprintConfirmed))} onClick={() => void importReceipt()}>{busy === 'import' ? 'Verifying signature…' : 'Verify receipt and pair'}</button>
+        </div>
+      </div>
+      {status && <p role={status.ok ? 'status' : 'alert'} className={`rounded-xl border px-3 py-2 text-xs leading-5 ${status.ok ? 'border-emerald-800/60 bg-emerald-950/30 text-emerald-200' : 'border-red-800/60 bg-red-950/30 text-red-200'}`}>{status.text}</p>}
+      <p className="text-[11px] leading-5 text-muted">Keep transfer text private and use it promptly. Pairing does not synchronize biometric profiles, conversation data, or secrets.</p>
+    </Section>
+    {showIdentity ? <Section title="Offline recovery kit" hint="A recovery key can enroll a replacement device if every paired device is lost. The encrypted kit is never retained by Miss Minutes; its passphrase is separate from the kit.">
+      <div className="space-y-3">
+        <p className="text-xs leading-5 text-muted">{identity?.recoveryConfigured ? 'A recovery credential is configured. Replacing it invalidates the previous kit.' : 'No recovery credential is configured yet. Set one up and keep the kit offline.'}</p>
+        {identity?.recoveryConfigured && <label className="flex items-start gap-2 text-xs leading-5 text-amber-100"><input type="checkbox" checked={confirmRecoveryRotation} onChange={event => setConfirmRecoveryRotation(event.target.checked)} className="mt-1 accent-[#ff711c]" />I understand that replacing the recovery kit invalidates the previous one.</label>}
+        <label className="block text-xs text-muted">New recovery passphrase
+          <input type="password" autoComplete="new-password" value={recoveryPassphrase} onChange={event => setRecoveryPassphrase(event.target.value)} minLength={12} maxLength={256} className={`${inputClass} mt-1`} placeholder="12–256 printable ASCII characters" />
+        </label>
+        <label className="block text-xs text-muted">Confirm recovery passphrase
+          <input type="password" autoComplete="new-password" value={recoveryConfirmation} onChange={event => setRecoveryConfirmation(event.target.value)} minLength={12} maxLength={256} className={`${inputClass} mt-1`} />
+        </label>
+        <button type="button" className={action} disabled={busy !== null || recoveryPassphrase.length < 12 || recoveryPassphrase !== recoveryConfirmation || (!!identity?.recoveryConfigured && !confirmRecoveryRotation)} onClick={() => void createRecoveryKit()}>{busy === 'recovery-create' ? 'Verifying and creating kit…' : identity?.recoveryConfigured ? 'Verify and replace recovery kit' : 'Verify and create recovery kit'}</button>
+        {recoveryKit && <div className="space-y-2 rounded-xl border border-amber-700/50 bg-amber-950/20 p-3"><p className="text-xs font-semibold text-amber-100">Save this encrypted kit now</p><textarea aria-label="Encrypted offline recovery kit" readOnly value={recoveryKit} className={transferArea} onFocus={event => event.currentTarget.select()} /><button type="button" className={subAction} onClick={() => void copy(recoveryKit)}>Copy recovery kit</button><p className="text-[11px] leading-5 text-amber-100/75">Store it offline. Keep the passphrase separate. Anyone with both can enroll a replacement device. This kit is displayed only once.</p></div>}
+      </div>
+    </Section> : <Section title="Recover a device" hint="Restore from your offline encrypted recovery kit. This creates a new device-bound key and requires the kit plus its separate passphrase.">
+      <div className="space-y-3">
+        <textarea aria-label="Encrypted recovery kit to import" value={recoveryMaterial} onChange={event => setRecoveryMaterial(event.target.value)} placeholder="Paste recovery kit" className={transferArea} />
+        <label className="block text-xs text-muted">Recovery passphrase
+          <input type="password" autoComplete="current-password" value={recoveryImportPassphrase} onChange={event => setRecoveryImportPassphrase(event.target.value)} minLength={12} maxLength={256} className={`${inputClass} mt-1`} />
+        </label>
+        <button type="button" className={action} disabled={busy !== null || !recoveryMaterial.trim() || recoveryImportPassphrase.length < 12} onClick={() => void restoreRecoveryKit()}>{busy === 'recovery-restore' ? 'Verifying offline recovery proof…' : 'Verify kit and recover this device'}</button>
+        <p className="text-[11px] leading-5 text-muted">Recovery is offline. A valid signature enrolls only this device; you must authenticate here afterward. It does not copy biometric profiles or owner data.</p>
+      </div>
+    </Section>}
+  </div>;
+}
+
+function BrainSettingsTab({ settings, set, ownerUnlocked }: { settings: AISettings; set: (p: Partial<AISettings>) => void; ownerUnlocked: boolean }) {
   const provider = settings.provider;
   const [key, setKey] = useState('');
   const [remember, setRemember] = useState(true);
@@ -151,6 +433,7 @@ function BrainSettingsTab({ settings, set }: { settings: AISettings; set: (p: Pa
   const [test, setTest] = useState<{ ok: boolean; message: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [chatGpt, setChatGpt] = useState<ChatGptAccount | null>(null);
 
   useEffect(() => {
     setTest(null);
@@ -163,10 +446,26 @@ function BrainSettingsTab({ settings, set }: { settings: AISettings; set: (p: Pa
     }
   }, [provider]);
 
+  useEffect(() => {
+    let active = true;
+    setChatGpt(null);
+    if (provider === 'chatgpt' && ownerUnlocked) {
+      void chatGptAccount().then(account => { if (active) setChatGpt(account); })
+        .catch(e => { if (active) setError(e instanceof Error ? e.message : String(e)); });
+    }
+    return () => { active = false; };
+  }, [provider, ownerUnlocked]);
+
   const refreshModels = async () => {
     setLoadingModels(true);
     try {
-      setModels(await brain.listModels(settings));
+      const catalog = await listModelsWithStatus(settings);
+      setModels(catalog.models);
+      setError(catalog.error ?? null);
+      if (!settings.model && catalog.models[0]) set({ model: catalog.models[0].id });
+    } catch (e) {
+      setModels([]);
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoadingModels(false);
     }
@@ -191,8 +490,40 @@ function BrainSettingsTab({ settings, set }: { settings: AISettings; set: (p: Pa
     }
   };
 
-  // On mobile we exclude chatgpt because it requires desktop tauri OAuth loopback
-  const mobileProviders = PROVIDERS.filter(p => p !== 'chatgpt');
+  const connectChatGpt = async () => {
+    setBusy('chatgpt');
+    setError(null);
+    try {
+      const account = await chatGptSignIn();
+      resetChatGptCache();
+      setChatGpt(account);
+      const catalog = await listModelsWithStatus(settings);
+      setModels(catalog.models);
+      setError(catalog.error ?? null);
+      if (!settings.model && catalog.models[0]) set({ model: catalog.models[0].id });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const disconnectChatGpt = async () => {
+    setBusy('chatgpt');
+    setError(null);
+    try {
+      await chatGptSignOut();
+      resetChatGptCache();
+      setChatGpt({ signedIn: false, email: null, planUsage: false, expiresAtUnixMs: null });
+      setModels([]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const mobileProviders = PROVIDERS;
 
   return (
     <>
@@ -216,6 +547,26 @@ function BrainSettingsTab({ settings, set }: { settings: AISettings; set: (p: Pa
         <p className="text-xs text-muted leading-relaxed">{PROVIDER_HELP[provider]}</p>
       </Section>
 
+      {provider === 'chatgpt' && (
+        <Section title="ChatGPT account" hint="Authorize Miss Minutes to use eligible ChatGPT plan usage. The Android app keeps access and refresh tokens out of the WebView and encrypts them with a hardware-backed Android Keystore key.">
+          {chatGpt?.signedIn ? (
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-base/50 p-3">
+              <div>
+                <p className="text-sm font-medium text-cream">{chatGpt.email ?? 'ChatGPT account connected'}</p>
+                <p className="text-xs text-muted">{chatGpt.planUsage ? 'Plan usage permission is active.' : 'This login did not grant plan usage.'}</p>
+              </div>
+              <button type="button" onClick={() => void disconnectChatGpt()} disabled={busy === 'chatgpt'} className="rounded-xl border border-line px-3 py-2 text-xs text-cream disabled:opacity-50">Disconnect</button>
+            </div>
+          ) : (
+            <button type="button" onClick={() => void connectChatGpt()} disabled={busy === 'chatgpt'} className="flex w-full items-center justify-center gap-2 rounded-xl bg-face py-2.5 text-sm font-semibold text-black disabled:opacity-50">
+              {busy === 'chatgpt' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
+              Continue with ChatGPT
+            </button>
+          )}
+          <p className="text-xs leading-relaxed text-muted">ChatGPT is the active brain only when ChatGPT is selected above and a model appears below. Returning from sign-in keeps this device session available unless you lock the owner or lock the phone.</p>
+        </Section>
+      )}
+
       {provider === 'openrouter' && (
         <Section title="Pair OpenRouter" hint="Sign in to OpenRouter to authorize Miss Minutes, or paste an API key below.">
           <button
@@ -225,13 +576,14 @@ function BrainSettingsTab({ settings, set }: { settings: AISettings; set: (p: Pa
           >
             <Link2 className="h-4 w-4" /> Pair in Browser
           </button>
+          {pairingMessage && <p role="status" className="text-xs text-amber-200">{pairingMessage}</p>}
         </Section>
       )}
 
       {providerNeedsKey(provider) && (
         <Section
           title="API Key"
-          hint="Stored encrypted in this device's IndexedDB with WebCrypto AES-GCM. Never sent anywhere except directly to the provider."
+          hint="Stored in encrypted app-private storage protected by Android Keystore. The key is not returned to this screen after saving."
         >
           <div className="flex gap-2">
             <input
@@ -254,7 +606,7 @@ function BrainSettingsTab({ settings, set }: { settings: AISettings; set: (p: Pa
           {canRememberWebSecrets() && (
             <SettingToggle
               label="Remember key on this device"
-              hint="Encrypted with hardware-backed WebCrypto"
+              hint="Protected by Android Keystore and encrypted native storage"
               checked={remember}
               onChange={setRemember}
             />
@@ -277,7 +629,7 @@ function BrainSettingsTab({ settings, set }: { settings: AISettings; set: (p: Pa
       )}
 
       {provider === 'ollama' && (
-        <Section title="Ollama Endpoint" hint="Local network endpoint where Ollama is running.">
+        <Section title="Ollama Endpoint" hint="Ollama must be running on this Android device; network hosts are blocked by the native provider boundary.">
           <input
             value={settings.customEndpoint ?? ''}
             onChange={e => set({ customEndpoint: e.target.value })}
@@ -297,7 +649,7 @@ function BrainSettingsTab({ settings, set }: { settings: AISettings; set: (p: Pa
                 className={inputClass}
               >
                 {!models.some(m => m.id === settings.model) && settings.model && (
-                  <option value={settings.model}>{settings.model}</option>
+                <option value={settings.model}>{settings.model}</option>
                 )}
                 {models.map(m => (
                   <option key={m.id} value={m.id}>
@@ -306,12 +658,9 @@ function BrainSettingsTab({ settings, set }: { settings: AISettings; set: (p: Pa
                 ))}
               </select>
             ) : (
-              <input
-                value={settings.model}
-                onChange={e => set({ model: e.target.value })}
-                placeholder="Model ID, e.g. gemini-3.8-flash"
-                className={inputClass}
-              />
+              <div role="status" className={`${inputClass} text-muted`}>
+                {loadingModels ? 'Loading available models…' : error ?? 'No models are available for this provider account. Refresh the catalog or check the connection.'}
+              </div>
             )}
             <button
               type="button"
@@ -330,8 +679,14 @@ function BrainSettingsTab({ settings, set }: { settings: AISettings; set: (p: Pa
           type="button"
           onClick={async () => {
             setBusy('test');
-            setTest(await brain.testConnection(settings));
-            setBusy(null);
+            setTest(null);
+            try {
+              setTest(await brain.testConnection(settings));
+            } catch (e) {
+              setTest({ ok: false, message: describeError(e) ?? 'The provider connection test failed.' });
+            } finally {
+              setBusy(null);
+            }
           }}
           disabled={busy === 'test'}
           className="flex items-center gap-2 rounded-xl border border-line bg-base/50 px-4 py-2.5 text-sm text-cream hover:border-face transition-colors disabled:opacity-50"
@@ -485,7 +840,7 @@ function VoiceSettingsTab({ settings, set }: { settings: AISettings; set: (p: Pa
       <button
         type="button"
         onClick={() =>
-          speaker.say("Well hey there, sugar! This is how I sound. Ain't that just peachy?", {
+          speaker.say("Good to have you back, Boss. I checked the obvious things; they're behaving.", {
             ...settings,
             voiceEnabled: true,
           })
@@ -546,7 +901,7 @@ function BehaviorSettingsTab({ settings, set }: { settings: AISettings; set: (p:
           rows={5}
           value={settings.systemPrompt}
           onChange={e => set({ systemPrompt: e.target.value })}
-          placeholder="Leave blank for classic Miss Minutes TVA persona."
+          placeholder="Optional style notes. The core Miss Minutes personality stays in effect."
           className={`${inputClass} font-mono text-xs`}
         />
       </Section>
@@ -558,6 +913,7 @@ function AndroidSettingsTab() {
   const native = useNativeState();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [appliedMessage, setAppliedMessage] = useState<string | null>(null);
 
   const info = native.info;
   const ready = native.phase === 'ready' && info !== null;
@@ -565,6 +921,7 @@ function AndroidSettingsTab() {
   async function run(action: () => Promise<unknown>): Promise<void> {
     setBusy(true);
     setMessage(null);
+    setAppliedMessage(null);
     try {
       await action();
     } catch (error) {
@@ -572,6 +929,21 @@ function AndroidSettingsTab() {
     } finally {
       setBusy(false);
       await native.refresh();
+    }
+  }
+
+  async function changeMode(mode: Mode): Promise<void> {
+    setBusy(true);
+    setMessage(null);
+    setAppliedMessage(null);
+    try {
+      const confirmedMode = await setMode(mode);
+      await native.refresh();
+      setAppliedMessage(`Permission mode saved: ${MODE_DETAILS[confirmedMode].label}.`);
+    } catch (error) {
+      setMessage(describeError(error));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -586,6 +958,11 @@ function AndroidSettingsTab() {
       {message && (
         <div role="alert" className="rounded-xl border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm">
           {message}
+        </div>
+      )}
+      {appliedMessage && (
+        <div role="status" className="rounded-xl border border-emerald-700/50 bg-emerald-900/20 px-4 py-3 text-sm text-emerald-100">
+          {appliedMessage}
         </div>
       )}
 
@@ -603,7 +980,7 @@ function AndroidSettingsTab() {
                 role="radio"
                 aria-checked={selected}
                 disabled={busy || !ready}
-                onClick={() => void run(() => setMode(mode))}
+                onClick={() => void changeMode(mode)}
                 className={`rounded-xl border px-4 py-3 text-left transition-colors disabled:opacity-50 ${
                   selected ? 'border-face bg-face/10' : 'border-line bg-base/40 hover:border-face/30'
                 }`}
@@ -697,7 +1074,7 @@ function DataSettingsTab() {
   return (
     <Section
       title="Local Data"
-      hint="All conversations, memories, schedule, to-dos, timers and notes are stored strictly on this device in IndexedDB."
+      hint="Conversations, memories, schedules, to-dos, timers and notes stay in the encrypted Android owner database. The WebView cannot read them without an active owner session."
     >
       {!confirm ? (
         <button

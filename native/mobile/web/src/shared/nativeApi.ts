@@ -9,11 +9,14 @@ import { MODES, ROAMING_LEVELS } from './vocabulary.ts';
 import type { Mode, RoamingLevel } from './vocabulary.ts';
 
 export type OverlayVisibility = 'ACTIVE' | 'DOCKED' | 'PAUSED' | 'HIDDEN' | 'NONE';
+export type CompanionRuntimeState = 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'FAILED' | 'PERMISSION_BLOCKED' | 'RECOVERING';
 const VISIBILITIES: readonly OverlayVisibility[] = ['ACTIVE', 'DOCKED', 'PAUSED', 'HIDDEN', 'NONE'];
+const RUNTIME_STATES: readonly CompanionRuntimeState[] = ['STOPPED', 'STARTING', 'RUNNING', 'STOPPING', 'FAILED', 'PERMISSION_BLOCKED', 'RECOVERING'];
 
 export interface OverlayStatus {
   running: boolean;
   windowShown: boolean;
+  dashboardForeground: boolean;
   pageReady: boolean;
   visibility: OverlayVisibility;
   overlayPermission: boolean;
@@ -21,6 +24,14 @@ export interface OverlayStatus {
   desiredRunning: boolean;
   hiddenUntilMs: number;
   killed: boolean;
+  runtimeState: CompanionRuntimeState;
+  runtimeRevision: number;
+  runtimeEventId: string;
+  runtimeServiceInstanceId: string;
+  runtimeMonotonicAtMs: number;
+  runtimeFailure: string;
+  roamingLevel: RoamingLevel;
+  appliedRoamingLevel: RoamingLevel | null;
 }
 
 export interface SettingsValues {
@@ -49,6 +60,31 @@ export interface HelloInfo {
   overlay: OverlayStatus;
   settings: SettingsValues;
   killNotice: KillNotice | null;
+  ownerEnrolled: boolean;
+  ownerAuthenticated: boolean;
+  /** True when a face/speaker recognition signal has been observed but no authenticated session is active yet. */
+  ownerCandidate: boolean;
+  /** Raw Rust AuthState string: unenrolled | locked | owner_candidate | authentication_pending |
+   *  owner_authenticated | step_up_required | guest_active | revoked | device_untrusted */
+  authState: string;
+  faceProfileEnrolled: boolean;
+  faceProfilePending: boolean;
+  speakerProfileEnrolled: boolean;
+  speakerProfilePending: boolean;
+  sensorConsentGiven: boolean;
+  ownerClaimPending: boolean;
+}
+
+export interface ChatGptAccount {
+  signedIn: boolean;
+  email: string | null;
+  planUsage: boolean;
+  expiresAtUnixMs: number | null;
+}
+
+export interface ChatGptModel {
+  slug: string;
+  displayName: string;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -66,9 +102,14 @@ function num(value: unknown, fallback: number): number {
 export function parseOverlayStatus(raw: unknown): OverlayStatus {
   const p: Record<string, unknown> = isObject(raw) ? raw : {};
   const visibility = (VISIBILITIES as readonly unknown[]).includes(p.visibility) ? (p.visibility as OverlayVisibility) : 'NONE';
+  const runtimeState = (RUNTIME_STATES as readonly unknown[]).includes(p.runtimeState)
+    ? p.runtimeState as CompanionRuntimeState : bool(p.running, false) ? 'RUNNING' : 'STOPPED';
   return {
-    running: bool(p.running, false),
+    // Service existence is not proof that overlay initialization succeeded. The published runtime
+    // state is authoritative; this prevents a STARTING/FAILED service from showing a Stop toggle.
+    running: runtimeState === 'RUNNING' && bool(p.running, false),
     windowShown: bool(p.windowShown, false),
+    dashboardForeground: bool(p.dashboardForeground, false),
     pageReady: bool(p.pageReady, false),
     visibility,
     overlayPermission: bool(p.overlayPermission, false),
@@ -76,6 +117,15 @@ export function parseOverlayStatus(raw: unknown): OverlayStatus {
     desiredRunning: bool(p.desiredRunning, false),
     hiddenUntilMs: Math.max(0, num(p.hiddenUntilMs, 0)),
     killed: bool(p.killed, false),
+    runtimeState,
+    runtimeRevision: Math.max(0, num(p.runtimeRevision, 0)),
+    runtimeEventId: typeof p.runtimeEventId === 'string' ? p.runtimeEventId : '',
+    runtimeServiceInstanceId: typeof p.runtimeServiceInstanceId === 'string' ? p.runtimeServiceInstanceId : '',
+    runtimeMonotonicAtMs: Math.max(0, num(p.runtimeMonotonicAtMs, 0)),
+    runtimeFailure: typeof p.runtimeFailure === 'string' ? p.runtimeFailure : '',
+    roamingLevel: (ROAMING_LEVELS as readonly unknown[]).includes(p.roamingLevel) ? p.roamingLevel as RoamingLevel : 'CALM',
+    appliedRoamingLevel: (ROAMING_LEVELS as readonly unknown[]).includes(p.appliedRoamingLevel)
+      ? p.appliedRoamingLevel as RoamingLevel : null,
   };
 }
 
@@ -111,6 +161,16 @@ export function parseHello(raw: Payload): HelloInfo {
     overlay: parseOverlayStatus(raw.overlay),
     settings: parseSettings(raw.settings),
     killNotice: parseKillNotice(raw.killNotice),
+    ownerEnrolled: bool(raw.ownerEnrolled, false),
+    ownerAuthenticated: bool(raw.ownerAuthenticated, false),
+    ownerCandidate: bool(raw.ownerCandidate, false),
+    authState: typeof raw.authState === 'string' ? raw.authState : 'locked',
+    faceProfileEnrolled: bool(raw.faceProfileEnrolled, false),
+    faceProfilePending: bool(raw.faceProfilePending, false),
+    speakerProfileEnrolled: bool(raw.speakerProfileEnrolled, false),
+    speakerProfilePending: bool(raw.speakerProfilePending, false),
+    sensorConsentGiven: bool(raw.sensorConsentGiven, false),
+    ownerClaimPending: bool(raw.ownerClaimPending, false),
   };
 }
 
@@ -119,6 +179,42 @@ export function parseHello(raw: Payload): HelloInfo {
 /** The dashboard's hello. The answer carries the whole current state, so screens use it to refresh. */
 export async function getHello(): Promise<HelloInfo> {
   return parseHello(await request('hello', { role: 'dashboard' }));
+}
+
+/** Opens the platform biometric prompt after a direct user action in the dashboard. */
+export async function authenticateOwner(): Promise<void> {
+  const payload = await request('owner.authenticate', {}, 120_000);
+  if (payload.authenticated !== true) throw new Error('The device did not establish an owner session.');
+}
+
+/** Begin first-device enrollment, or request platform verification for an existing owner device. */
+export async function setupOwnerDevice(): Promise<void> {
+  const payload = await request('owner.setup.enroll', {}, 120_000);
+  if (payload.authenticated !== true) throw new Error('Android did not confirm the owner device session.');
+}
+
+/** Show Android's sensor disclosure and persist the user's explicit consent choice. */
+export async function consentToLocalSensors(): Promise<void> {
+  const payload = await request('owner.setup.consent', {}, 120_000);
+  if (payload.consented !== true) throw new Error('Android did not record sensor consent.');
+}
+
+/** Open local face presence/enrollment after the native owner capability check. */
+export async function setupFaceProfile(): Promise<void> {
+  const payload = await request('owner.setup.face');
+  if (payload.opened !== 'face') throw new Error('Android did not open face profile setup.');
+}
+
+/** Open local speaker enrollment after the native owner capability check. */
+export async function setupSpeakerProfile(): Promise<void> {
+  const payload = await request('owner.setup.voice');
+  if (payload.opened !== 'voice') throw new Error('Android did not open voice profile setup.');
+}
+
+/** Open foreground gaze/presence controls; these signals never authorize owner access. */
+export async function setupPresenceCalibration(): Promise<void> {
+  const payload = await request('owner.setup.presence');
+  if (payload.opened !== 'face') throw new Error('Android did not open presence calibration.');
 }
 
 export interface StartResult {
@@ -160,6 +256,32 @@ export async function ackKillNotice(): Promise<void> {
 
 export async function openMetadataWatcher(): Promise<void> {
   await request('app.openMetadataWatcher');
+}
+
+export async function chatGptAccount(): Promise<ChatGptAccount> {
+  return await request('provider.chatgpt.account') as unknown as ChatGptAccount;
+}
+
+export async function chatGptSignIn(): Promise<ChatGptAccount> {
+  return await request('provider.chatgpt.signIn', {}, 360_000) as unknown as ChatGptAccount;
+}
+
+export async function chatGptSignOut(): Promise<void> {
+  await request('provider.chatgpt.signOut', {}, 30_000);
+}
+
+export async function chatGptModels(): Promise<ChatGptModel[]> {
+  const payload = await request('provider.chatgpt.models', {}, 30_000);
+  return Array.isArray(payload.models) ? payload.models as ChatGptModel[] : [];
+}
+
+export async function chatGptRequest(url: string, method: string, body: string): Promise<{ status: number; headers: Record<string, string>; body: string }> {
+  const payload = await request('provider.chatgpt.request', { url, method, body }, 150_000);
+  return {
+    status: typeof payload.status === 'number' ? payload.status : 0,
+    headers: payload.headers && typeof payload.headers === 'object' ? payload.headers as Record<string, string> : {},
+    body: typeof payload.body === 'string' ? payload.body : '',
+  };
 }
 
 // ---- text helpers (pure) -------------------------------------------------------------------
@@ -218,6 +340,18 @@ export function describeOverlay(status: OverlayStatus, now: number = Date.now(),
     hiddenByTimer: false,
     notificationsOff: !status.notificationPermission,
   };
+  if (status.runtimeState === 'STARTING' || status.runtimeState === 'RECOVERING') {
+    return { ...base, headline: status.runtimeState === 'RECOVERING' ? 'Recovering' : 'Starting', detail: 'Android is preparing the foreground companion service.', tone: 'idle' };
+  }
+  if (status.runtimeState === 'STOPPING') {
+    return { ...base, headline: 'Stopping', detail: 'Android is closing the companion service.', tone: 'idle' };
+  }
+  if (status.runtimeState === 'FAILED') {
+    return { ...base, headline: 'Could not start', detail: status.runtimeFailure || 'Android did not initialize the companion runtime.', tone: 'warn' };
+  }
+  if (status.runtimeState === 'PERMISSION_BLOCKED') {
+    return { ...base, headline: 'Permission needed', detail: status.runtimeFailure || 'Allow Display over other apps to start the overlay.', tone: 'warn', needsOverlayPermission: !status.overlayPermission };
+  }
   if (!status.running) {
     if (!status.overlayPermission) {
       return {
@@ -235,6 +369,9 @@ export function describeOverlay(status: OverlayStatus, now: number = Date.now(),
   }
   if (!status.pageReady) {
     return { ...base, headline: 'Starting', detail: 'Loading her picture.', tone: 'idle' };
+  }
+  if (status.dashboardForeground) {
+    return { ...base, headline: 'Dashboard open', detail: 'She steps aside while you use the app and returns when you leave.', tone: 'ok' };
   }
   switch (status.visibility) {
     case 'DOCKED':
