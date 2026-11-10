@@ -28,6 +28,14 @@ export interface TurnInput {
   history: ChatMessage[];
   user: { text: string; attachments?: Attachment[] };
   settings: AISettings;
+  /** True when the native host has not established owner authority; fail closed. */
+  guestMode?: boolean;
+  /**
+   * True when the authority engine is in `OwnerCandidate` state: a local face/speaker signal
+   * was observed but the cryptographic session has not been verified yet. Miss Minutes warms
+   * up and greets the owner by name but gates every privileged action.
+   */
+  ownerCandidate?: boolean;
   onEvent: (event: BrainEvent) => void;
   requestApproval: ApprovalHandler;
   signal: AbortSignal;

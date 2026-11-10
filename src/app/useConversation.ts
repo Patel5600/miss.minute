@@ -8,6 +8,8 @@ import { brain, autoTitleChat } from '../agent/brain';
 import { createChat, deleteChat, listChats, messagesForChat, newId, onDbChange, saveMessage, type ChatRecord, type StoredMessage } from '../store/db';
 import { emitCue } from '../character/cues';
 import { speaker } from './speaker';
+import { isAndroidApp } from '../../native/mobile/web/src/shared/bridge';
+import { isDesktopRuntime } from '../desktop/bridge';
 
 const ACTIVE_CHAT_KEY = 'mm-active-chat';
 
@@ -36,9 +38,21 @@ export interface Conversation {
   note(text: string, sender?: 'miss_minute' | 'system'): void;
 }
 
-export function useConversation(settings: AISettings, onCueReceived: (cue: CharacterCue) => void): Conversation {
+function readBrowserActiveChat(): string | null {
+  try { return typeof localStorage === 'undefined' ? null : localStorage.getItem(ACTIVE_CHAT_KEY); }
+  catch { return null; }
+}
+
+function clearBrowserActiveChat(): void {
+  try { localStorage.removeItem(ACTIVE_CHAT_KEY); } catch { /* Restricted storage is already unavailable. */ }
+}
+
+export function useConversation(settings: AISettings, onCueReceived: (cue: CharacterCue) => void, guestMode = false, ownerCandidate = false): Conversation {
   const [chats, setChats] = useState<ChatRecord[]>([]);
-  const [chatId, setChatId] = useState<string | null>(() => localStorage.getItem(ACTIVE_CHAT_KEY));
+  // Native owner stores own conversation metadata; never persist private chat selection
+  // in WebView/Tauri localStorage, which is available before platform authentication.
+  const nativeOwnerStore = isAndroidApp() || isDesktopRuntime();
+  const [chatId, setChatId] = useState<string | null>(() => nativeOwnerStore ? null : readBrowserActiveChat());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
@@ -51,20 +65,28 @@ export function useConversation(settings: AISettings, onCueReceived: (cue: Chara
   const resolvers = useRef(new Map<string, (approved: boolean) => void>());
   const messagesRef = useRef<ChatMessage[]>([]);
   messagesRef.current = messages;
+  const guestChatId = useRef<string | null>(null);
+  const previousGuestMode = useRef(guestMode);
 
   // Chat list, live across windows.
   useEffect(() => {
     let active = true;
-    const load = () => { void listChats().then(list => { if (active) setChats(list); }); };
+    const load = () => { if (guestMode) { setChats([]); return; } void listChats().then(list => { if (active) setChats(list); }); };
     load();
     const stop = onDbChange('chats', load);
     return () => { active = false; stop(); };
-  }, []);
+  }, [guestMode]);
 
   // Messages of the open chat.
   useEffect(() => {
-    if (chatId) localStorage.setItem(ACTIVE_CHAT_KEY, chatId);
-    else localStorage.removeItem(ACTIVE_CHAT_KEY);
+    if (nativeOwnerStore) clearBrowserActiveChat();
+    if (guestMode) { if (!nativeOwnerStore) clearBrowserActiveChat(); setMessages([]); return; }
+    if (!nativeOwnerStore) {
+      try {
+        if (chatId) localStorage.setItem(ACTIVE_CHAT_KEY, chatId);
+        else clearBrowserActiveChat();
+      } catch { /* Keep the active chat for this session when browser storage is restricted. */ }
+    }
     if (!chatId) { setMessages([]); return; }
     let active = true;
     void messagesForChat(chatId).then(rows => {
@@ -77,7 +99,7 @@ export function useConversation(settings: AISettings, onCueReceived: (cue: Chara
       });
     });
     return () => { active = false; };
-  }, [chatId]);
+  }, [chatId, guestMode, nativeOwnerStore]);
 
   const patchMessage = useCallback((id: string, patch: (m: ChatMessage) => ChatMessage) => {
     setMessages(current => current.map(m => (m.id === id ? patch(m) : m)));
@@ -99,19 +121,36 @@ export function useConversation(settings: AISettings, onCueReceived: (cue: Chara
     speaker.stop();
   }, []);
 
+  useEffect(() => () => stop(), [stop]);
+
+  useEffect(() => {
+    if (previousGuestMode.current !== guestMode) {
+      previousGuestMode.current = guestMode;
+      stop();
+      guestChatId.current = null;
+      setMessages([]);
+      setChatId(null);
+    }
+  }, [guestMode, stop]);
+
   const send = useCallback(async (raw: string, attachments?: Attachment[]) => {
     const text = raw.trim();
     if (!text && !attachments?.length) return;
     if (abortRef.current) stop();
 
-    let id = chatId;
+    let id = guestMode ? guestChatId.current : chatId;
     let isNewChat = false;
-    if (!id || !chats.some(c => c.id === id)) {
+    if (guestMode && !id) {
+      id = newId();
+      isNewChat = true;
+      guestChatId.current = id;
+    } else if (!guestMode && (!id || !chats.some(c => c.id === id))) {
       const chat = await createChat();
       id = chat.id;
       isNewChat = true;
       setChatId(id);
     }
+    if (!id) return;
     const chat = id;
     const history = isNewChat ? [] : messagesRef.current.filter(m => m.chatId === chat && !m.streaming);
 
@@ -126,7 +165,7 @@ export function useConversation(settings: AISettings, onCueReceived: (cue: Chara
       streaming: true, toolCalls: [],
     };
     setMessages(current => [...current.filter(m => m.chatId === chat), user, reply]);
-    await saveMessage(user);
+    if (!guestMode) await saveMessage(user);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -144,6 +183,8 @@ export function useConversation(settings: AISettings, onCueReceived: (cue: Chara
         history,
         user: { text, attachments },
         settings: settingsRef.current,
+        guestMode,
+        ownerCandidate,
         signal: controller.signal,
         requestApproval: call => new Promise<boolean>(resolve => {
           if (controller.signal.aborted) { resolve(false); return; }
@@ -186,20 +227,21 @@ export function useConversation(settings: AISettings, onCueReceived: (cue: Chara
       final = { ...final, streaming: false };
       patchMessage(replyId, () => final);
       setBusy(false);
-      if (final.text.trim() || final.toolCalls?.length) {
+      if (!guestMode && (final.text.trim() || final.toolCalls?.length)) {
         await saveMessage(final);
         if (isNewChat) {
           void autoTitleChat(chat, { userText: text, replyText: final.text, settings: settingsRef.current }).catch(() => undefined);
         }
       }
     }
-  }, [chatId, chats, patchMessage, stop]);
+  }, [chatId, chats, guestMode, patchMessage, stop]);
 
   const newChat = useCallback(async () => {
     stop();
+    if (guestMode) { guestChatId.current = null; setMessages([]); return; }
     const chat = await createChat();
     setChatId(chat.id);
-  }, [stop]);
+  }, [guestMode, stop]);
 
   const openChat = useCallback((id: string) => {
     stop();
@@ -208,9 +250,9 @@ export function useConversation(settings: AISettings, onCueReceived: (cue: Chara
 
   const removeChat = useCallback(async (id: string) => {
     if (id === chatId) stop();
-    await deleteChat(id);
+    if (!guestMode) await deleteChat(id);
     if (id === chatId) setChatId(null);
-  }, [chatId, stop]);
+  }, [chatId, guestMode, stop]);
 
   const note = useCallback((text: string, sender: 'miss_minute' | 'system' = 'miss_minute') => {
     const at = Date.now();

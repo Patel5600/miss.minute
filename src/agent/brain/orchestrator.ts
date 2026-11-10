@@ -20,6 +20,7 @@ import { buildInstructions } from './persona';
 import { adapterFor } from './providers';
 import type { ModelProfile, RoundResult } from './providers/types';
 import { ToolRunner } from './toolRunner';
+import { captureOwnerSessionSnapshot, isOwnerSessionActive } from './toolAuthority';
 import type { BrainEvent, TurnInput } from './types';
 
 const MAX_ROUNDS = 8;
@@ -136,9 +137,10 @@ function offlineDeps(input: TurnInput, runner: ToolRunner): OfflineDeps {
       run: (name, args) => runner.run(name, args),
     },
     memory: {
-      list: () => listMemories(),
-      search: query => searchMemories(query, 5),
+      list: () => input.guestMode ? Promise.resolve([]) : listMemories(),
+      search: query => input.guestMode ? Promise.resolve([]) : searchMemories(query, 5),
       save: async (fact, category) => {
+        if (input.guestMode) return;
         await upsertMemory(fact, category, 'chat', { chatId: input.chatId });
       },
     },
@@ -146,7 +148,7 @@ function offlineDeps(input: TurnInput, runner: ToolRunner): OfflineDeps {
 }
 
 function failureLine(error: ProviderError): string {
-  const opener = error.kind === 'usage_limit' || error.kind === 'quota' ? 'Well, I\'ll be.' : error.kind === 'config' ? 'Hold your horses, sugar.' : 'Well, shoot.';
+  const opener = error.kind === 'usage_limit' || error.kind === 'quota' ? 'The provider quota is reached.' : error.kind === 'config' ? 'The provider configuration needs attention.' : 'That request failed.';
   return `${opener} ${error.message}`;
 }
 
@@ -155,7 +157,7 @@ function actionsSummary(records: ToolCallRecord[]): string {
   const failed = records.filter(record => record.status === 'error').map(record => `${record.name} didn't work (${record.error ?? 'error'})`);
   const declined = records.filter(record => record.status === 'denied').map(record => record.preview ?? record.name);
   const parts: string[] = [];
-  if (done.length > 0) parts.push(`All set, sugar: ${done.join('; ')}.`);
+  if (done.length > 0) parts.push(`Done: ${done.join('; ')}.`);
   if (declined.length > 0) parts.push(`I left ${declined.length === 1 ? 'that action' : 'those actions'} alone, like you said.`);
   if (failed.length > 0) parts.push(`Heads up: ${failed.join('; ')}.`);
   return parts.join(' ');
@@ -198,7 +200,7 @@ async function recover(error: unknown, input: TurnInput, out: TurnOutput, runner
 
 async function offlineTurn(input: TurnInput, out: TurnOutput, runner: ToolRunner): Promise<void> {
   const images = (input.user.attachments ?? []).filter(item => item.kind === 'image').length;
-  const note = images > 0 ? "I can't look at pictures in offline mode, sugar. Connect a vision model in Settings for that." : '';
+  const note = images > 0 ? "I can't analyze images in offline mode. Connect a vision-capable model for that." : '';
   if (!input.user.text.trim() && note) {
     out.forceCue({ emotion: 'worried', gesture: 'shrug' });
     out.say(note);
@@ -240,8 +242,9 @@ async function modelTurn(input: TurnInput, out: TurnOutput, runner: ToolRunner, 
   const now = new Date();
   const available = profile.tools ? runner.available() : [];
   const [context, memories] = await Promise.all([
-    withTimeout(buildDynamicContext(now), CONTEXT_TIMEOUT_MS, basicContext(now)),
-    settings.memoryEnabled === false ? Promise.resolve('') : withTimeout(memoriesForTurn(input.user.text).then(formatMemories), CONTEXT_TIMEOUT_MS, ''),
+    input.guestMode ? Promise.resolve(basicContext(now)) : withTimeout(buildDynamicContext(now), CONTEXT_TIMEOUT_MS, basicContext(now)),
+    // Memories are only provided in a fully authenticated owner session.
+    (input.guestMode || input.ownerCandidate || settings.memoryEnabled === false) ? Promise.resolve('') : withTimeout(memoriesForTurn(input.user.text).then(formatMemories), CONTEXT_TIMEOUT_MS, ''),
   ]);
   const instructions = buildInstructions({
     settings,
@@ -252,6 +255,8 @@ async function modelTurn(input: TurnInput, out: TurnOutput, runner: ToolRunner, 
     model: profile.model,
     context,
     memories,
+    guestMode: input.guestMode,
+    ownerCandidate: input.ownerCandidate,
   });
   const session = adapter.session({
     settings,
@@ -282,7 +287,7 @@ async function modelTurn(input: TurnInput, out: TurnOutput, runner: ToolRunner, 
       out.error(`${PROVIDER_LABELS[settings.provider]} held back part of this reply.`, true);
       if (!out.text.trim()) {
         out.forceCue({ emotion: 'stern', gesture: 'none' });
-        out.say("That's a timeline I can't go down, sugar. Let's try something else.");
+        out.say("I can't help with that request. I can help with a safe alternative.");
       }
     }
     if (result.toolCalls.length === 0 || last) break;
@@ -303,7 +308,7 @@ async function modelTurn(input: TurnInput, out: TurnOutput, runner: ToolRunner, 
 
   if (!signal.aborted && !out.text.trim()) {
     const summary = actionsSummary(runner.records);
-    out.say(summary || "Well, I'm plumb out of words on that one, sugar. Try asking another way?");
+    out.say(summary || "I couldn't produce a reliable answer. Try rephrasing the question.");
   }
   return model;
 }
@@ -311,9 +316,12 @@ async function modelTurn(input: TurnInput, out: TurnOutput, runner: ToolRunner, 
 export async function runTurn(input: TurnInput): Promise<void> {
   const out = new TurnOutput(input.onEvent);
   const desktop = isDesktopRuntime();
+  const ownerSessionSnapshot = input.guestMode ? null : await captureOwnerSessionSnapshot();
   const runner = new ToolRunner({
     settings: input.settings,
     desktop,
+    guestMode: input.guestMode,
+    ownerSessionSnapshot,
     chatId: input.chatId,
     signal: input.signal,
     requestApproval: input.requestApproval,
@@ -336,7 +344,9 @@ export async function runTurn(input: TurnInput): Promise<void> {
   }
   if (input.signal.aborted) runner.finishPending('Stopped.');
   out.done(model);
-  if (!input.signal.aborted && input.settings.memoryEnabled !== false && !runner.usedMemoryTools && out.text.trim()) {
-    scheduleMemoryExtraction({ chatId: input.chatId, userText: input.user.text, replyText: out.text, settings: input.settings });
+  if (!input.guestMode && !input.signal.aborted && input.settings.memoryEnabled !== false && !runner.usedMemoryTools && out.text.trim()) {
+    if (await isOwnerSessionActive(ownerSessionSnapshot)) {
+      scheduleMemoryExtraction({ chatId: input.chatId, userText: input.user.text, replyText: out.text, settings: input.settings });
+    }
   }
 }
