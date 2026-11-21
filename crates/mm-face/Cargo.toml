@@ -1,0 +1,10 @@
+[package]
+name = "mm-face"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Local face embedding matching, quality gates, and liveness consensus for owner presence"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+thiserror = "=2.0.21"

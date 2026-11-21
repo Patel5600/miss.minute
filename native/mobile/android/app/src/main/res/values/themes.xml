@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark theme for the dashboard. The folder-metadata screen keeps the application theme. -->
+    <style name="Theme.MissMinutes" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/mm_base</item>
+        <item name="android:colorBackground">@color/mm_base</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

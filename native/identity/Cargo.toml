@@ -1,0 +1,29 @@
+[package]
+name = "miss-minute-identity"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "Shared owner identity, session and command authority engine"
+license = "MIT"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+base64 = "=0.22.1"
+hex = "=0.4.3"
+jni = "=0.21.1"
+ring = "=0.17.14"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+sha2 = "=0.10.9"
+subtle = "=2.6.1"
+uuid = { version = "=1.29.0", features = ["v4"] }
+zeroize = "=1.8.2"
+mm-wake = { path = "../../crates/mm-wake" }
+mm-face = { path = "../../crates/mm-face" }
+mm-speaker = { path = "../../crates/mm-speaker" }
+mm-gaze = { path = "../../crates/mm-gaze" }
+mm-presence = { path = "../../crates/mm-presence" }
+mm-computer = { path = "../../crates/mm-computer" }
+mm-telemetry = { path = "../../crates/mm-telemetry" }

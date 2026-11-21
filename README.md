@@ -61,9 +61,26 @@ An interactive retro-futuristic AI companion inspired by Marvel's *Loki*. Miss M
 
 1. Click the **Pair AI** button in the top header.
 2. Select your provider (**Gemini**, **OpenAI**, **Claude**, **Ollama**, or **TVA Offline**).
-3. Paste your API key (stored securely in your local browser storage; never transmitted elsewhere).
+3. Paste your API key. It is stored in this browser's local storage and sent to the provider you selected when you make a request. It is not stored in the desktop OS credential vault in this version.
 4. Click **Test Connection** to verify your temporal neural link, then click **Save & Connect Link**!
 
 ---
 
 *For all time. Always.*
+
+
+---
+
+## Native desktop companion
+
+The Tauri desktop build adds a persistent Windows avatar overlay, a native system tray, opt-in login startup, and typed browser-to-Rust IPC. See [native/desktop/README.md](native/desktop/README.md) for the platform matrix, privacy boundary, and build commands. The task executor and Android/iOS background agents remain future phases; this branch does not claim those features are implemented.
+
+
+## Native task actions
+
+The Rust agent can propose a typed Markdown-note creation action, but it cannot write merely because a folder is monitored. Grant a separate write permission to one exact subfolder, inspect the full proposed content and destination in the desktop panel, and approve or reject the one-shot action. The only implemented write capability creates new .md files without overwriting existing files. General unattended execution, mobile background agents and unrestricted machine control are not claimed. See the implementation roadmap and native agent README.
+
+
+## Controlled automatic execution
+
+A single opt-in policy can automatically create new Markdown notes inside a separately authorized output subfolder, with a hard limit of three automatic attempts per UTC day. It is off by default. It cannot execute shell commands, move/delete files, overwrite existing files, or expand its granted folder scope. Every action is stored in the local action queue and audit trail.

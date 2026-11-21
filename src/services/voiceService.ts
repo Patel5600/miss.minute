@@ -1,3 +1,54 @@
+import type { MouthFrame } from '../types';
+import type {
+  NativePlaybackOwner,
+  NativeVoiceActivity,
+  NativeVoiceChunk,
+  NativeVoiceEnd,
+} from '../desktop/bridge';
+
+/** Maps loudness to one of the five mouth shapes. Shared by every audio engine. */
+function mouthFrameForRms(rms: number): MouthFrame {
+  return rms < 0.014 ? 0 : rms < 0.045 ? 1 : rms < 0.095 ? 2 : rms < 0.17 ? 3 : 4;
+}
+
+function decodePcm16(base64: string): Float32Array {
+  const binary = atob(base64);
+  const out = new Float32Array(binary.length >> 1);
+  for (let i = 0; i < out.length; i += 1) {
+    const value = binary.charCodeAt(i * 2) | (binary.charCodeAt(i * 2 + 1) << 8);
+    out[i] = (value << 16 >> 16) / 32768; // sign-extend the 16-bit sample
+  }
+  return out;
+}
+
+/** Audio the desktop host synthesized on-device, played as it arrives sentence by sentence. */
+interface NativePlayback {
+  id: string;
+  context: AudioContext;
+  analyser: AnalyserNode;
+  nextStart: number;
+  nextIndex: number;
+  pending: number;
+  ended: boolean;
+  frame: number;
+}
+
+interface NativeVoiceBinding {
+  owner: NativePlaybackOwner;
+  service: VoiceService;
+  refs: number;
+  active: boolean;
+  stops: Array<() => void>;
+  resume: () => void;
+}
+
+declare global {
+  interface Window {
+    /** One native-audio event binding per WebView, surviving repeated React mounts and HMR. */
+    __missMinutesNativeVoiceBinding?: NativeVoiceBinding;
+  }
+}
+
 /**
  * VoiceService – Multi-Engine TTS for Miss Minutes
  *
@@ -20,7 +71,17 @@ export class VoiceService {
   private voice: SpeechSynthesisVoice | null = null;
   private _isSpeaking = false;
   private callbacks: ((s: boolean) => void)[] = [];
+  private visemeCallbacks: ((frame: MouthFrame) => void)[] = [];
+  private nativeActivityCallbacks: ((activity: NativeVoiceActivity) => void)[] = [];
+  private mouthTimer: ReturnType<typeof setInterval> | null = null;
   private currentAudio: HTMLAudioElement | null = null;
+  private cleanupAudioPlayback: (() => void) | null = null;
+  private cancelWebSpeech: (() => void) | null = null;
+  private requestController: AbortController | null = null;
+  private playbackGeneration = 0;
+  private native: NativePlayback | null = null;
+  /** Jobs that were stopped or replaced; chunks still in flight for them must not play. */
+  private closedNativeIds: string[] = [];
   private recognition: any = null;
 
   constructor() {
@@ -49,11 +110,33 @@ export class VoiceService {
     this.voice = found ?? voices[0] ?? null;
   }
 
-  onSpeakingChange(cb: (s: boolean) => void) { this.callbacks.push(cb); }
+  onSpeakingChange(cb: (s: boolean) => void) {
+    this.callbacks.push(cb);
+    return () => { this.callbacks = this.callbacks.filter(listener => listener !== cb); };
+  }
+
+  onVisemeChange(cb: (frame: MouthFrame) => void) {
+    this.visemeCallbacks.push(cb);
+    return () => { this.visemeCallbacks = this.visemeCallbacks.filter(listener => listener !== cb); };
+  }
+
+  onNativeActivity(cb: (activity: NativeVoiceActivity) => void) {
+    this.nativeActivityCallbacks.push(cb);
+    return () => { this.nativeActivityCallbacks = this.nativeActivityCallbacks.filter(listener => listener !== cb); };
+  }
+
+  private _notifyNativeActivity(activity: NativeVoiceActivity) {
+    this.nativeActivityCallbacks.forEach(cb => cb(activity));
+  }
+
+  private _notifyViseme(frame: MouthFrame) {
+    this.visemeCallbacks.forEach(cb => cb(frame));
+  }
 
   private _notify(s: boolean) {
     this._isSpeaking = s;
     this.callbacks.forEach(cb => cb(s));
+    if (!s) this._notifyViseme(0);
   }
 
   get isSpeaking() { return this._isSpeaking; }
@@ -72,90 +155,461 @@ export class VoiceService {
       .trim();
   }
 
-  private async _speakElevenLabs(text: string, key: string, voiceId: string): Promise<void> {
+  private async _speakElevenLabs(text: string, key: string, voiceId: string, generation: number): Promise<void> {
     const cleaned = this._clean(text);
     if (!cleaned) return;
 
-    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`, {
-      method: 'POST',
-      headers: {
-        'Accept': 'audio/mpeg',
-        'xi-api-key': key,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        text: cleaned,
-        model_id: 'eleven_turbo_v2_5',
-        voice_settings: { stability: 0.52, similarity_boost: 0.78, style: 0.38, use_speaker_boost: true },
-      }),
-    });
+    const controller = new AbortController();
+    this.requestController = controller;
 
-    if (!res.ok) {
-      const err = await res.text().catch(() => '');
-      throw new Error(`ElevenLabs ${res.status}: ${err.slice(0, 100)}`);
+    try {
+      const response = await fetch(
+        'https://api.elevenlabs.io/v1/text-to-speech/' + encodeURIComponent(voiceId) + '/stream',
+        {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            Accept: 'audio/mpeg',
+            'xi-api-key': key,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            text: cleaned,
+            model_id: 'eleven_flash_v2_5',
+            voice_settings: {
+              stability: 0.42,
+              similarity_boost: 0.78,
+              style: 0.22,
+              use_speaker_boost: true,
+            },
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        throw new Error('ElevenLabs ' + response.status + ': ' + detail.slice(0, 160));
+      }
+
+      const blob = await response.blob();
+      if (generation !== this.playbackGeneration || controller.signal.aborted) return;
+
+      const audioUrl = URL.createObjectURL(blob);
+      const audio = new Audio(audioUrl);
+      audio.preload = 'auto';
+      this.currentAudio = audio;
+
+      await new Promise<void>((resolve, reject) => {
+        let finished = false;
+        let animationFrame = 0;
+        let audioContext: AudioContext | null = null;
+
+        const finish = (error?: Error) => {
+          if (finished) return;
+          finished = true;
+
+          if (animationFrame) cancelAnimationFrame(animationFrame);
+          if (this.mouthTimer) clearInterval(this.mouthTimer);
+          this.mouthTimer = null;
+
+          audio.onplay = null;
+          audio.onended = null;
+          audio.onerror = null;
+
+          if (this.currentAudio === audio) this.currentAudio = null;
+          if (this.cleanupAudioPlayback === cancelPlayback) this.cleanupAudioPlayback = null;
+
+          if (audioContext) void audioContext.close().catch(() => undefined);
+          URL.revokeObjectURL(audioUrl);
+          this._notify(false);
+
+          if (error) reject(error);
+          else resolve();
+        };
+
+        const cancelPlayback = () => {
+          audio.pause();
+          finish();
+        };
+        this.cleanupAudioPlayback = cancelPlayback;
+
+        const startFallbackMouth = () => {
+          const frames: MouthFrame[] = [1, 3, 2, 4, 1, 0, 3, 2, 0];
+          let frameIndex = 0;
+          this.mouthTimer = setInterval(() => {
+            this._notifyViseme(frames[frameIndex++ % frames.length]);
+          }, 96);
+        };
+
+        const startAudioAnalyser = () => {
+          if (!('AudioContext' in window)) {
+            startFallbackMouth();
+            return;
+          }
+
+          try {
+            audioContext = new AudioContext();
+            const analyser = audioContext.createAnalyser();
+            analyser.fftSize = 512;
+            analyser.smoothingTimeConstant = 0.72;
+
+            const source = audioContext.createMediaElementSource(audio);
+            source.connect(analyser);
+            analyser.connect(audioContext.destination);
+            void audioContext.resume().catch(() => undefined);
+
+            const samples = new Uint8Array(analyser.fftSize);
+            const sampleMouth = () => {
+              if (finished) return;
+              analyser.getByteTimeDomainData(samples);
+
+              let energy = 0;
+              for (let index = 0; index < samples.length; index += 1) {
+                const value = (samples[index] - 128) / 128;
+                energy += value * value;
+              }
+
+              this._notifyViseme(mouthFrameForRms(Math.sqrt(energy / samples.length)));
+              animationFrame = requestAnimationFrame(sampleMouth);
+            };
+
+            animationFrame = requestAnimationFrame(sampleMouth);
+          } catch (error) {
+            console.debug('[VoiceService] Audio analysis unavailable; using timed mouth motion.', error);
+            if (audioContext) {
+              void audioContext.close().catch(() => undefined);
+              audioContext = null;
+            }
+            startFallbackMouth();
+          }
+        };
+
+        audio.onplay = () => {
+          this._notify(true);
+          startAudioAnalyser();
+        };
+        audio.onended = () => finish();
+        audio.onerror = () => finish(new Error('Generated voice audio could not be played.'));
+        audio.play().catch(error => {
+          finish(error instanceof Error ? error : new Error('Audio playback was blocked.'));
+        });
+      });
+    } finally {
+      if (this.requestController === controller) this.requestController = null;
     }
-
-    const blob = await res.blob();
-    const audioUrl = URL.createObjectURL(blob);
-    const audio = new Audio(audioUrl);
-    this.currentAudio = audio;
-
-    return new Promise((resolve) => {
-      audio.onplay = () => this._notify(true);
-      audio.onended = () => { this._notify(false); URL.revokeObjectURL(audioUrl); this.currentAudio = null; resolve(); };
-      audio.onerror = () => { this._notify(false); URL.revokeObjectURL(audioUrl); this.currentAudio = null; resolve(); };
-      audio.play().catch(() => resolve());
-    });
   }
 
-  private _speakWebSpeech(text: string, pitch: number, rate: number): Promise<void> {
-    return new Promise((resolve) => {
-      if (!this.synth) { resolve(); return; }
-      this.synth.cancel();
-      const cleaned = this._clean(text);
-      if (!cleaned.trim()) { resolve(); return; }
+  private _speakWebSpeech(text: string, pitch: number, rate: number, generation: number): Promise<void> {
+    const frameFor = (segment: string): MouthFrame => {
+      const value = segment.toLowerCase();
+      if (/[wuy]/.test(value)) return 4;
+      if (/[o]/.test(value)) return 2;
+      if (/[a]/.test(value)) return 3;
+      if (/[ei]/.test(value)) return 1;
+      return 0;
+    };
 
-      // Chrome bug: long utterances cut off. Split into sentences.
+    return new Promise(resolve => {
+      if (!this.synth || typeof SpeechSynthesisUtterance === 'undefined') {
+        this._notify(false);
+        resolve();
+        return;
+      }
+
+      const cleaned = this._clean(text);
+      if (!cleaned) {
+        this._notify(false);
+        resolve();
+        return;
+      }
+
       const sentences = cleaned.length > 200
-        ? (cleaned.match(/[^.!?]+[.!?]*/g) || [cleaned]).map(s => s.trim()).filter(Boolean)
+        ? (cleaned.match(/[^.!?]+[.!?]*/g) ?? [cleaned]).map(part => part.trim()).filter(Boolean)
         : [cleaned];
 
-      let i = 0;
-      const speakNext = () => {
-        if (i >= sentences.length) { this._notify(false); resolve(); return; }
-        const utt = new SpeechSynthesisUtterance(sentences[i++]);
-        if (this.voice) utt.voice = this.voice;
-        utt.pitch = pitch;
-        utt.rate = rate;
-        utt.volume = 1.0;
-        if (i === 1) utt.onstart = () => this._notify(true);
-        utt.onend = speakNext;
-        utt.onerror = () => { this._notify(false); resolve(); };
-        this.synth!.speak(utt);
+      let sentenceIndex = 0;
+      let finished = false;
+
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (this.mouthTimer) clearInterval(this.mouthTimer);
+        this.mouthTimer = null;
+        if (this.cancelWebSpeech === finish) this.cancelWebSpeech = null;
+        this._notify(false);
+        resolve();
       };
+      this.cancelWebSpeech = finish;
+
+      const speakNext = () => {
+        if (finished || generation !== this.playbackGeneration) {
+          finish();
+          return;
+        }
+        if (sentenceIndex >= sentences.length) {
+          finish();
+          return;
+        }
+
+        const sentence = sentences[sentenceIndex++];
+        const utterance = new SpeechSynthesisUtterance(sentence);
+        if (this.voice) utterance.voice = this.voice;
+        utterance.lang = this.voice?.lang || 'en-US';
+        utterance.pitch = Math.min(2, Math.max(0.5, pitch));
+        utterance.rate = Math.min(1.5, Math.max(0.7, rate));
+        utterance.volume = 1;
+
+        let cursor = 0;
+        utterance.onstart = () => this._notify(true);
+        utterance.onboundary = event => {
+          cursor = Math.max(0, event.charIndex || 0);
+          const segment = sentence.slice(cursor, cursor + Math.max(1, event.charLength || 2));
+          this._notifyViseme(frameFor(segment));
+        };
+
+        if (this.mouthTimer) clearInterval(this.mouthTimer);
+        this.mouthTimer = setInterval(() => {
+          if (finished || generation !== this.playbackGeneration || sentence.length === 0) return;
+          const segment = sentence.slice(cursor, cursor + 3);
+          this._notifyViseme(frameFor(segment));
+          cursor = (cursor + 2) % sentence.length;
+        }, 105);
+
+        utterance.onend = () => {
+          this._notifyViseme(0);
+          speakNext();
+        };
+        utterance.onerror = event => {
+          if (event.error !== 'canceled' && event.error !== 'interrupted') {
+            console.warn('[VoiceService] Browser speech failed:', event.error);
+          }
+          finish();
+        };
+
+        this.synth?.speak(utterance);
+      };
+
       speakNext();
     });
   }
 
+  // ── On-device voice (desktop host) ─────────────────────────────────────────
+
+  /**
+   * Subscribes this WebView to native voice events as one explicit playback owner. Repeated calls
+   * share one listener set and are reference-counted; a listener that resolves after final detach
+   * immediately unsubscribes instead of leaking through a React remount.
+   */
+  attachNativeVoice(owner: NativePlaybackOwner): () => void {
+    const host = window;
+    const events = host.__TAURI__?.event;
+    if (!events) return () => undefined;
+
+    const detachFor = (binding: NativeVoiceBinding) => {
+      let detached = false;
+      return () => {
+        if (detached) return;
+        detached = true;
+        if (host.__missMinutesNativeVoiceBinding !== binding) return;
+        binding.refs = Math.max(0, binding.refs - 1);
+        if (binding.refs > 0) return;
+        binding.active = false;
+        binding.stops.splice(0).forEach(stop => stop());
+        host.removeEventListener('pointerdown', binding.resume);
+        binding.service.stopAll(true);
+        delete host.__missMinutesNativeVoiceBinding;
+      };
+    };
+
+    const existing = host.__missMinutesNativeVoiceBinding;
+    if (existing) {
+      if (existing.owner !== owner) {
+        console.error(`[VoiceService] This window already owns native playback as ${existing.owner}; refusing ${owner}.`);
+        return () => undefined;
+      }
+      existing.refs += 1;
+      if (existing.service !== this) {
+        existing.service.stopAll(true);
+        existing.service = this;
+      }
+      return detachFor(existing);
+    }
+
+    const binding: NativeVoiceBinding = {
+      owner,
+      service: this,
+      refs: 1,
+      active: true,
+      stops: [],
+      resume: () => { void binding.service.native?.context.resume().catch(() => undefined); },
+    };
+    host.__missMinutesNativeVoiceBinding = binding;
+
+    const subscribe = <T,>(name: string, handler: (service: VoiceService, payload: T) => void) => {
+      void events.listen<T>(name, event => {
+        if (binding.active && host.__missMinutesNativeVoiceBinding === binding) {
+          handler(binding.service, event.payload);
+        }
+      }).then(stop => {
+        if (!binding.active || host.__missMinutesNativeVoiceBinding !== binding) stop();
+        else binding.stops.push(stop);
+      }).catch((error: unknown) => console.error('[VoiceService] Cannot listen for ' + name + ':', error));
+    };
+
+    subscribe<NativeVoiceChunk>('miss-minutes:voice-chunk', (service, chunk) => service.playNativeChunk(chunk, owner));
+    subscribe<NativeVoiceEnd>('miss-minutes:voice-end', (service, end) => service.endNativeVoice(end, owner));
+    subscribe<NativeVoiceActivity>('miss-minutes:voice-activity', (service, activity) => service._notifyNativeActivity(activity));
+
+    // WebView2 keeps audio suspended until the window sees a gesture; resume on the first one.
+    host.addEventListener('pointerdown', binding.resume, { passive: true });
+    return detachFor(binding);
+  }
+
+  private playNativeChunk(chunk: NativeVoiceChunk, owner: NativePlaybackOwner) {
+    if (chunk.playbackOwner && chunk.playbackOwner !== owner) return;
+    if (typeof AudioContext === 'undefined') return;
+    if (this.closedNativeIds.includes(chunk.id)) return;
+
+    const index = Number.isSafeInteger(chunk.index) ? chunk.index : -1;
+    const samples = decodePcm16(chunk.pcm16);
+    if (samples.length === 0) return;
+
+    let playback = this.native;
+    if (!playback || playback.id !== chunk.id) {
+      // Every worker utterance starts at zero. A late middle chunk must never replace the current
+      // voice or resurrect a job that stop/replacement already closed.
+      if (index !== 0) return;
+      this.stopAll(false);
+      playback = this.openNativePlayback(chunk);
+    }
+    // Exactly-once, ordered playback by protocol sequence. Equal PCM in two different sequence
+    // slots is valid and is deliberately not deduplicated by content.
+    if (index !== playback.nextIndex) return;
+    playback.nextIndex += 1;
+
+    const buffer = playback.context.createBuffer(1, samples.length, chunk.sampleRate);
+    buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
+    const source = playback.context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(playback.analyser);
+
+    const startAt = Math.max(playback.context.currentTime + 0.04, playback.nextStart);
+    source.start(startAt);
+    playback.nextStart = startAt + buffer.duration;
+    playback.pending += 1;
+
+    const current = playback;
+    source.onended = () => {
+      current.pending -= 1;
+      this.finishNativeIfDone(current);
+    };
+  }
+
+  private openNativePlayback(chunk: NativeVoiceChunk): NativePlayback {
+    let context: AudioContext;
+    try {
+      context = new AudioContext({ sampleRate: chunk.sampleRate });
+    } catch {
+      context = new AudioContext(); // some engines reject uncommon rates; the buffer is resampled
+    }
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.72;
+    analyser.connect(context.destination);
+    void context.resume().catch(() => undefined);
+
+    const playback: NativePlayback = {
+      id: chunk.id, context, analyser, nextStart: 0, nextIndex: 0, pending: 0, ended: false, frame: 0,
+    };
+
+    const samples = new Uint8Array(analyser.fftSize);
+    const sampleMouth = () => {
+      if (this.native !== playback) return;
+      analyser.getByteTimeDomainData(samples);
+      let energy = 0;
+      for (let index = 0; index < samples.length; index += 1) {
+        const value = (samples[index] - 128) / 128;
+        energy += value * value;
+      }
+      this._notifyViseme(mouthFrameForRms(Math.sqrt(energy / samples.length)));
+      playback.frame = requestAnimationFrame(sampleMouth);
+    };
+
+    this.native = playback;
+    this._notify(true);
+    playback.frame = requestAnimationFrame(sampleMouth);
+    return playback;
+  }
+
+  private endNativeVoice(end: NativeVoiceEnd, owner: NativePlaybackOwner) {
+    if (end.playbackOwner && end.playbackOwner !== owner) return;
+    if (end.event === 'error') console.warn('[VoiceService] Local voice error:', end.message);
+    const playback = this.native;
+    if (!playback || playback.id !== end.id) return; // a stale or already-replaced job
+    playback.ended = true;
+    this.finishNativeIfDone(playback);
+  }
+
+  private finishNativeIfDone(playback: NativePlayback) {
+    if (!playback.ended || playback.pending > 0 || this.native !== playback) return;
+    this.closeNative();
+    this._notify(false);
+  }
+
+  private closeNative() {
+    const playback = this.native;
+    if (!playback) return;
+    this.native = null;
+    this.closedNativeIds = [...this.closedNativeIds.slice(-15), playback.id];
+    cancelAnimationFrame(playback.frame);
+    void playback.context.close().catch(() => undefined);
+  }
+
   async speak(text: string, cfg: VoiceConfig = {}): Promise<void> {
     this.stop();
+    const generation = this.playbackGeneration;
 
     if (cfg.elevenLabsKey?.trim() && cfg.elevenLabsVoiceId?.trim()) {
       try {
-        await this._speakElevenLabs(text, cfg.elevenLabsKey, cfg.elevenLabsVoiceId);
+        await this._speakElevenLabs(text, cfg.elevenLabsKey, cfg.elevenLabsVoiceId, generation);
         return;
-      } catch (err) {
-        console.warn('[VoiceService] ElevenLabs fallback to browser TTS:', err);
+      } catch (error) {
+        if (generation !== this.playbackGeneration || (error as Error)?.name === 'AbortError') return;
+        console.warn('[VoiceService] ElevenLabs fallback to browser TTS:', error);
       }
     }
 
-    await this._speakWebSpeech(text, cfg.pitch ?? 1.22, cfg.rate ?? 1.08);
+    if (generation !== this.playbackGeneration) return;
+    await this._speakWebSpeech(text, cfg.pitch ?? 1.12, cfg.rate ?? 1.0, generation);
   }
 
   stop() {
+    this.stopAll(true);
+  }
+
+  /** `notify: false` is for replacing one utterance with the next without a "silent" flicker. */
+  private stopAll(notify: boolean) {
+    this.playbackGeneration += 1;
+    this.requestController?.abort();
+    this.requestController = null;
+
+    this.cleanupAudioPlayback?.();
+    this.cleanupAudioPlayback = null;
+    this.cancelWebSpeech?.();
+    this.cancelWebSpeech = null;
+    this.closeNative();
+
     if (this.synth) this.synth.cancel();
-    if (this.currentAudio) { this.currentAudio.pause(); this.currentAudio = null; }
-    this._notify(false);
+    if (this.mouthTimer) clearInterval(this.mouthTimer);
+    this.mouthTimer = null;
+
+    if (this.currentAudio) {
+      this.currentAudio.pause();
+      this.currentAudio.src = '';
+      this.currentAudio = null;
+    }
+
+    if (notify) this._notify(false);
   }
 
   /** Alias kept for component compatibility */

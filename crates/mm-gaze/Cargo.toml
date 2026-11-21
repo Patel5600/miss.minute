@@ -1,0 +1,10 @@
+[package]
+name = "mm-gaze"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "5-feature affine gaze calibration solver, persistence weights, and attention estimator"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+thiserror = "=2.0.21"

@@ -1,0 +1,213 @@
+{
+  "limits": {
+    "maxBytes": 262144,
+    "maxIdLength": 64,
+    "typePattern": "^[a-z][a-zA-Z0-9.]{0,47}$"
+  },
+  "valid": [
+    {
+      "name": "hello from dashboard",
+      "text": "{\"v\":1,\"id\":\"a1\",\"type\":\"hello\",\"payload\":{\"role\":\"dashboard\"}}",
+      "type": "hello",
+      "id": "a1",
+      "authority": "PAGE",
+      "userOnly": false
+    },
+    {
+      "name": "dashboard request",
+      "text": "{\"v\":1,\"id\":\"req-2\",\"type\":\"overlay.status\",\"payload\":{}}",
+      "type": "overlay.status",
+      "id": "req-2",
+      "authority": "DASHBOARD",
+      "userOnly": false
+    },
+    {
+      "name": "user-only kill request",
+      "text": "{\"v\":1,\"id\":\"k1\",\"type\":\"kill.request\",\"payload\":{\"path\":\"app-button\"}}",
+      "type": "kill.request",
+      "id": "k1",
+      "authority": "USER_ONLY",
+      "userOnly": true
+    },
+    {
+      "name": "wildcard family notes.*",
+      "text": "{\"v\":1,\"id\":\"n1\",\"type\":\"notes.add\",\"payload\":{\"text\":\"milk\"}}",
+      "type": "notes.add",
+      "id": "n1",
+      "authority": "DASHBOARD",
+      "userOnly": false
+    },
+    {
+      "name": "overlay error report",
+      "text": "{\"v\":1,\"id\":\"e1\",\"type\":\"rig.error\",\"payload\":{\"message\":\"render failed\"}}",
+      "type": "rig.error",
+      "id": "e1",
+      "authority": "OVERLAY",
+      "userOnly": false
+    },
+    {
+      "name": "id of exactly 64 chars",
+      "text": "{\"v\":1,\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"settings.get\",\"payload\":{}}",
+      "type": "settings.get",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "authority": "DASHBOARD",
+      "userOnly": false
+    },
+    {
+      "name": "user-only approval decision",
+      "text": "{\"v\":1,\"id\":\"d1\",\"type\":\"approval.decide\",\"payload\":{\"id\":\"x\",\"allow\":false}}",
+      "type": "approval.decide",
+      "id": "d1",
+      "authority": "USER_ONLY",
+      "userOnly": true
+    },
+    {
+      "name": "camelCase user-only type permissions.setMode",
+      "text": "{\"v\":1,\"id\":\"m1\",\"type\":\"permissions.setMode\",\"payload\":{\"mode\":\"SUGGEST\"}}",
+      "type": "permissions.setMode",
+      "id": "m1",
+      "authority": "USER_ONLY",
+      "userOnly": true
+    },
+    {
+      "name": "camelCase user-only type kill.ackNotice",
+      "text": "{\"v\":1,\"id\":\"m2\",\"type\":\"kill.ackNotice\",\"payload\":{}}",
+      "type": "kill.ackNotice",
+      "id": "m2",
+      "authority": "USER_ONLY",
+      "userOnly": true
+    },
+    {
+      "name": "camelCase dashboard type overlay.requestPermission",
+      "text": "{\"v\":1,\"id\":\"m3\",\"type\":\"overlay.requestPermission\",\"payload\":{}}",
+      "type": "overlay.requestPermission",
+      "id": "m3",
+      "authority": "DASHBOARD",
+      "userOnly": false
+    },
+    {
+      "name": "camelCase user-only type provider.promptKey",
+      "text": "{\"v\":1,\"id\":\"m4\",\"type\":\"provider.promptKey\",\"payload\":{\"provider\":\"openrouter\"}}",
+      "type": "provider.promptKey",
+      "id": "m4",
+      "authority": "USER_ONLY",
+      "userOnly": true
+    }
+  ],
+  "invalid": [
+    {
+      "name": "not json",
+      "text": "{not json",
+      "code": "bad_json"
+    },
+    {
+      "name": "top level array",
+      "text": "[1,2]",
+      "code": "bad_json"
+    },
+    {
+      "name": "empty string",
+      "text": "",
+      "code": "bad_json"
+    },
+    {
+      "name": "version 2",
+      "text": "{\"v\":2,\"id\":\"a\",\"type\":\"hello\",\"payload\":{}}",
+      "code": "bad_version"
+    },
+    {
+      "name": "version missing",
+      "text": "{\"id\":\"a\",\"type\":\"hello\",\"payload\":{}}",
+      "code": "bad_version"
+    },
+    {
+      "name": "uppercase type",
+      "text": "{\"v\":1,\"id\":\"a\",\"type\":\"Hello\",\"payload\":{}}",
+      "code": "bad_type"
+    },
+    {
+      "name": "type with a space",
+      "text": "{\"v\":1,\"id\":\"a\",\"type\":\"hello now\",\"payload\":{}}",
+      "code": "bad_type"
+    },
+    {
+      "name": "type missing",
+      "text": "{\"v\":1,\"id\":\"a\",\"payload\":{}}",
+      "code": "bad_type"
+    },
+    {
+      "name": "type starting with a dot",
+      "text": "{\"v\":1,\"id\":\"a\",\"type\":\".hello\",\"payload\":{}}",
+      "code": "bad_type"
+    },
+    {
+      "name": "type with a dash",
+      "text": "{\"v\":1,\"id\":\"a\",\"type\":\"hello-now\",\"payload\":{}}",
+      "code": "bad_type"
+    },
+    {
+      "name": "type with an underscore",
+      "text": "{\"v\":1,\"id\":\"a\",\"type\":\"hello_now\",\"payload\":{}}",
+      "code": "bad_type"
+    },
+    {
+      "name": "type starting with a capital that is camelCase later",
+      "text": "{\"v\":1,\"id\":\"a\",\"type\":\"SetMode\",\"payload\":{}}",
+      "code": "bad_type"
+    },
+    {
+      "name": "type longer than 48 chars",
+      "text": "{\"v\":1,\"id\":\"a\",\"type\":\"abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"payload\":{}}",
+      "code": "bad_type"
+    },
+    {
+      "name": "300 KB payload",
+      "generate": {
+        "payloadFillBytes": 300000,
+        "type": "notes.add",
+        "id": "big"
+      },
+      "code": "too_large"
+    },
+    {
+      "name": "array payload",
+      "text": "{\"v\":1,\"id\":\"a\",\"type\":\"hello\",\"payload\":[1]}",
+      "code": "bad_payload"
+    },
+    {
+      "name": "payload missing",
+      "text": "{\"v\":1,\"id\":\"a\",\"type\":\"hello\"}",
+      "code": "bad_payload"
+    },
+    {
+      "name": "id missing",
+      "text": "{\"v\":1,\"type\":\"hello\",\"payload\":{}}",
+      "code": "bad_payload"
+    },
+    {
+      "name": "id of 65 chars",
+      "text": "{\"v\":1,\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"hello\",\"payload\":{}}",
+      "code": "bad_payload"
+    },
+    {
+      "name": "id not a string",
+      "text": "{\"v\":1,\"id\":5,\"type\":\"hello\",\"payload\":{}}",
+      "code": "bad_payload"
+    },
+    {
+      "name": "unknown type",
+      "text": "{\"v\":1,\"id\":\"a\",\"type\":\"nope.nothing\",\"payload\":{}}",
+      "code": "unknown_type"
+    },
+    {
+      "name": "native-only rig.pose sent by a page",
+      "text": "{\"v\":1,\"id\":\"a\",\"type\":\"rig.pose\",\"payload\":{}}",
+      "code": "forbidden"
+    },
+    {
+      "name": "native-only reply sent by a page",
+      "text": "{\"v\":1,\"id\":\"a\",\"type\":\"reply\",\"ok\":true,\"payload\":{}}",
+      "code": "forbidden"
+    }
+  ]
+}

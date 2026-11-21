@@ -1,0 +1,10 @@
+[package]
+name = "mm-wake"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "VAD gate, multi-phrase wake matcher, hysteresis wake engine, and emergency stop detector"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+thiserror = "=2.0.21"

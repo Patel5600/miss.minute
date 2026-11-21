@@ -1,0 +1,9 @@
+[package]
+name = "mm-presence"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Multimodal candidate presence fusion across face, speaker, gaze, and wake cues"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
