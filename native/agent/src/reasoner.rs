@@ -1,11 +1,11 @@
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    actions::{validate_payload, ActionPayload},
+    actions::{ActionPayload, validate_payload},
     config::ReasonerConfig,
     store::{EventRecord, OwnerContextRecord},
 };
@@ -89,7 +89,8 @@ fn may_share_owner_context(config: &ReasonerConfig) -> Result<bool> {
         .context("Reasoner endpoint must be an absolute URL")?;
     let host = url.host_str().unwrap_or_default();
     let loopback = host.eq_ignore_ascii_case("localhost")
-        || host.parse::<std::net::IpAddr>()
+        || host
+            .parse::<std::net::IpAddr>()
             .map(|address| address.is_loopback())
             .unwrap_or(false);
     Ok(loopback || config.share_owner_context_with_remote)
@@ -107,8 +108,13 @@ fn validate_decision(
         bail!("Reasoner returned missing or oversized rationale.");
     }
 
-    let known: std::collections::HashSet<&str> = evidence.iter().map(|event| event.id.as_str()).collect();
-    if decision.evidence_event_ids.iter().any(|id| !known.contains(id.as_str())) {
+    let known: std::collections::HashSet<&str> =
+        evidence.iter().map(|event| event.id.as_str()).collect();
+    if decision
+        .evidence_event_ids
+        .iter()
+        .any(|id| !known.contains(id.as_str()))
+    {
         bail!("Reasoner referenced an event ID that was not supplied as evidence.");
     }
 
@@ -128,7 +134,10 @@ fn validate_decision(
             }
         }
         DecisionKind::ProposeAction => {
-            let action = decision.proposed_action.as_ref().context("Action proposal is missing")?;
+            let action = decision
+                .proposed_action
+                .as_ref()
+                .context("Action proposal is missing")?;
             if !action.requires_owner_approval {
                 bail!("Every proposed action must require owner approval.");
             }
@@ -192,8 +201,9 @@ pub fn evaluate(
 
     let mut request = client.post(&config.endpoint).json(&request_body);
     if let Some(environment_name) = &config.api_key_env {
-        let key = std::env::var(environment_name)
-            .with_context(|| format!("Required API key environment variable {environment_name} is not set"))?;
+        let key = std::env::var(environment_name).with_context(|| {
+            format!("Required API key environment variable {environment_name} is not set")
+        })?;
         if key.trim().is_empty() {
             bail!("API key environment variable {environment_name} is empty.");
         }
@@ -205,7 +215,10 @@ pub fn evaluate(
     if !status.is_success() {
         bail!("Reasoner returned HTTP status {status}.");
     }
-    if response.content_length().is_some_and(|length| length > 1024 * 1024) {
+    if response
+        .content_length()
+        .is_some_and(|length| length > 1024 * 1024)
+    {
         bail!("Reasoner response exceeds 1 MiB.");
     }
 
@@ -216,7 +229,13 @@ pub fn evaluate(
 
     let completion: CompletionResponse = serde_json::from_str(&body)
         .context("Reasoner response is not a compatible chat-completions response")?;
-    let content = completion.choices.first().context("Reasoner returned no choices")?.message.content.trim();
+    let content = completion
+        .choices
+        .first()
+        .context("Reasoner returned no choices")?
+        .message
+        .content
+        .trim();
     let decision: Decision = serde_json::from_str(content)
         .context("Reasoner content is not the required decision JSON")?;
     validate_decision(&decision, evidence, approved_note_roots)?;

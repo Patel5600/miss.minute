@@ -1,7 +1,16 @@
 const APP_COMMANDS: &[&str] = &[
     "agent_status",
+    "owner_status",
+    "owner_enroll",
+    "owner_authenticate",
+    "owner_lock",
+    "owner_candidate_signal",
+    "owner_step_up_authenticate",
+    "owner_mode_get",
+    "owner_data",
+    "owner_pair_android",
+    "owner_recover_android_kit",
     "credential_set",
-    "credential_get",
     "credential_delete",
     "agent_stream_open",
     "agent_events_after",
@@ -54,12 +63,25 @@ const APP_COMMANDS: &[&str] = &[
     "desktop_audit",
     "capture_screen",
     "schedule_sync",
+    "emergency_kill_switch",
+    "desktop_audit_verify",
+    "desktop_audit_entries",
+    "desktop_export_recovery_kit",
+    "telemetry_snapshot",
+    "wake_score_feed",
+    "mission_validate",
+    "mission_execute",
+    "offers_rank",
+    "availability_find",
+    "calls_prepare",
+    "mcp_import_tool",
+    "mcp_reclassify_tool",
+    "desktop_agent_run",
 ];
 
 fn main() {
-    let attributes = tauri_build::Attributes::new().app_manifest(
-        tauri_build::AppManifest::new().commands(APP_COMMANDS),
-    );
+    let attributes = tauri_build::Attributes::new()
+        .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS));
 
     if let Err(error) = tauri_build::try_build(attributes) {
         panic!("failed to build the Miss Minutes Tauri application manifest: {error}");

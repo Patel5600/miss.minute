@@ -19,6 +19,16 @@ tauri-build = "=2.7.4"
 [dependencies]
 anyhow = "=1.0.104"
 miss-minute-agent = { path = "../../agent" }
+miss-minute-identity = { path = "../../identity" }
+mm-computer = { path = "../../../crates/mm-computer" }
+mm-face = { path = "../../../crates/mm-face" }
+mm-gaze = { path = "../../../crates/mm-gaze" }
+mm-mission = { path = "../../../crates/mm-mission" }
+mm-presence = { path = "../../../crates/mm-presence" }
+mm-speaker = { path = "../../../crates/mm-speaker" }
+mm-telemetry = { path = "../../../crates/mm-telemetry" }
+mm-wake = { path = "../../../crates/mm-wake" }
+rusqlite = { version = "=0.41.0", features = ["bundled-sqlcipher-vendored-openssl"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "=1.29.0", features = ["v4"] }
@@ -31,6 +41,7 @@ tokio = { version = "=1.54.1", features = ["rt-multi-thread", "net", "io-util", 
 reqwest = { version = "=0.13.5", features = ["json"] }
 url = "=2.5.8"
 base64 = "=0.22.1"
+ring = "=0.17.14"
 sha2 = "=0.10.9"
 aes-gcm = { version = "=0.10.3", features = ["zeroize"] }
 getrandom = "=0.2.17"
@@ -43,13 +54,17 @@ png = "=0.18.1"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
+    "Win32_UI_Accessibility",
     "Win32_Graphics_Gdi",
+    "Win32_Networking_WindowsWebServices",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_JobObjects",
     "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
     "Win32_System_SystemInformation",
     "Win32_System_Power",
     "Win32_System_Threading",

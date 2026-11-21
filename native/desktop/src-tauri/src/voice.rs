@@ -1,4 +1,4 @@
-﻿//! Supervisor for the private local voice worker (`native/voice`): speech synthesis in her cloned
+//! Supervisor for the private local voice worker (`native/voice`): speech synthesis in her cloned
 //! voice (Kyutai Pocket TTS or Chatterbox, whichever `miss_voice.benchmark` measured as the live
 //! engine) and faster-whisper speech recognition, all on the CPU.
 //!
@@ -18,16 +18,17 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicU64, Ordering},
-        mpsc, Arc, Mutex, MutexGuard,
+        mpsc,
     },
     thread,
     time::{Duration, Instant},
 };
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter};
 
 pub const EVENT_STATUS: &str = "miss-minutes:voice-status";
@@ -152,7 +153,9 @@ pub struct VoiceHost {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, String> {
-    mutex.lock().map_err(|_| "Voice state is unavailable.".to_owned())
+    mutex
+        .lock()
+        .map_err(|_| "Voice state is unavailable.".to_owned())
 }
 
 impl VoiceHost {
@@ -177,11 +180,21 @@ impl VoiceHost {
 
     pub fn status(&self) -> VoiceStatus {
         self.inner.refresh_installed();
-        self.inner.shared.status.lock().map(|status| status.clone()).unwrap_or_default()
+        self.inner
+            .shared
+            .status
+            .lock()
+            .map(|status| status.clone())
+            .unwrap_or_default()
     }
 
     pub fn is_ready(&self) -> bool {
-        self.inner.shared.status.lock().map(|status| status.ready).unwrap_or(false)
+        self.inner
+            .shared
+            .status
+            .lock()
+            .map(|status| status.ready)
+            .unwrap_or(false)
     }
 
     /// Starts the worker if needed and asks it to load the speech models. Returns immediately;
@@ -196,7 +209,12 @@ impl VoiceHost {
             .clone()
             .ok_or_else(|| "The voice engine folder (native/voice) was not found.".to_owned())?;
         inner.refresh_installed();
-        let problem = inner.shared.status.lock().ok().and_then(|status| status.detail.clone());
+        let problem = inner
+            .shared
+            .status
+            .lock()
+            .ok()
+            .and_then(|status| status.detail.clone());
         if let Some(problem) = problem {
             inner.set_error(&problem);
             return Err(problem);
@@ -234,25 +252,46 @@ impl VoiceHost {
 
     /// Adds a sentence to the streamed utterance `id`, starting it (and replacing anything else
     /// being spoken) on first use. The audio plays as one continuous stream until `speak_end`.
-    pub fn speak_stream(&self, id: &str, text: &str, style: &str, target: &str) -> Result<(), String> {
+    pub fn speak_stream(
+        &self,
+        id: &str,
+        text: &str,
+        style: &str,
+        target: &str,
+    ) -> Result<(), String> {
         self.send_speech(id, text, style, target, true)
     }
 
     /// Closes the streamed utterance `id`; its `done` follows once the last sentence is rendered.
     pub fn speak_end(&self, id: &str) -> Result<(), String> {
         validate_id(id)?;
-        let registered = self.inner.shared.targets.lock().map(|targets| targets.contains_key(id)).unwrap_or(false);
+        let registered = self
+            .inner
+            .shared
+            .targets
+            .lock()
+            .map(|targets| targets.contains_key(id))
+            .unwrap_or(false);
         if !registered {
             return Ok(()); // already finished, cancelled or replaced
         }
         self.inner.send(&json!({ "op": "speak_end", "id": id }))
     }
 
-    fn send_speech(&self, id: &str, text: &str, style: &str, target: &str, stream: bool) -> Result<(), String> {
+    fn send_speech(
+        &self,
+        id: &str,
+        text: &str,
+        style: &str,
+        target: &str,
+        stream: bool,
+    ) -> Result<(), String> {
         validate_id(id)?;
         let text = text.trim();
         if text.is_empty() || text.len() > MAX_TEXT_BYTES {
-            return Err(format!("Speech must contain 1 to {MAX_TEXT_BYTES} bytes of text."));
+            return Err(format!(
+                "Speech must contain 1 to {MAX_TEXT_BYTES} bytes of text."
+            ));
         }
         if !self.is_ready() {
             return Err("The local voice is not ready.".to_owned());
@@ -281,15 +320,21 @@ impl VoiceHost {
         let seconds = validate_pcm16(pcm16_base64, sample_rate)?;
         let inner = Arc::clone(&self.inner);
         let audio = pcm16_base64.to_owned();
-        tauri::async_runtime::spawn_blocking(move || inner.transcribe_blocking(audio, sample_rate, seconds))
-            .await
-            .map_err(|error| format!("Speech recognition stopped unexpectedly: {error}"))?
+        tauri::async_runtime::spawn_blocking(move || {
+            inner.transcribe_blocking(audio, sample_rate, seconds)
+        })
+        .await
+        .map_err(|error| format!("Speech recognition stopped unexpectedly: {error}"))?
     }
 
     /// Asks the worker to exit, then makes sure it did.
     pub fn shutdown(&self) {
-        let Ok(mut slot) = self.inner.worker.lock() else { return };
-        let Some(mut worker) = slot.take() else { return };
+        let Ok(mut slot) = self.inner.worker.lock() else {
+            return;
+        };
+        let Some(mut worker) = slot.take() else {
+            return;
+        };
         let _ = writeln!(worker.stdin, "{}", json!({ "op": "shutdown" }));
         let _ = worker.stdin.flush();
         drop(worker.stdin);
@@ -309,12 +354,18 @@ impl Inner {
     fn refresh_installed(&self) {
         let (detail, configured) = match &self.root {
             None => (
-                Some("The voice engine folder (native/voice) was not found next to this app.".to_owned()),
+                Some(
+                    "The voice engine folder (native/voice) was not found next to this app."
+                        .to_owned(),
+                ),
                 ConfiguredVoice::default(),
             ),
             Some(root) => {
                 let configured = configured_voice(root);
-                (install_problem(root, configured.engine.as_deref()), configured)
+                (
+                    install_problem(root, configured.engine.as_deref()),
+                    configured,
+                )
             }
         };
         if let Ok(mut status) = self.shared.status.lock() {
@@ -336,7 +387,16 @@ impl Inner {
 
         let mut command = Command::new(python_exe(root));
         command
-            .args(["-X", "utf8", "-m", "miss_voice.worker", "--model", MODEL, "--tts", "lazy"])
+            .args([
+                "-X",
+                "utf8",
+                "-m",
+                "miss_voice.worker",
+                "--model",
+                MODEL,
+                "--tts",
+                "lazy",
+            ])
             .current_dir(root)
             .env("PYTHONUNBUFFERED", "1")
             .env("HF_HUB_OFFLINE", "1")
@@ -353,7 +413,8 @@ impl Inner {
         // Spawned into the app's job object so the worker ends with the app, even on a crash.
         let mut child = crate::job::spawn_in_job(&mut command)
             .map_err(|error| format!("Cannot start the voice worker: {error}"))?;
-        let (Some(stdin), Some(stdout), Some(stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take())
+        let (Some(stdin), Some(stdout), Some(stderr)) =
+            (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
             let _ = child.kill();
             let _ = child.wait();
@@ -370,11 +431,20 @@ impl Inner {
         spawn_stderr_drain(stderr, Arc::clone(&stderr_tail));
         spawn_reader(Arc::clone(&self.shared), epoch, stdout, stderr_tail);
 
-        *slot = Some(Worker { child, stdin, epoch });
+        *slot = Some(Worker {
+            child,
+            stdin,
+            epoch,
+        });
         Ok(epoch)
     }
 
-    fn transcribe_blocking(&self, audio: String, sample_rate: u32, seconds: f64) -> Result<String, String> {
+    fn transcribe_blocking(
+        &self,
+        audio: String,
+        sample_rate: u32,
+        seconds: f64,
+    ) -> Result<String, String> {
         let root = self
             .root
             .clone()
@@ -384,7 +454,10 @@ impl Inner {
         }
         let epoch = self.ensure_worker(&root)?;
 
-        let id = format!("stt-{}", self.next_request.fetch_add(1, Ordering::Relaxed) + 1);
+        let id = format!(
+            "stt-{}",
+            self.next_request.fetch_add(1, Ordering::Relaxed) + 1
+        );
         let (reply, receiver) = mpsc::channel();
         lock(&self.shared.pending)?.insert(id.clone(), PendingTranscript { epoch, reply });
         let forget = || {
@@ -417,10 +490,13 @@ impl Inner {
 
     fn send(&self, message: &Value) -> Result<(), String> {
         // One write per request: a recording is megabytes of base64, and the worker reads lines.
-        let mut line = serde_json::to_string(message).map_err(|error| format!("Cannot encode a voice request: {error}"))?;
+        let mut line = serde_json::to_string(message)
+            .map_err(|error| format!("Cannot encode a voice request: {error}"))?;
         line.push('\n');
         let mut slot = lock(&self.worker)?;
-        let worker = slot.as_mut().ok_or_else(|| "The voice worker is not running.".to_owned())?;
+        let worker = slot
+            .as_mut()
+            .ok_or_else(|| "The voice worker is not running.".to_owned())?;
         worker
             .stdin
             .write_all(line.as_bytes())
@@ -479,7 +555,10 @@ impl Shared {
 
     fn emit_activity(&self, label: &str, event: &Value) {
         let Some(app) = self.app() else { return };
-        let kind = event.get("event").and_then(Value::as_str).unwrap_or_default();
+        let kind = event
+            .get("event")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let payload = json!({
             "id": event.get("id").and_then(Value::as_str),
             "event": kind,
@@ -508,7 +587,11 @@ impl Shared {
     }
 
     fn handle_event(&self, epoch: u64, mut event: Value) {
-        let kind = event.get("event").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let kind = event
+            .get("event")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
         let id = event.get("id").and_then(Value::as_str).map(str::to_owned);
 
         match kind.as_str() {
@@ -517,7 +600,8 @@ impl Shared {
                     status.starting = false;
                     status.ready = true;
                     status.last_error = None;
-                    let text = |key: &str| event.get(key).and_then(Value::as_str).map(str::to_owned);
+                    let text =
+                        |key: &str| event.get(key).and_then(Value::as_str).map(str::to_owned);
                     status.model = text("model");
                     status.voice = text("voice");
                     status.engine = text("engine");
@@ -536,7 +620,12 @@ impl Shared {
                 self.emit_status();
             }
             "chunk" => {
-                let label = id.as_ref().and_then(|id| self.targets.lock().ok().and_then(|map| map.get(id).cloned()));
+                let label = id.as_ref().and_then(|id| {
+                    self.targets
+                        .lock()
+                        .ok()
+                        .and_then(|map| map.get(id).cloned())
+                });
                 if let (Some(label), Some(app)) = (label, self.app()) {
                     if let Some(fields) = event.as_object_mut() {
                         fields.insert("playbackOwner".to_owned(), Value::String(label.clone()));
@@ -548,7 +637,10 @@ impl Shared {
                 }
             }
             "done" | "cancelled" | "error" => {
-                let message = event.get("message").and_then(Value::as_str).map(str::to_owned);
+                let message = event
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 let fatal = event.get("fatal").and_then(Value::as_bool).unwrap_or(false);
                 if let Some(id) = &id {
                     let label = self.targets.lock().ok().and_then(|mut map| map.remove(id));
@@ -556,12 +648,24 @@ impl Shared {
                         self.emit_end(label, id, kind.as_str(), message.clone());
                     }
                 }
-                if kind == "done" && !event.get("cached").and_then(Value::as_bool).unwrap_or(false) {
-                    let audio = event.get("audioSeconds").and_then(Value::as_f64).unwrap_or(0.0);
-                    let synth = event.get("synthSeconds").and_then(Value::as_f64).unwrap_or(0.0);
+                if kind == "done"
+                    && !event
+                        .get("cached")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                {
+                    let audio = event
+                        .get("audioSeconds")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0);
+                    let synth = event
+                        .get("synthSeconds")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0);
                     if audio >= MIN_RTF_SAMPLE_SECONDS && synth > 0.0 {
                         if let Ok(mut status) = self.status.lock() {
-                            status.realtime_factor = Some((audio / synth * 1000.0).round() / 1000.0);
+                            status.realtime_factor =
+                                Some((audio / synth * 1000.0).round() / 1000.0);
                         }
                         self.emit_status();
                     }
@@ -579,16 +683,24 @@ impl Shared {
             }
             "transcript" => {
                 let Some(id) = id else { return };
-                let waiter = self.pending.lock().ok().and_then(|mut pending| pending.remove(&id));
+                let waiter = self
+                    .pending
+                    .lock()
+                    .ok()
+                    .and_then(|mut pending| pending.remove(&id));
                 let result = match event.get("error").and_then(Value::as_str) {
                     Some(error) => Err(error.to_owned()),
                     None => {
-                        if let Some(model) = event.get("model").and_then(Value::as_str) {
-                            if let Ok(mut status) = self.status.lock() {
-                                status.transcriber = Some(model.to_owned());
-                            }
+                        if let Some(model) = event.get("model").and_then(Value::as_str)
+                            && let Ok(mut status) = self.status.lock()
+                        {
+                            status.transcriber = Some(model.to_owned());
                         }
-                        Ok(event.get("text").and_then(Value::as_str).unwrap_or_default().to_owned())
+                        Ok(event
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned())
                     }
                 };
                 if let Some(waiter) = waiter.filter(|waiter| waiter.epoch == epoch) {
@@ -617,7 +729,9 @@ impl Shared {
                     .filter(|(_, waiter)| waiter.epoch == epoch)
                     .map(|(id, _)| id.clone())
                     .collect();
-                ids.into_iter().filter_map(|id| pending.remove(&id)).collect()
+                ids.into_iter()
+                    .filter_map(|id| pending.remove(&id))
+                    .collect()
             })
             .unwrap_or_default();
         for waiter in orphans {
@@ -650,31 +764,48 @@ impl Shared {
 }
 
 fn spawn_stderr_drain(stderr: std::process::ChildStderr, tail: Arc<Mutex<VecDeque<String>>>) {
-    let _ = thread::Builder::new().name("voice-stderr".to_owned()).spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if let Ok(mut tail) = tail.lock() {
-                if tail.len() >= STDERR_TAIL_LINES {
-                    tail.pop_front();
+    let _ = thread::Builder::new()
+        .name("voice-stderr".to_owned())
+        .spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if let Ok(mut tail) = tail.lock() {
+                    if tail.len() >= STDERR_TAIL_LINES {
+                        tail.pop_front();
+                    }
+                    tail.push_back(line);
                 }
-                tail.push_back(line);
             }
-        }
-    });
+        });
 }
 
-fn spawn_reader(shared: Arc<Shared>, epoch: u64, stdout: ChildStdout, stderr_tail: Arc<Mutex<VecDeque<String>>>) {
-    let _ = thread::Builder::new().name("voice-reader".to_owned()).spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Ok(event) = serde_json::from_str::<Value>(&line) {
-                shared.handle_event(epoch, event);
+fn spawn_reader(
+    shared: Arc<Shared>,
+    epoch: u64,
+    stdout: ChildStdout,
+    stderr_tail: Arc<Mutex<VecDeque<String>>>,
+) {
+    let _ = thread::Builder::new()
+        .name("voice-reader".to_owned())
+        .spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                    shared.handle_event(epoch, event);
+                }
             }
-        }
-        let tail = stderr_tail
-            .lock()
-            .map(|tail| tail.iter().rev().take(3).rev().cloned().collect::<Vec<_>>().join(" | "))
-            .unwrap_or_default();
-        shared.handle_exit(epoch, tail);
-    });
+            let tail = stderr_tail
+                .lock()
+                .map(|tail| {
+                    tail.iter()
+                        .rev()
+                        .take(3)
+                        .rev()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                })
+                .unwrap_or_default();
+            shared.handle_exit(epoch, tail);
+        });
 }
 
 /// Checks that `audio` is base64 of whole 16-bit samples and returns its duration in seconds.
@@ -686,18 +817,24 @@ fn validate_pcm16(audio: &str, sample_rate: u32) -> Result<f64, String> {
     let bytes = audio.as_bytes();
     let max_len = (MAX_TRANSCRIBE_SECONDS * 48_000.0 * 2.0 / 3.0 * 4.0) as usize + 4;
     if bytes.len() > max_len {
-        return Err(format!("Recordings longer than {MAX_TRANSCRIBE_SECONDS:.0} seconds are not transcribed."));
+        return Err(format!(
+            "Recordings longer than {MAX_TRANSCRIBE_SECONDS:.0} seconds are not transcribed."
+        ));
     }
-    if bytes.is_empty() || bytes.len() % 4 != 0 {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
         return Err("The recording is not valid base64.".to_owned());
     }
     let padding = bytes.iter().rev().take_while(|&&byte| byte == b'=').count();
     let body = &bytes[..bytes.len() - padding];
-    if padding > 2 || !body.iter().all(|&byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/') {
+    if padding > 2
+        || !body
+            .iter()
+            .all(|&byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/')
+    {
         return Err("The recording is not valid base64.".to_owned());
     }
     let decoded = bytes.len() / 4 * 3 - padding;
-    if decoded % 2 != 0 {
+    if !decoded.is_multiple_of(2) {
         return Err("The recording is not 16-bit PCM.".to_owned());
     }
     let seconds = (decoded / 2) as f64 / f64::from(sample_rate);
@@ -705,7 +842,9 @@ fn validate_pcm16(audio: &str, sample_rate: u32) -> Result<f64, String> {
         return Err("The recording is too short to transcribe.".to_owned());
     }
     if seconds > MAX_TRANSCRIBE_SECONDS {
-        return Err(format!("Recordings longer than {MAX_TRANSCRIBE_SECONDS:.0} seconds are not transcribed."));
+        return Err(format!(
+            "Recordings longer than {MAX_TRANSCRIBE_SECONDS:.0} seconds are not transcribed."
+        ));
     }
     Ok(seconds)
 }
@@ -732,8 +871,12 @@ fn engine_label(engine: &str) -> &'static str {
 
 fn read_json(path: &Path) -> Option<Value> {
     // Both files are a few hundred bytes; anything larger is not ours.
-    let bytes = std::fs::read(path).ok().filter(|bytes| bytes.len() <= 64 * 1024)?;
-    serde_json::from_slice::<Value>(&bytes).ok().filter(Value::is_object)
+    let bytes = std::fs::read(path)
+        .ok()
+        .filter(|bytes| bytes.len() <= 64 * 1024)?;
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .filter(Value::is_object)
 }
 
 /// The cloned voice as prepared on disk, mirroring how the worker chooses its engine: the
@@ -758,16 +901,36 @@ fn configured_voice(root: &Path) -> ConfiguredVoice {
         .filter(|engine| matches!(*engine, "pocket" | "chatterbox"))
         .map(str::to_owned);
     let measured = measured_engine.is_some();
-    let engine = measured_engine
-        .unwrap_or_else(|| (if pocket_installed(root) { "pocket" } else { "chatterbox" }).to_owned());
-    let summary = config.as_ref().filter(|_| measured).and_then(|config| config.get("summary"));
-    let number = |key: &str| summary.and_then(|summary| summary.get(key)).and_then(Value::as_f64);
+    let engine = measured_engine.unwrap_or_else(|| {
+        (if pocket_installed(root) {
+            "pocket"
+        } else {
+            "chatterbox"
+        })
+        .to_owned()
+    });
+    let summary = config
+        .as_ref()
+        .filter(|_| measured)
+        .and_then(|config| config.get("summary"));
+    let number = |key: &str| {
+        summary
+            .and_then(|summary| summary.get(key))
+            .and_then(Value::as_f64)
+    };
     let shortfall: Vec<String> = config
         .as_ref()
         .filter(|_| measured)
         .and_then(|config| config.get("shortfall"))
         .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_str).take(8).map(str::to_owned).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .take(8)
+                .map(str::to_owned)
+                .collect()
+        })
         .unwrap_or_default();
     ConfiguredVoice {
         reference,
@@ -793,17 +956,25 @@ fn configured_voice(root: &Path) -> ConfiguredVoice {
 /// `None` when everything speech synthesis needs is present; otherwise the next step for the owner.
 fn install_problem(root: &Path, engine: Option<&str>) -> Option<String> {
     if !python_exe(root).is_file() {
-        return Some("The voice engine is not installed. Run native/voice/setup.ps1 once.".to_owned());
+        return Some(
+            "The voice engine is not installed. Run native/voice/setup.ps1 once.".to_owned(),
+        );
     }
     if !root.join("miss_voice").join("worker.py").is_file() {
         return Some("The voice worker module is missing from native/voice.".to_owned());
     }
     let models = match engine {
         Some("pocket") => pocket_installed(root),
-        _ => root.join("models").join("chatterbox").join(CHATTERBOX_FILE).is_file(),
+        _ => root
+            .join("models")
+            .join("chatterbox")
+            .join(CHATTERBOX_FILE)
+            .is_file(),
     };
     if !models {
-        return Some("The voice models are not downloaded yet. Run native/voice/setup.ps1.".to_owned());
+        return Some(
+            "The voice models are not downloaded yet. Run native/voice/setup.ps1.".to_owned(),
+        );
     }
     None
 }
@@ -812,11 +983,15 @@ fn install_problem(root: &Path, engine: Option<&str>) -> Option<String> {
 fn validate_id(id: &str) -> Result<(), String> {
     let valid = !id.is_empty()
         && id.len() <= MAX_ID_LEN
-        && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
     if valid {
         Ok(())
     } else {
-        Err(format!("A speech id must be 1 to {MAX_ID_LEN} letters, digits, '-' or '_'."))
+        Err(format!(
+            "A speech id must be 1 to {MAX_ID_LEN} letters, digits, '-' or '_'."
+        ))
     }
 }
 
@@ -825,8 +1000,17 @@ fn recognition_problem(root: &Path) -> Option<String> {
     if !python_exe(root).is_file() || !root.join("miss_voice").join("stt.py").is_file() {
         return Some("Voice input on the desktop needs the local voice engine. Run native/voice/setup.ps1 once.".to_owned());
     }
-    if !root.join("models").join("whisper").join("base.en").join("model.bin").is_file() {
-        return Some("The speech recognition model is not downloaded yet. Run native/voice/setup.ps1.".to_owned());
+    if !root
+        .join("models")
+        .join("whisper")
+        .join("base.en")
+        .join("model.bin")
+        .is_file()
+    {
+        return Some(
+            "The speech recognition model is not downloaded yet. Run native/voice/setup.ps1."
+                .to_owned(),
+        );
     }
     None
 }
@@ -837,7 +1021,12 @@ fn locate_root() -> Option<PathBuf> {
         candidates.push(PathBuf::from(dir));
     }
     // Development builds: native/desktop/src-tauri -> native/voice
-    candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("voice"));
+    candidates.push(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("voice"),
+    );
     if let Ok(exe) = std::env::current_exe() {
         for ancestor in exe.ancestors().skip(1).take(6) {
             candidates.push(ancestor.join("native").join("voice"));

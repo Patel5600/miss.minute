@@ -33,18 +33,20 @@ pub fn spawn_in_job(command: &mut Command) -> std::io::Result<Child> {
 
 #[cfg(windows)]
 mod platform {
-    use std::{ffi::c_void, mem::size_of, os::windows::io::AsRawHandle, process::Child, sync::OnceLock};
+    use std::{
+        ffi::c_void, mem::size_of, os::windows::io::AsRawHandle, process::Child, sync::OnceLock,
+    };
 
     use windows::{
-        core::PCWSTR,
         Win32::{
             Foundation::HANDLE,
             System::JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                SetInformationJobObject,
             },
         },
+        core::PCWSTR,
     };
 
     struct Job(HANDLE);
@@ -80,7 +82,7 @@ mod platform {
 
     pub fn assign(child: &Child) -> Result<(), String> {
         let job = JOB.get().ok_or("The job object was not created.")?;
-        let handle = HANDLE(child.as_raw_handle() as *mut c_void);
+        let handle = HANDLE(child.as_raw_handle());
         // SAFETY: `handle` is a live process handle owned by `child`; `job.0` is the job handle.
         unsafe {
             AssignProcessToJobObject(job.0, handle)

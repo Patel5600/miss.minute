@@ -906,7 +906,7 @@ export function SacredTimeline({ className, defaultView = 'today' }: SacredTimel
           : <WeekBeams days={model.days} now={now} selected={selection} onSelect={setSelection} />}
         {!loading && entries.length === 0 && nexusAll.length === 0 ? (
           <p className="absolute inset-x-0 top-[27%] text-center text-[11px] text-amber-300/80 pointer-events-none">
-            Nothing on the timeline {view === 'week' ? 'this week' : formatDayRelative(firstDay, now)}. All quiet, sugar.
+            Nothing on the timeline {view === 'week' ? 'this week' : formatDayRelative(firstDay, now)}. All quiet here.
           </p>
         ) : null}
       </div>

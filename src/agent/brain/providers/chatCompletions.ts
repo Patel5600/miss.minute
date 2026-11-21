@@ -4,16 +4,17 @@
  * index; OpenRouter's reasoning_details are replayed inside the tool loop so models that sign
  * their reasoning (Gemini 3, Claude) keep working across rounds.
  */
-import type { AISettings } from '../../../types';
-import { isDesktopRuntime } from '../../../desktop/bridge';
-import { defaultModelFor, normalizeEndpoint } from '../../settings';
-import type { ModelOption } from '../types';
-import { ProviderError, httpError, parseErrorBody } from '../errors';
-import { openHttpStream, readMessages, type HttpStream } from '../transport';
-import { parseToolArguments, toolOutputText, type ConvMessage, type ModelToolCall, type ToolResultForModel, type ToolSpec } from '../conversation';
-import { requireCredential, webKey } from './auth';
-import { jsonSchemaFor } from './schema';
-import type { FinishReason, ModelProfile, ProviderAdapter, ProviderSession, RoundOptions, RoundResult, SessionInit } from './types';
+import type { AISettings } from '../../../types/index.ts';
+import { isDesktopRuntime } from '../../../desktop/bridge.ts';
+import { isAndroidApp } from '../../platform.ts';
+import { defaultModelFor, normalizeEndpoint } from '../../settings.ts';
+import type { ModelOption } from '../types.ts';
+import { ProviderError, httpError, parseErrorBody } from '../errors.ts';
+import { openHttpStream, readMessages, type HttpStream } from '../transport.ts';
+import { parseToolArguments, toolOutputText, type ConvMessage, type ModelToolCall, type ToolResultForModel, type ToolSpec } from '../conversation.ts';
+import { requireCredential, webKey } from './auth.ts';
+import { jsonSchemaFor } from './schema.ts';
+import type { FinishReason, ModelProfile, ProviderAdapter, ProviderSession, RoundOptions, RoundResult, SessionInit } from './types.ts';
 
 type Kind = 'openrouter' | 'ollama';
 type Item = Record<string, unknown>;
@@ -35,7 +36,7 @@ function baseUrl(kind: Kind, settings: AISettings): string {
 }
 
 function credentialHeaders(kind: Kind, settings: AISettings): Record<string, string> | undefined {
-  if (isDesktopRuntime()) return undefined;
+  if (isDesktopRuntime() || isAndroidApp()) return undefined;
   const key = webKey(kind, settings);
   return key ? { Authorization: `Bearer ${key}` } : undefined;
 }
@@ -43,7 +44,7 @@ function credentialHeaders(kind: Kind, settings: AISettings): Record<string, str
 function networkHint(kind: Kind, settings: AISettings, error: ProviderError): ProviderError {
   if (kind !== 'ollama' || error.kind !== 'network') return error;
   const where = ollamaRoot(settings);
-  const browserHint = isDesktopRuntime() ? '' : ' In the browser, also allow this page with the OLLAMA_ORIGINS setting.';
+  const browserHint = (isDesktopRuntime() || isAndroidApp()) ? '' : ' In the browser, also allow this page with the OLLAMA_ORIGINS setting.';
   return new ProviderError('network', `I couldn't reach Ollama at ${where}. Is it running?${browserHint}`, { detail: error.detail });
 }
 

@@ -14,7 +14,7 @@ import {
   parseSettings,
   parseTimeInput,
 } from '../../native/mobile/web/src/shared/nativeApi.ts';
-import type { OverlayStatus } from '../../native/mobile/web/src/shared/nativeApi.ts';
+import type { OverlayStatus, RuntimeState } from '../../native/mobile/web/src/shared/nativeApi.ts';
 import { MODES, ROAMING_LEVELS } from '../../native/mobile/web/src/shared/vocabulary.ts';
 
 const clock = (ms: number): string => `T${ms}`;
@@ -162,17 +162,35 @@ test('hello is parsed into mode, notice, overlay and settings', () => {
   assert.equal(parseKillNotice('nope'), null);
 });
 
-test('ownerCandidate and authState default safely when absent', () => {
+test('ownerCandidate, operatingMode, and authState default safely when absent', () => {
   const bare = parseHello({});
   assert.equal(bare.ownerCandidate, false);
   assert.equal(bare.authState, 'locked');
-  const full = parseHello({ ownerCandidate: true, authState: 'owner_candidate' });
+  assert.equal(bare.operatingMode, 'GUEST_MODE');
+  const full = parseHello({ ownerCandidate: true, authState: 'owner_candidate', operatingMode: 'OWNER_CANDIDATE' });
   assert.equal(full.ownerCandidate, true);
   assert.equal(full.authState, 'owner_candidate');
+  assert.equal(full.operatingMode, 'OWNER_CANDIDATE');
+  assert.equal(parseHello({ operatingMode: 'OWNER_MODE', ownerAuthenticated: true }).operatingMode, 'OWNER_MODE');
+  // Invalid operatingMode coerces fail-closed to GUEST_MODE
+  assert.equal(parseHello({ operatingMode: 'ADMIN_MODE' }).operatingMode, 'GUEST_MODE');
+  // Unauthenticated payload cannot claim OWNER_MODE without ownerAuthenticated
+  assert.equal(parseHello({ operatingMode: 'OWNER_MODE', ownerAuthenticated: false }).operatingMode, 'GUEST_MODE');
   // Non-boolean ownerCandidate coerces to false
   assert.equal(parseHello({ ownerCandidate: 'yes' }).ownerCandidate, false);
   // Non-string authState coerces to 'locked'
   assert.equal(parseHello({ authState: 42 }).authState, 'locked');
+  // Phase D wake/call/audit fields default safely when absent or malformed
+  assert.equal(bare.wakeListening, false);
+  assert.equal(bare.micPermission, false);
+  assert.equal(bare.activeCalls, 0);
+  assert.equal(bare.auditChainStatus, 'unknown');
+  const d = parseHello({ wakeListening: true, micPermission: true, activeCalls: 2.8, auditChainStatus: 'valid:7' });
+  assert.equal(d.wakeListening, true);
+  assert.equal(d.micPermission, true);
+  assert.equal(d.activeCalls, 2);
+  assert.equal(d.auditChainStatus, 'valid:7');
+  assert.equal(parseHello({ activeCalls: -4 }).activeCalls, 0);
 });
 
 test('without the overlay permission she says she can only live inside the app', () => {
@@ -207,7 +225,7 @@ test('the companion steps aside while the dashboard is foregrounded', () => {
 
 test('runtime transitions are reported distinctly and failures stay visible', () => {
   // New describeOverlay reads status.runtime?.state (the authoritative CompanionRuntime snapshot).
-  const runtime = (state: string, reason?: string) => ({ eventId: 'e1', serviceInstanceId: null, revision: 1, monotonicTimestampNanos: 0, state, reason: reason ?? null });
+  const runtime = (state: RuntimeState, reason?: string) => ({ eventId: 'e1', serviceInstanceId: null, revision: 1, monotonicTimestampNanos: 0, state, reason: reason ?? null });
   const starting = describeOverlay(status({ running: false, runtime: runtime('STARTING') }), 0, clock);
   assert.equal(starting.headline, 'Starting Miss Minutes');
   const failure = describeOverlay(status({ running: false, runtime: runtime('FAILED', 'WebView unavailable.') }), 0, clock);

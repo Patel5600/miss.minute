@@ -18,10 +18,10 @@ pub struct Callback {
 /// one is taken. Binding to `127.0.0.1` (not `localhost`) matches the exact redirect URI the
 /// ChatGPT flow requires.
 pub async fn bind_preferred(preferred: u16) -> Result<TcpListener, String> {
-    if preferred != 0 {
-        if let Ok(listener) = TcpListener::bind(("127.0.0.1", preferred)).await {
-            return Ok(listener);
-        }
+    if preferred != 0
+        && let Ok(listener) = TcpListener::bind(("127.0.0.1", preferred)).await
+    {
+        return Ok(listener);
     }
     TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -31,7 +31,11 @@ pub async fn bind_preferred(preferred: u16) -> Result<TcpListener, String> {
 /// Waits for a request whose path starts with `accept_path`, serving 404s to anything else
 /// (favicon probes, etc.). Resolves with the redirect's query parameters, or an error if the
 /// deadline passes first.
-pub async fn wait_for_callback(listener: &TcpListener, accept_path: &str, timeout: Duration) -> Result<Callback, String> {
+pub async fn wait_for_callback(
+    listener: &TcpListener,
+    accept_path: &str,
+    timeout: Duration,
+) -> Result<Callback, String> {
     let serve = async {
         loop {
             let (mut stream, _) = listener
@@ -105,18 +109,14 @@ async fn respond(stream: &mut TcpStream, status: &str, body: &str) -> Result<(),
 }
 
 fn page(succeeded: bool) -> &'static str {
-    if succeeded {
-        SUCCESS
-    } else {
-        FAILURE
-    }
+    if succeeded { SUCCESS } else { FAILURE }
 }
 
 const SUCCESS: &str = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Miss Minutes</title>
 <style>body{margin:0;height:100vh;display:grid;place-items:center;background:#1a1205;color:#ffce6b;font-family:system-ui,sans-serif}
 .card{text-align:center;padding:2rem 3rem;border:1px solid #6b4a12;border-radius:16px;background:#241a08;box-shadow:0 12px 40px #0008}
 h1{margin:.2rem 0;font-size:1.4rem}p{color:#e7c98c;margin:.4rem 0}</style></head>
-<body><div class="card"><h1>All set, darlin'!</h1><p>Miss Minutes is connected.</p><p>You can close this tab and head back to the app.</p></div></body></html>"#;
+<body><div class="card"><h1>All set!</h1><p>Miss Minutes is connected.</p><p>You can close this tab and head back to the app.</p></div></body></html>"#;
 
 const FAILURE: &str = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Miss Minutes</title>
 <style>body{margin:0;height:100vh;display:grid;place-items:center;background:#1a0505;color:#ff9b9b;font-family:system-ui,sans-serif}

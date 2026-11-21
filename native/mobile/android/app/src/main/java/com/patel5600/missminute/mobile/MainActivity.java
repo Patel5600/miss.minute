@@ -14,6 +14,8 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.patel5600.missminute.mobile.overlay.OverlayService;
+
 public final class MainActivity extends Activity {
     private static final int REQUEST_TREE = 4101;
     private static final int REQUEST_NOTIFICATIONS = 4102;
@@ -31,6 +33,18 @@ public final class MainActivity extends Activity {
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_NOTIFICATIONS);
         }
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        OverlayService.setDashboardForeground(this, true);
+    }
+
+    @Override
+    protected void onStop() {
+        OverlayService.setDashboardForeground(this, false);
+        super.onStop();
     }
 
     private void buildUi() {

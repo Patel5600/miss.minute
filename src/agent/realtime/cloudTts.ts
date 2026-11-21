@@ -7,10 +7,11 @@
  * Desktop: the host's provider proxy makes the request and injects the stored key; the
  * renderer only ever sees the audio bytes.
  */
-import type { ProviderHttpRequest, ProviderStreamEvent } from '../../desktop/bridge';
-import { createNativeChannel, invokeNative, isDesktopRuntime } from '../../desktop/bridge';
-import { getWebSecret } from '../secrets-web';
-import { base64ToBytes } from './pcmPlayer';
+import type { ProviderHttpRequest, ProviderStreamEvent } from '../../desktop/bridge.ts';
+import { createNativeChannel, invokeNative, isDesktopRuntime } from '../../desktop/bridge.ts';
+import { androidProviderHttpRequest, androidRequest, isAndroidApp } from '../platform.ts';
+import { getWebSecret } from '../secrets-web.ts';
+import { base64ToBytes } from './pcmPlayer.ts';
 
 export const CLOUD_SAMPLE_RATE = 24000;
 
@@ -35,7 +36,7 @@ export const HOSTESS_VOICE_INSTRUCTIONS = [
     + 'Do not imitate any real performer or existing character.',
   'Tone: sunny, sweet and eager to help, with a wink of mischief, like the cheerful host of a vintage educational short.',
   'Delivery: quick comic timing. Bounce through the cheerful lines, take a tiny beat before a punchline or aside, '
-    + 'and let words like "sugar", "darlin\'" and "y\'all" stretch with an easy drawl while every word stays clear.',
+    + "and give words like \"y'all\" and \"reckon\" an easy drawl while every word stays crisp and clear.",
   'Pacing: brisk and lively in conversation; slow down a little for times, numbers, names and instructions.',
   'Emotion: warm and upbeat. When a line turns serious or stern, drop the sparkle and go calm, low and firm.',
 ].join('\n');
@@ -115,11 +116,11 @@ function abortError(): DOMException {
   return new DOMException('Speech was stopped.', 'AbortError');
 }
 
-function prepare(request: CloudSpeechRequest, desktop: boolean): PreparedRequest {
+function prepare(request: CloudSpeechRequest, nativeHost: boolean): PreparedRequest {
   if (request.engine === 'openai') {
     const voice = isOpenAiVoice(request.openaiVoice) ? request.openaiVoice : DEFAULT_OPENAI_VOICE;
-    const key = desktop ? '' : (request.key?.trim() || getWebSecret('openai'));
-    if (!desktop && !key) throw new CloudSpeechError('Add an OpenAI key in Settings to use the OpenAI voice.');
+    const key = nativeHost ? '' : (request.key?.trim() || getWebSecret('openai'));
+    if (!nativeHost && !key) throw new CloudSpeechError('Add an OpenAI key in Settings to use the OpenAI voice.');
     return {
       provider: 'openai',
       label: 'OpenAI',
@@ -137,8 +138,8 @@ function prepare(request: CloudSpeechRequest, desktop: boolean): PreparedRequest
   }
   const voiceId = request.elevenLabsVoiceId?.trim();
   if (!voiceId) throw new CloudSpeechError('Set an ElevenLabs voice ID in Settings to use the ElevenLabs voice.');
-  const key = desktop ? '' : (request.key?.trim() || getWebSecret('elevenlabs'));
-  if (!desktop && !key) throw new CloudSpeechError('Add an ElevenLabs key in Settings to use the ElevenLabs voice.');
+  const key = nativeHost ? '' : (request.key?.trim() || getWebSecret('elevenlabs'));
+  if (!nativeHost && !key) throw new CloudSpeechError('Add an ElevenLabs key in Settings to use the ElevenLabs voice.');
   return {
     provider: 'elevenlabs',
     label: 'ElevenLabs',
@@ -158,8 +159,46 @@ function prepare(request: CloudSpeechRequest, desktop: boolean): PreparedRequest
 export async function streamCloudSpeech(request: CloudSpeechRequest): Promise<void> {
   if (request.signal.aborted) throw abortError();
   const desktop = isDesktopRuntime();
-  const prepared = prepare(request, desktop);
-  return desktop ? streamViaHost(prepared, request) : streamViaFetch(prepared, request);
+  const android = !desktop && isAndroidApp();
+  const prepared = prepare(request, desktop || android);
+  if (desktop) return streamViaHost(prepared, request);
+  if (android) return streamViaAndroidHost(prepared, request);
+  return streamViaFetch(prepared, request);
+}
+
+/** Android host proxy: injects Keystore-backed credentials natively and returns binary PCM audio. */
+async function streamViaAndroidHost(prepared: PreparedRequest, request: CloudSpeechRequest): Promise<void> {
+  if (request.signal.aborted) throw abortError();
+  const requestId = `tts-${newRequestId()}`.slice(0, 64);
+  const onAbort = () => {
+    void androidRequest('provider.http.cancel', { requestId }, 5_000).catch(() => undefined);
+  };
+  request.signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    const res = await androidProviderHttpRequest({
+      provider: prepared.provider as 'openai' | 'elevenlabs',
+      url: prepared.url,
+      method: 'POST',
+      headers: prepared.headers,
+      body: prepared.body,
+      binary: true,
+      requestId,
+    });
+    if (request.signal.aborted) throw abortError();
+    if (res.status >= 400) {
+      throw failure(prepared.label, res.status, (res.body ?? '').slice(0, ERROR_BODY_LIMIT));
+    }
+    if (!res.bodyBase64) {
+      throw new CloudSpeechError(`${prepared.label} returned no audio.`);
+    }
+    const bytes = base64ToBytes(res.bodyBase64);
+    if (bytes.length > 0) request.onAudio(bytes);
+  } catch (error) {
+    if (request.signal.aborted || error instanceof CloudSpeechError) throw request.signal.aborted ? abortError() : error;
+    throw new CloudSpeechError(`${prepared.label}: ${redactKeys(error instanceof Error ? error.message : String(error))}`);
+  } finally {
+    request.signal.removeEventListener('abort', onAbort);
+  }
 }
 
 async function streamViaFetch(prepared: PreparedRequest, request: CloudSpeechRequest): Promise<void> {

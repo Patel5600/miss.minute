@@ -86,6 +86,7 @@ public final class OverlayHandlers {
                 .put("running", runtime.state == CompanionRuntime.State.RUNNING)
                 .put("runtime", runtime.toJson())
                 .put("windowShown", OverlayService.isWindowShown())
+                .put("dashboardForeground", OverlayService.isDashboardForeground())
                 .put("pageReady", OverlayService.isPageReady())
                 .put("visibility", OverlayService.visibilityName())
                 .put("overlayPermission", android.provider.Settings.canDrawOverlays(context))

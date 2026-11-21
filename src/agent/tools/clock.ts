@@ -99,7 +99,7 @@ export const clockTools = [
         zone = checkTimeZone(args.timezone);
         place = args.city;
       } else if (args.city) {
-        const found = await geocode(args.city, ctx.signal);
+        const found = await geocode(args.city, ctx.signal, !ctx.guestMode);
         zone = checkTimeZone(found.timezone);
         place = found.label;
       }

@@ -17,7 +17,9 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.KeyStore;
 import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.security.Signature;
+import java.security.cert.Certificate;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
 import java.util.UUID;
@@ -39,6 +41,7 @@ public final class OwnerAuthority {
     private static final String DEVICE_ID = "device_id";
     private static final String HARDWARE_BACKED = "hardware_backed";
     private static volatile String activeSessionId;
+    private static volatile boolean registryRestored;
     private static final AtomicBoolean AUTHENTICATING = new AtomicBoolean(false);
     private static final AtomicBoolean PAIRING = new AtomicBoolean(false);
     private static final ExecutorService RECOVERY_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
@@ -71,6 +74,9 @@ public final class OwnerAuthority {
     private static native String nativeCandidate();
     private static native String nativeObserveFaceMatch();
     private static native String nativeObserveVoiceMatch();
+    private static native String nativeRecordFaceCandidate(float confidence, boolean livenessPassed);
+    private static native String nativeRecordVoiceCandidate(float confidence);
+    private static native String nativeRecordGazePresence(boolean engaged);
     private static native String nativeBeginAuthentication(String deviceId);
     private static native String nativeCancelAuthentication();
     private static native String nativeCompleteAuthentication(String challengeId, byte[] signature,
@@ -80,7 +86,18 @@ public final class OwnerAuthority {
     private static native String nativeLock();
     private static native boolean nativeOwnerSessionActive(String sessionId);
     private static native String nativeGetAuthState();
+    private static native String nativeGetOperatingMode();
     private static native boolean nativeRequireStepUp(String sessionId);
+    private static native String nativeVerifyKeyAttestation(byte[][] certChain, byte[] challenge,
+            byte[] expectedPublicKey);
+    private static native String nativeFeedWakeFrame(short[] pcm, String transcript,
+            float phraseConfidence, long nowMs);
+    private static native String nativeResetWake();
+    private static native String nativeValidateDelegation(String grantJson, String requiredScopeJson,
+            long spendMinor, long nowMs);
+    private static native String nativeVerifyAuditChain();
+    private static native String nativeEmergencyKill();
+    private static native String nativeConsumeRecoveryCode(String code);
 
     public interface Callback {
         void complete(String sessionId, String error);
@@ -178,15 +195,25 @@ public final class OwnerAuthority {
      */
     public static String createPairingRequest(Context context) throws Exception {
         if (isEnrolled(context)) throw new IllegalStateException("This device is already enrolled.");
-        KeyPair pair = loadOrCreateKeyPair();
-        KeyInfo info = keyInfo(pair);
-        if (!info.isInsideSecureHardware()) throw new SecurityException("Pairing requires a hardware-protected device key.");
-        String deviceId = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString("pending_pair_device_id", null);
+        android.content.SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String deviceId = prefs.getString("pending_pair_device_id", null);
+        KeyStore store = keyStore();
+        KeyPair pair;
+        if (deviceId != null && store.containsAlias(KEY_ALIAS)) {
+            pair = new KeyPair(store.getCertificate(KEY_ALIAS).getPublicKey(),
+                    (java.security.PrivateKey) store.getKey(KEY_ALIAS, null));
+            KeyInfo info = keyInfo(pair);
+            if (!info.isInsideSecureHardware()) {
+                deleteKey();
+                prefs.edit().remove("pending_pair_device_id").commit();
+                throw new SecurityException("Pairing requires a hardware-protected device key.");
+            }
+        } else {
+            pair = generateAndAttestNewKeyPair();
+        }
         if (deviceId == null) {
             deviceId = UUID.randomUUID().toString().replace("-", "");
-            if (!context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                    .putString("pending_pair_device_id", deviceId).commit())
+            if (!prefs.edit().putString("pending_pair_device_id", deviceId).commit())
                 throw new IllegalStateException("Could not save the pending device identity.");
         }
         return new JSONObject().put("type", "miss-minutes-pair-request-v1")
@@ -268,18 +295,15 @@ public final class OwnerAuthority {
     /** Restores a replacement Android device from the offline key after a one-use signed challenge. */
     public static String recoverDevice(Context context, String material, char[] passphrase) throws Exception {
         if (isEnrolled(context)) throw new IllegalStateException("This device is already enrolled; use authenticated device pairing.");
+        registryRestored = false;
+        activeSessionId = null;
         RecoveryMaterialCodec.Credential recovery;
         try {
             recovery = RecoveryMaterialCodec.open(material, passphrase);
         } finally {
             java.util.Arrays.fill(passphrase, '\0');
         }
-        KeyPair devicePair = loadOrCreateKeyPair();
-        KeyInfo info = keyInfo(devicePair);
-        if (!info.isInsideSecureHardware()) {
-            deleteKey();
-            throw new SecurityException("Recovery requires a hardware-protected Android device key.");
-        }
+        KeyPair devicePair = generateAndAttestNewKeyPair();
         String deviceId = UUID.randomUUID().toString().replace("-", "");
         byte[] devicePublic = encodePublicKey((ECPublicKey) devicePair.getPublic());
         boolean bootstrapped = false;
@@ -312,6 +336,7 @@ public final class OwnerAuthority {
                     .putBoolean(HARDWARE_BACKED, true).commit();
             if (!committed) throw new IllegalStateException("Could not commit the recovered device identity.");
             activeSessionId = null;
+            registryRestored = true;
             return "recovered";
         } catch (Exception error) {
             if (bootstrapped) nativeResetAuthority();
@@ -321,6 +346,7 @@ public final class OwnerAuthority {
             }
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                     .remove(OWNER_ID).remove(DEVICE_ID).remove(HARDWARE_BACKED).commit();
+            registryRestored = false;
             throw error;
         }
     }
@@ -370,6 +396,8 @@ public final class OwnerAuthority {
     /** Verifies an owner-signed pairing receipt before this new Android device trusts the owner registry. */
     public static String acceptPairingReceipt(Context context, String receiptJson) throws Exception {
         if (isEnrolled(context)) throw new IllegalStateException("This device is already enrolled.");
+        registryRestored = false;
+        activeSessionId = null;
         JSONObject receipt = new JSONObject(receiptJson);
         if (!"miss-minutes-pair-receipt-v1".equals(receipt.optString("type")))
             throw new IllegalArgumentException("This is not a Miss Minutes pairing receipt.");
@@ -436,6 +464,7 @@ public final class OwnerAuthority {
                     .putString(OWNER_ID, ownerId).putString(DEVICE_ID, targetId).putBoolean(HARDWARE_BACKED, true)
                     .remove("pending_pair_device_id").commit();
             if (!committed) throw new IllegalStateException("Could not commit the paired-device identity.");
+            registryRestored = true;
             return "paired";
         } catch (Exception error) {
             if (nativeEnrolled) nativeResetAuthority();
@@ -443,6 +472,7 @@ public final class OwnerAuthority {
             catch (Exception rollbackError) { error.addSuppressed(rollbackError); }
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                     .remove(OWNER_ID).remove(DEVICE_ID).remove(HARDWARE_BACKED).commit();
+            registryRestored = false;
             throw error;
         }
     }
@@ -542,18 +572,19 @@ public final class OwnerAuthority {
 
     /** Deliberate first-device enrollment followed immediately by biometric-gated challenge signing. */
     public static void enrollAndAuthenticate(Activity activity, Callback callback) {
+        // This path is for the first owner device only. Re-entering it from an already enrolled
+        // app must not clear the in-process registry gate or replace the existing identity.
+        if (isEnrolled(activity)) {
+            callback.complete(null, "This device is already enrolled. Authenticate or pair a new device instead.");
+            return;
+        }
+        registryRestored = false;
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
             callback.complete(null, "Android 9 or later is required for a cryptographic biometric prompt.");
             return;
         }
         try {
-            KeyPair pair = loadOrCreateKeyPair();
-            KeyInfo info = keyInfo(pair);
-            if (!info.isInsideSecureHardware()) {
-                deleteKey();
-                callback.complete(null, "This device does not provide hardware-backed key protection.");
-                return;
-            }
+            KeyPair pair = generateAndAttestNewKeyPair();
             Context app = activity.getApplicationContext();
             android.content.SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
             String ownerId = prefs.getString(OWNER_ID, UUID.randomUUID().toString().replace("-", ""));
@@ -565,21 +596,36 @@ public final class OwnerAuthority {
             }
             if (!prefs.edit().putString(OWNER_ID, ownerId).putString(DEVICE_ID, deviceId)
                     .putBoolean(HARDWARE_BACKED, true).commit()) {
-                nativeLock();
+                nativeResetAuthority();
+                registryRestored = false;
                 callback.complete(null, "Could not persist the device enrollment record.");
                 return;
             }
             persistDevice(app, ownerId, deviceId, "android", encodePublicKey((ECPublicKey) pair.getPublic()));
+            registryRestored = true;
             authenticate(activity, deviceId, callback);
         } catch (Exception e) {
+            nativeResetAuthority();
+            activeSessionId = null;
+            registryRestored = false;
+            activity.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                    .remove(OWNER_ID).remove(DEVICE_ID).remove(HARDWARE_BACKED).commit();
+            try { deleteKey(); } catch (Exception cleanupError) { e.addSuppressed(cleanupError); }
             callback.complete(null, "Secure owner enrollment failed: " + e.getClass().getSimpleName());
         }
     }
 
     /** Restore public enrollment state after process start; this does not authenticate a user. */
     public static String restore(Context context) {
-        if (!isEnrolled(context)) return "unenrolled";
+        registryRestored = false;
+        activeSessionId = null;
         try {
+            // Always clear native authority before any early return. Otherwise a repeated restore
+            // after local enrollment metadata is removed could leave stale Rust device/session
+            // state alive even though the Java-side registry gate is closed.
+            String reset = nativeResetAuthority();
+            if (!"reset".equals(reset)) throw new SecurityException("Could not reset native owner authority before restoring it.");
+            if (!isEnrolled(context)) return "unenrolled";
             KeyStore store = keyStore();
             if (!store.containsAlias(KEY_ALIAS)) return "device_untrusted";
             android.content.SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -589,38 +635,47 @@ public final class OwnerAuthority {
             String ownerId = prefs.getString(OWNER_ID, "");
             String deviceId = prefs.getString(DEVICE_ID, "");
             byte[] publicKey = encodePublicKey((ECPublicKey) pair.getPublic());
-            String restored = nativeEnroll(ownerId, deviceId, publicKey);
-            if (restored.startsWith("error:")) return restored;
             JSONObject registry = OwnerRegistryStore.load(context);
+            OwnerRegistryStore.validateForRestore(registry, ownerId, deviceId, publicKey);
+            String restored = nativeEnroll(ownerId, deviceId, publicKey);
+            if (restored.startsWith("error:")) throw new SecurityException("The current Android owner credential could not be restored.");
             JSONArray devices = registry.optJSONArray("devices");
-            boolean hasCurrent = false;
-            if (devices == null) devices = new JSONArray();
             for (int i = 0; i < devices.length(); i++) {
                 JSONObject entry = devices.optJSONObject(i);
-                if (entry == null) continue;
                 String id = entry.optString("deviceId", "");
-                if (deviceId.equals(id)) {
-                    if (entry.optBoolean("revoked", false)) return "device_untrusted";
-                    hasCurrent = true;
-                    continue;
-                }
+                if (deviceId.equals(id)) continue;
                 byte[] keyBytes = Base64.getDecoder().decode(entry.getString("publicKey"));
                 String status = entry.optBoolean("revoked", false)
                         ? nativeRestoreRevokedDevice(id, entry.getString("platform"), keyBytes)
                         : nativeRestoreDevice(id, entry.getString("platform"), keyBytes);
                 if (!((entry.optBoolean("revoked", false) && "revoked".equals(status))
-                        || (!entry.optBoolean("revoked", false) && "restored".equals(status)))) return "device_untrusted";
+                        || (!entry.optBoolean("revoked", false) && "restored".equals(status))))
+                    throw new SecurityException("A trusted-device credential could not be restored.");
             }
-            if (!hasCurrent) persistDevice(context, ownerId, deviceId, "android", publicKey);
             String recovery = registry.optString("recoveryPublicKey", "");
             if (!recovery.isEmpty()) {
                 String status = nativeRestoreRecoveryKey(Base64.getDecoder().decode(recovery));
-                if (!"restored".equals(status)) return "device_untrusted";
+                if (!"restored".equals(status)) throw new SecurityException("The recovery credential could not be restored.");
             }
+            registryRestored = true;
             return restored;
         } catch (Exception e) {
+            nativeResetAuthority();
+            activeSessionId = null;
+            registryRestored = false;
             return "device_untrusted";
         }
+    }
+
+    /**
+     * Activity recreation is not a sign-out. Keep the live in-process Rust session when the
+     * dashboard returns from an external app (for example, the ChatGPT OAuth browser). A process
+     * restart still begins with registryRestored=false and follows the full restore path; that
+     * path intentionally restores trusted public credentials but never restores an owner session.
+     */
+    public static String restoreIfNeeded(Context context) {
+        if (!OwnerRestorePolicy.shouldRestore(registryRestored)) return "restored";
+        return restore(context);
     }
 
     private static void persistDevice(Context context, String ownerId, String deviceId,
@@ -639,6 +694,10 @@ public final class OwnerAuthority {
     }
 
     public static void authenticate(Activity activity, Callback callback) {
+        if (!registryRestored) {
+            callback.complete(null, "The trusted-device registry has not been verified. Reopen Miss Minutes or recover this device.");
+            return;
+        }
         android.content.SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String deviceId = prefs.getString(DEVICE_ID, null);
         if (deviceId == null) {
@@ -649,6 +708,10 @@ public final class OwnerAuthority {
     }
 
     private static void authenticate(Activity activity, String deviceId, Callback callback) {
+        if (!registryRestored) {
+            callback.complete(null, "The trusted-device registry has not been verified. Reopen Miss Minutes or recover this device.");
+            return;
+        }
         if (!AUTHENTICATING.compareAndSet(false, true)) {
             callback.complete(null, "Owner verification is already in progress.");
             return;
@@ -728,7 +791,7 @@ public final class OwnerAuthority {
     public static boolean isOwnerCandidate() {
         try {
             return "owner_candidate".equals(nativeGetAuthState());
-        } catch (RuntimeException e) {
+        } catch (LinkageError | RuntimeException e) {
             return false;
         }
     }
@@ -741,8 +804,54 @@ public final class OwnerAuthority {
     public static String getAuthState() {
         try {
             return nativeGetAuthState();
-        } catch (RuntimeException e) {
+        } catch (LinkageError | RuntimeException e) {
             return "locked";
+        }
+    }
+
+    /**
+     * Returns the active operating mode derived from the Rust authority engine:
+     * {@code OWNER_MODE}, {@code OWNER_CANDIDATE}, or {@code GUEST_MODE}. Fails closed to
+     * {@code GUEST_MODE}.
+     */
+    public static String getOperatingMode() {
+        try {
+            String mode = nativeGetOperatingMode();
+            if ("owner_mode".equals(mode) && hasOwnerSession()) return "OWNER_MODE";
+            if ("owner_candidate".equals(mode)) return "OWNER_CANDIDATE";
+            return "GUEST_MODE";
+        } catch (LinkageError | RuntimeException e) {
+            return "GUEST_MODE";
+        }
+    }
+
+    /** Records a local visual match with calibrated confidence and liveness as a candidate signal only. */
+    public static boolean reportFaceMatch(float confidence, boolean liveness) {
+        try {
+            String mode = nativeRecordFaceCandidate(confidence, liveness);
+            return "owner_candidate".equals(mode) || ("owner_mode".equals(mode) && hasOwnerSession());
+        } catch (LinkageError | RuntimeException error) {
+            return false;
+        }
+    }
+
+    /** Records a local speaker match with calibrated confidence as a candidate signal only. */
+    public static boolean reportVoiceMatch(float confidence) {
+        try {
+            String mode = nativeRecordVoiceCandidate(confidence);
+            return "owner_candidate".equals(mode) || ("owner_mode".equals(mode) && hasOwnerSession());
+        } catch (LinkageError | RuntimeException error) {
+            return false;
+        }
+    }
+
+    /** Records supporting gaze/presence attention as a candidate cue only; never grants owner mode. */
+    public static boolean reportPresence(boolean active) {
+        try {
+            String mode = nativeRecordGazePresence(active);
+            return "owner_candidate".equals(mode) || ("owner_mode".equals(mode) && hasOwnerSession());
+        } catch (LinkageError | RuntimeException error) {
+            return false;
         }
     }
 
@@ -750,7 +859,7 @@ public final class OwnerAuthority {
     public static boolean reportOwnerFaceCandidate() {
         try {
             return "owner_candidate".equals(nativeObserveFaceMatch());
-        } catch (RuntimeException error) {
+        } catch (LinkageError | RuntimeException error) {
             return false;
         }
     }
@@ -759,9 +868,18 @@ public final class OwnerAuthority {
     public static boolean reportOwnerVoiceCandidate() {
         try {
             return "owner_candidate".equals(nativeObserveVoiceMatch());
-        } catch (RuntimeException error) {
+        } catch (LinkageError | RuntimeException error) {
             return false;
         }
+    }
+
+    /** Requests a fresh platform biometric challenge for sensitive actions, even if already unlocked. */
+    public static void stepUpVerify(Activity activity, Callback callback) {
+        if (hasOwnerSession() && !requireFreshAuthentication()) {
+            callback.complete(null, "Could not start fresh owner verification.");
+            return;
+        }
+        authenticate(activity, callback);
     }
 
     /** Invalidates the current session and begins a fresh biometric challenge path. */
@@ -788,6 +906,7 @@ public final class OwnerAuthority {
     /** Rechecks a captured session, so a later unlock cannot adopt work started by an older one. */
     public static boolean authorizeOwnerCapability(String sessionId, String capability) {
         if (sessionId == null || !("settings.modify".equals(capability)
+                || "ai.provider.use".equals(capability)
                 || "device.control".equals(capability)
                 || "owner.profile.modify".equals(capability)
                 || "memory.private.read".equals(capability)
@@ -824,23 +943,114 @@ public final class OwnerAuthority {
         com.patel5600.missminute.mobile.app.ChatGptOAuth.cancelAll();
     }
 
+    /** Emergency kill switch across Rust authority sessions, wake detector, HTTP streams, and OAuth. */
+    public static void emergencyKill() {
+        activeSessionId = null;
+        try {
+            nativeEmergencyKill();
+        } catch (LinkageError | RuntimeException ignored) {
+        }
+        ProviderHandlers.clearSessionSecrets();
+        com.patel5600.missminute.mobile.app.ChatGptOAuth.cancelAll();
+    }
+
+    /** Feeds an audio frame and optional ASR hypothesis into the shared Rust wake-word state machine. */
+    public static String feedWakeFrame(short[] pcm, String transcript, float phraseConfidence, long nowMs) {
+        try {
+            return nativeFeedWakeFrame(pcm == null ? new short[0] : pcm, transcript, phraseConfidence, nowMs);
+        } catch (LinkageError | RuntimeException e) {
+            return "error:wake_unavailable";
+        }
+    }
+
+    /** Resets the Rust wake-word sliding hit window and cooldown. */
+    public static void resetWake() {
+        try {
+            nativeResetWake();
+        } catch (LinkageError | RuntimeException ignored) {
+        }
+    }
+
+    /** Verifies the Rust SHA-256 hash-chained owner authority audit log integrity. */
+    public static String verifyAuditChain() {
+        try {
+            return nativeVerifyAuditChain();
+        } catch (LinkageError | RuntimeException e) {
+            return "error:audit_unavailable";
+        }
+    }
+
+    /** Validates a constrained delegation grant against scope, zero-spend, and timestamp bounds. */
+    public static String validateDelegation(String grantJson, String requiredScopeJson, long spendMinor, long nowMs) {
+        try {
+            return nativeValidateDelegation(grantJson, requiredScopeJson, spendMinor, nowMs);
+        } catch (LinkageError | RuntimeException e) {
+            return "error:delegation_unavailable";
+        }
+    }
+
+    /** Verifies and consumes a single-use recovery code with 3-attempt lockout protection. */
+    public static String consumeRecoveryCode(String code) {
+        try {
+            return nativeConsumeRecoveryCode(code);
+        } catch (LinkageError | RuntimeException e) {
+            return "error:recovery_unavailable";
+        }
+    }
+
     private static KeyPair loadOrCreateKeyPair() throws Exception {
         KeyStore store = keyStore();
         if (store.containsAlias(KEY_ALIAS)) {
-            return new KeyPair(store.getCertificate(KEY_ALIAS).getPublicKey(),
+            KeyPair existing = new KeyPair(store.getCertificate(KEY_ALIAS).getPublicKey(),
                     (java.security.PrivateKey) store.getKey(KEY_ALIAS, null));
+            if (keyInfo(existing).isInsideSecureHardware()) return existing;
+            deleteKey();
         }
-        return generateKeyPair(true);
+        return generateAndAttestNewKeyPair();
     }
 
-    private static KeyPair generateKeyPair(boolean strongBox) throws Exception {
+    private static KeyPair generateAndAttestNewKeyPair() throws Exception {
+        deleteKey();
+        byte[] challenge = new byte[32];
+        new SecureRandom().nextBytes(challenge);
+        KeyPair pair = generateKeyPair(true, challenge);
+        try {
+            if (!keyInfo(pair).isInsideSecureHardware()) {
+                throw new SecurityException("Software-only keys are rejected for Miss Minutes owner authority.");
+            }
+            Certificate[] certs = keyStore().getCertificateChain(KEY_ALIAS);
+            if (certs == null || certs.length < 2) {
+                throw new SecurityException("Android Keystore did not return a valid attestation chain.");
+            }
+            byte[][] encodedChain = new byte[certs.length][];
+            for (int i = 0; i < certs.length; i++) {
+                encodedChain[i] = certs[i].getEncoded();
+            }
+            byte[] pub = encodePublicKey((ECPublicKey) pair.getPublic());
+            String verdict = nativeVerifyKeyAttestation(encodedChain, challenge, pub);
+            if (verdict == null || !verdict.startsWith("verified:")) {
+                throw new SecurityException("Hardware Keystore attestation failed: " + verdict);
+            }
+            return pair;
+        } catch (Exception e) {
+            try {
+                deleteKey();
+            } catch (Exception cleanupError) {
+                e.addSuppressed(cleanupError);
+            }
+            throw e;
+        }
+    }
+
+    private static KeyPair generateKeyPair(boolean strongBox, byte[] attestationChallenge) throws Exception {
         KeyPairGenerator generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore");
         KeyGenParameterSpec.Builder spec = new KeyGenParameterSpec.Builder(KEY_ALIAS,
                 KeyProperties.PURPOSE_SIGN | KeyProperties.PURPOSE_VERIFY)
                 .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1"))
                 .setDigests(KeyProperties.DIGEST_SHA256)
                 .setUserAuthenticationRequired(true)
-                .setInvalidatedByBiometricEnrollment(true);
+                .setInvalidatedByBiometricEnrollment(true)
+                .setAttestationChallenge(attestationChallenge);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             spec.setUserAuthenticationParameters(0,
                     KeyProperties.AUTH_BIOMETRIC_STRONG | KeyProperties.AUTH_DEVICE_CREDENTIAL);
@@ -853,7 +1063,7 @@ public final class OwnerAuthority {
             return generator.generateKeyPair();
         } catch (android.security.keystore.StrongBoxUnavailableException e) {
             deleteKey();
-            if (strongBox) return generateKeyPair(false); // Protected TEE/Keystore fallback.
+            if (strongBox) return generateKeyPair(false, attestationChallenge); // Protected TEE/Keystore fallback.
             throw e;
         }
     }

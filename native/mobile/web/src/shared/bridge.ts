@@ -105,15 +105,16 @@ export function isAndroidApp(): boolean {
   );
 }
 
-export function request(type: string, payload: Payload = {}): Promise<Payload> {
+export function request(type: string, payload: Payload = {}, timeoutMs = REQUEST_TIMEOUT_MS, requestId?: string): Promise<Payload> {
   const port = attach();
   if (!port) return Promise.reject(new BridgeError('unavailable', 'Not running inside the Miss Minutes app'));
-  const id = nextId();
+  const id = requestId ?? nextId();
+  if (pending.has(id)) return Promise.reject(new BridgeError('internal', 'A request with this identifier is already running'));
   return new Promise<Payload>((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id);
       reject(new BridgeError('internal', `No answer to ${type} within ${REQUEST_TIMEOUT_MS / 1000} seconds`));
-    }, REQUEST_TIMEOUT_MS);
+    }, Math.max(1_000, Math.min(180_000, timeoutMs)));
     pending.set(id, { resolve, reject, timer });
     try {
       port.postMessage(encodeRequest(id, type, payload));

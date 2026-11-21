@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// Builds the Android web layer (overlay.html and dashboard.html) into the app's assets.
+// Builds the Android web layer (overlay.html, dashboard.html, and migration.html) into the app's assets.
 // The output is generated and git-ignored: native/mobile/android/app/src/main/assets/web/
 const repo = fileURLToPath(new URL('.', import.meta.url))
 const web = resolve(repo, 'native/mobile/web')
@@ -25,6 +25,7 @@ export default defineConfig({
       input: {
         overlay: resolve(web, 'overlay.html'),
         dashboard: resolve(web, 'dashboard.html'),
+        migration: resolve(web, 'migration.html'),
       },
     },
   },

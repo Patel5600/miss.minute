@@ -36,7 +36,7 @@ function readCreateNotePayload(json: string): CreateNotePayload | null {
   return null;
 }
 
-export function DesktopCompanionPanel() {
+export function DesktopCompanionPanel({ authenticated = true }: { authenticated?: boolean }) {
   const desktop = isDesktopRuntime();
   const [status, setStatus] = useState<NativeAgentStatus>(emptyStatus);
   const [startupEnabled, setStartupEnabled] = useState(false);
@@ -55,7 +55,7 @@ export function DesktopCompanionPanel() {
   const [error, setError] = useState('');
 
   const refresh = useCallback(async () => {
-    if (!desktop) return;
+    if (!desktop || !authenticated) return;
     try {
       const next = await invokeNative<NativeAgentStatus>('agent_status');
       setStatus(next);
@@ -68,17 +68,24 @@ export function DesktopCompanionPanel() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Native status is unavailable.');
     }
-  }, [desktop]);
+  }, [desktop, authenticated]);
 
   useEffect(() => {
-    if (!desktop) return;
+    if (!desktop || !authenticated) {
+      setStatus(emptyStatus);
+      setPendingActions([]);
+      setOwnerContexts([]);
+      setAgentEvents([]);
+      setStreamState('offline');
+      return;
+    }
     void refresh();
     const timer = window.setInterval(() => void refresh(), 5000);
     return () => window.clearInterval(timer);
-  }, [desktop, refresh]);
+  }, [desktop, authenticated, refresh]);
 
   useEffect(() => {
-    if (!desktop || !status.enrolled) {
+    if (!desktop || !authenticated || !status.enrolled) {
       setStreamState('offline');
       return;
     }
@@ -101,7 +108,7 @@ export function DesktopCompanionPanel() {
       polling = true;
       try {
         if (!ticket) {
-          setStreamState(cursor > 0 ? 'connecting' : 'connecting');
+          setStreamState('connecting');
           ticket = await invokeNative<AgentStreamTicket>('agent_stream_open',
             cursor > 0 ? { afterSeq: cursor } : {});
           if (cursor === 0) cursor = ticket.cursor;
@@ -166,9 +173,22 @@ export function DesktopCompanionPanel() {
       if (timer !== undefined) window.clearInterval(timer);
       void closeTicket();
     };
-  }, [desktop, status.enrolled]);
+  }, [desktop, authenticated, status.enrolled]);
 
   if (!desktop) return null;
+  if (!authenticated) {
+    return (
+      <section className="rounded-2xl border border-white/[0.08] bg-[#16120E] p-4 shadow-lg">
+        <div className="flex items-center gap-2.5">
+          <Monitor className="h-4 w-4 text-[#FF9240]" />
+          <div>
+            <p className="text-xs font-semibold text-[#FFF8EE]">Desktop Companion</p>
+            <p className="text-xs text-[#9D9082]">Verify owner identity in Owner security to manage folders, context, or companion actions.</p>
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -225,19 +245,19 @@ export function DesktopCompanionPanel() {
   };
 
   return (
-    <section className="rounded-2xl border border-amber-500/30 bg-[#170F08]/90 p-4 shadow-xl backdrop-blur-xl">
+    <section className="rounded-2xl border border-white/[0.08] bg-[#16120E] p-4 shadow-lg">
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Monitor className="h-4 w-4 text-amber-400" />
+        <div className="flex items-center gap-2.5">
+          <Monitor className="h-4 w-4 text-[#FF9240]" />
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-200">Desktop Companion</p>
-            <p className="text-[10px] text-amber-500/70">Native process • local IPC • Windows overlay</p>
+            <p className="text-sm font-semibold text-[#FFF8EE]">Desktop Companion</p>
+            <p className="text-[11px] text-[#9D9082]">Native process · local IPC · Windows overlay</p>
           </div>
         </div>
         <span className={
           status.running
-            ? 'rounded-full border border-emerald-500/40 bg-emerald-950/50 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-300'
-            : 'rounded-full border border-amber-700/40 bg-black/30 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-400'
+            ? 'rounded-full border border-emerald-500/35 bg-emerald-950/50 px-2.5 py-1 text-[11px] font-semibold text-emerald-300'
+            : 'rounded-full border border-white/[0.1] bg-black/30 px-2.5 py-1 text-[11px] font-semibold text-[#CBBEB0]'
         }>
           {status.running ? 'Agent running' : status.enrolled ? 'Agent stopped' : 'Not enrolled'}
         </span>

@@ -68,4 +68,19 @@ public class VisibilityPolicyTest {
         assertEquals(Visibility.HIDDEN,
                 VisibilityPolicy.decide(in(true, false, false, true, 0, false, true, PowerTier.ACTIVE)));
     }
+
+    @Test
+    public void ownAppForegroundHidesOverlayWithoutBlockingDashboard() {
+        assertEquals(Visibility.HIDDEN,
+                VisibilityPolicy.decide(new VisibilityInputs(true, false, false, false, 0, NOW, false, false, PowerTier.ACTIVE, true)));
+    }
+
+    @Test
+    public void fullscreenPolicyHonorsSettingDashboardAndLauncherState() {
+        assertEquals(false, FullscreenPolicy.isFullscreenActive(false, false, false, false));
+        assertEquals(false, FullscreenPolicy.isFullscreenActive(true, true, false, false));
+        assertEquals(false, FullscreenPolicy.isFullscreenActive(true, false, true, false));
+        assertEquals(false, FullscreenPolicy.isFullscreenActive(true, false, false, true));
+        assertEquals(true, FullscreenPolicy.isFullscreenActive(true, false, false, false));
+    }
 }

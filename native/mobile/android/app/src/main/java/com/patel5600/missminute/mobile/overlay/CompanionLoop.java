@@ -2,10 +2,14 @@ package com.patel5600.missminute.mobile.overlay;
 
 import android.app.KeyguardManager;
 import android.content.Context;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.view.Choreographer;
+import android.view.WindowInsets;
+import android.view.WindowManager;
+import android.view.WindowMetrics;
 
 import android.graphics.RectF;
 import com.patel5600.missminute.mobile.app_world.behaviour.ActionLibrary;
@@ -31,6 +35,7 @@ import com.patel5600.missminute.mobile.core.Clock;
 import com.patel5600.missminute.mobile.core.DirectorContext;
 import com.patel5600.missminute.mobile.core.FrameGate;
 import com.patel5600.missminute.mobile.core.FrameStats;
+import com.patel5600.missminute.mobile.core.FullscreenPolicy;
 import com.patel5600.missminute.mobile.core.JumpSolver;
 import com.patel5600.missminute.mobile.core.Locomotion;
 import com.patel5600.missminute.mobile.core.Mulberry32;
@@ -122,6 +127,7 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
     private final Clock clock;
     private final Host host;
     private final KeyguardManager keyguard;
+    private final WindowManager windowManager;
     private final Choreographer choreographer = Choreographer.getInstance();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final PhysicsConfig physics = PhysicsConfig.defaults();
@@ -187,6 +193,7 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
         this.clock = clock;
         this.host = host;
         this.keyguard = context.getSystemService(KeyguardManager.class);
+        this.windowManager = context.getSystemService(WindowManager.class);
         this.rng = new Mulberry32((System.nanoTime() ^ clock.nowMs()) & 0xFFFFFFFFL);
 
         this.spatialMemory = new SpatialMemory(context);
@@ -355,8 +362,18 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
         PowerInputs inputs = powerSource.get();
         PowerDecision decision = PowerPolicy.decide(inputs);
         boolean locked = keyguard != null && keyguard.isKeyguardLocked();
-        VisibilityInputs visibilityInputs = new VisibilityInputs(inputs.screenOn, locked, false,
-                !settings.roamingEnabled(), settings.hiddenUntilMs(), now, quietNow(), false, decision.tier);
+        boolean dashboardForeground = OverlayService.isDashboardForeground();
+        boolean launcherKnownInForeground = foregroundMonitor != null
+                && foregroundMonitor.hasUsageAccess()
+                && foregroundMonitor.isLauncherInForeground();
+        boolean fullscreenDetected = FullscreenPolicy.isFullscreenActive(
+                settings.hideInFullscreen(),
+                dashboardForeground,
+                launcherKnownInForeground,
+                detectStatusBarVisible());
+        VisibilityInputs visibilityInputs = new VisibilityInputs(inputs.screenOn, locked, fullscreenDetected,
+                !settings.roamingEnabled(), settings.hiddenUntilMs(), now, quietNow(), false,
+                decision.tier, dashboardForeground);
         Visibility next = VisibilityPolicy.decide(visibilityInputs);
 
         if (decision.tier != lastTier) {
@@ -375,6 +392,19 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
         main.removeCallbacks(tick);
         if (inputs.screenOn) {
             main.postDelayed(tick, TICK_MS);
+        }
+    }
+
+    private boolean detectStatusBarVisible() {
+        if (windowManager == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return true;
+        }
+        try {
+            WindowMetrics metrics = windowManager.getCurrentWindowMetrics();
+            WindowInsets insets = metrics.getWindowInsets();
+            return insets.isVisible(WindowInsets.Type.statusBars());
+        } catch (RuntimeException ignored) {
+            return true;
         }
     }
 
@@ -438,7 +468,7 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
             case PAUSED:
                 stopFrames();
                 sender.visible(false);
-                host.pausePage(true);
+                host.pausePage(false);
                 break;
             case HIDDEN:
             default:
@@ -623,7 +653,7 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
                 @Override
                 public void onAnchorCalibrated(SpatialAnchor anchor) {
                     if (anchor != null) {
-                        host.speak("Calibrated " + anchor.appName + ", sugar! Now I can jump all over it!");
+                        host.speak("Calibrated " + anchor.appName + "! Now I can jump all over it!");
                     }
                 }
 
@@ -650,7 +680,7 @@ final class CompanionLoop implements Choreographer.FrameCallback, OverlayTouch.L
                 spatialPhysics.clearAttachment();
                 sendPose();
                 syncWindow();
-                host.speak("Ooh, switchin' apps to " + pkg + "! I'll perch up here outta your way, sugar!");
+                host.speak("Ooh, switchin' apps to " + pkg + "! I'll perch up here outta your way!");
             }
         } else if (event.type == EventRouter.EventType.ACTION_COMPLETED) {
             endBehaviour(now);

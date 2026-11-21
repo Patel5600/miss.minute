@@ -5,19 +5,30 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use jni::JNIEnv;
-use jni::objects::{JByteArray, JClass, JString};
-use jni::sys::{jboolean, jstring};
+use jni::objects::{JByteArray, JClass, JObjectArray, JShortArray, JString};
+use jni::sys::{jboolean, jfloat, jlong, jstring};
+use mm_computer::DelegationGrant;
+use mm_wake::{WakeConfig, WakeEngine, WakeOutcome};
 
 use crate::{
-    AuthenticationAssurance, AuthorityEngine, Capability, CommandOrigin, CommandRequest, Risk,
-    DeviceCredentialRegistration, DeviceId, DevicePlatform, OwnerId, RecognitionSignal,
+    AuthenticationAssurance, AuthorityEngine, Capability, CommandOrigin, CommandRequest,
+    DeviceCredentialRegistration, DeviceId, DevicePlatform, OperatingMode, OwnerId,
+    RecognitionSignal, Risk,
+    attestation::{AttestationSecurityLevel, verify_android_key_attestation},
     capabilities,
 };
 
 static AUTHORITY: OnceLock<Mutex<AuthorityEngine>> = OnceLock::new();
+static WAKE: OnceLock<Mutex<WakeEngine>> = OnceLock::new();
 
 fn authority() -> &'static Mutex<AuthorityEngine> {
     AUTHORITY.get_or_init(|| Mutex::new(AuthorityEngine::new()))
+}
+
+fn wake_engine() -> &'static Mutex<WakeEngine> {
+    WAKE.get_or_init(|| {
+        Mutex::new(WakeEngine::new(WakeConfig::default()).expect("default wake config"))
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -25,10 +36,13 @@ pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_n
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let result = authority().lock().map_err(|_| "authority_unavailable".to_owned()).map(|mut engine| {
-        *engine = AuthorityEngine::new();
-        "reset".to_owned()
-    });
+    let result = authority()
+        .lock()
+        .map_err(|_| "authority_unavailable".to_owned())
+        .map(|mut engine| {
+            *engine = AuthorityEngine::new();
+            "reset".to_owned()
+        });
     result_string(&mut env, result)
 }
 
@@ -58,7 +72,9 @@ fn read_platform(value: &str) -> Result<DevicePlatform, String> {
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes { let _ = write!(&mut encoded, "{byte:02x}"); }
+    for byte in bytes {
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
     encoded
 }
 
@@ -100,6 +116,7 @@ pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_n
                     Capability::new(capabilities::PRIVATE_FILES_READ)
                         .map_err(|_| "invalid_policy")?,
                     Capability::new(capabilities::SETTINGS_MODIFY).map_err(|_| "invalid_policy")?,
+                    Capability::new(capabilities::AI_PROVIDER_USE).map_err(|_| "invalid_policy")?,
                     Capability::new(capabilities::DEVICE_CONTROL).map_err(|_| "invalid_policy")?,
                     Capability::new(capabilities::OWNER_PROFILE_MODIFY)
                         .map_err(|_| "invalid_policy")?,
@@ -113,42 +130,77 @@ pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_n
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeRestoreDevice(
-    mut env: JNIEnv, _class: JClass, device_id: JString, platform: JString, public_key: JByteArray,
+    mut env: JNIEnv,
+    _class: JClass,
+    device_id: JString,
+    platform: JString,
+    public_key: JByteArray,
 ) -> jstring {
     let result = (|| {
         let device_id = read_string(&mut env, &device_id)?;
         let platform = read_platform(&read_string(&mut env, &platform)?)?;
-        let public_key = env.convert_byte_array(public_key).map_err(|_| "invalid_public_key")?;
-        authority().lock().map_err(|_| "authority_unavailable".to_owned())?
-            .restore_trusted_device(DeviceId(device_id), DeviceCredentialRegistration { platform, public_key })
-            .map(|_| "restored".to_owned()).map_err(|e| format!("registry_rejected:{e:?}"))
+        let public_key = env
+            .convert_byte_array(public_key)
+            .map_err(|_| "invalid_public_key")?;
+        authority()
+            .lock()
+            .map_err(|_| "authority_unavailable".to_owned())?
+            .restore_trusted_device(
+                DeviceId(device_id),
+                DeviceCredentialRegistration {
+                    platform,
+                    public_key,
+                },
+            )
+            .map(|_| "restored".to_owned())
+            .map_err(|e| format!("registry_rejected:{e:?}"))
     })();
     result_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeRestoreRevokedDevice(
-    mut env: JNIEnv, _class: JClass, device_id: JString, platform: JString, public_key: JByteArray,
+    mut env: JNIEnv,
+    _class: JClass,
+    device_id: JString,
+    platform: JString,
+    public_key: JByteArray,
 ) -> jstring {
     let result = (|| {
         let device_id = read_string(&mut env, &device_id)?;
         let platform = read_platform(&read_string(&mut env, &platform)?)?;
-        let public_key = env.convert_byte_array(public_key).map_err(|_| "invalid_public_key")?;
-        authority().lock().map_err(|_| "authority_unavailable".to_owned())?
-            .restore_revoked_device(DeviceId(device_id), DeviceCredentialRegistration { platform, public_key })
-            .map(|_| "revoked".to_owned()).map_err(|e| format!("registry_rejected:{e:?}"))
+        let public_key = env
+            .convert_byte_array(public_key)
+            .map_err(|_| "invalid_public_key")?;
+        authority()
+            .lock()
+            .map_err(|_| "authority_unavailable".to_owned())?
+            .restore_revoked_device(
+                DeviceId(device_id),
+                DeviceCredentialRegistration {
+                    platform,
+                    public_key,
+                },
+            )
+            .map(|_| "revoked".to_owned())
+            .map_err(|e| format!("registry_rejected:{e:?}"))
     })();
     result_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeRevokeDevice(
-    mut env: JNIEnv, _class: JClass, session_id: JString, device_id: JString,
+    mut env: JNIEnv,
+    _class: JClass,
+    session_id: JString,
+    device_id: JString,
 ) -> jstring {
     let result = (|| {
         let session_id = read_string(&mut env, &session_id)?;
         let device_id = read_string(&mut env, &device_id)?;
-        let mut engine = authority().lock().map_err(|_| "authority_unavailable".to_owned())?;
+        let mut engine = authority()
+            .lock()
+            .map_err(|_| "authority_unavailable".to_owned())?;
         let command = CommandRequest {
             origin: CommandOrigin::UserInput,
             capability: Capability::new(capabilities::OWNER_PROFILE_MODIFY)
@@ -161,63 +213,103 @@ pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_n
         if !matches!(decision.decision, crate::AuthorizationDecision::Allow) {
             return Err(format!("authorization_denied:{}", decision.reason));
         }
-        engine.revoke_device(&DeviceId(device_id))
-            .map(|_| "revoked".to_owned()).map_err(|e| format!("device_revocation_rejected:{e:?}"))
+        engine
+            .revoke_device(&DeviceId(device_id))
+            .map(|_| "revoked".to_owned())
+            .map_err(|e| format!("device_revocation_rejected:{e:?}"))
     })();
     result_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeRestoreRecoveryKey(
-    mut env: JNIEnv, _class: JClass, public_key: JByteArray,
+    mut env: JNIEnv,
+    _class: JClass,
+    public_key: JByteArray,
 ) -> jstring {
-    let result = env.convert_byte_array(public_key).map_err(|_| "invalid_public_key".to_owned())
-        .and_then(|public_key| authority().lock().map_err(|_| "authority_unavailable".to_owned())?
-            .restore_recovery_public_key(public_key).map(|_| "restored".to_owned())
-            .map_err(|e| format!("registry_rejected:{e:?}")));
+    let result = env
+        .convert_byte_array(public_key)
+        .map_err(|_| "invalid_public_key".to_owned())
+        .and_then(|public_key| {
+            authority()
+                .lock()
+                .map_err(|_| "authority_unavailable".to_owned())?
+                .restore_recovery_public_key(public_key)
+                .map(|_| "restored".to_owned())
+                .map_err(|e| format!("registry_rejected:{e:?}"))
+        });
     result_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeBootstrapRecoveryIdentity(
-    mut env: JNIEnv, _class: JClass, owner_id: JString, public_key: JByteArray,
+    mut env: JNIEnv,
+    _class: JClass,
+    owner_id: JString,
+    public_key: JByteArray,
 ) -> jstring {
     let result = (|| {
         let owner_id = read_string(&mut env, &owner_id)?;
-        let public_key = env.convert_byte_array(public_key).map_err(|_| "invalid_public_key".to_owned())?;
-        authority().lock().map_err(|_| "authority_unavailable".to_owned())?
+        let public_key = env
+            .convert_byte_array(public_key)
+            .map_err(|_| "invalid_public_key".to_owned())?;
+        authority()
+            .lock()
+            .map_err(|_| "authority_unavailable".to_owned())?
             .bootstrap_recovery_identity(OwnerId(owner_id), public_key)
-            .map(|_| "bootstrapped".to_owned()).map_err(|e| format!("recovery_bootstrap_rejected:{e:?}"))
+            .map(|_| "bootstrapped".to_owned())
+            .map_err(|e| format!("recovery_bootstrap_rejected:{e:?}"))
     })();
     result_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeSetRecoveryKey(
-    mut env: JNIEnv, _class: JClass, session_id: JString, public_key: JByteArray,
+    mut env: JNIEnv,
+    _class: JClass,
+    session_id: JString,
+    public_key: JByteArray,
 ) -> jstring {
     let result = (|| {
         let session_id = read_string(&mut env, &session_id)?;
-        let public_key = env.convert_byte_array(public_key).map_err(|_| "invalid_public_key")?;
-        authority().lock().map_err(|_| "authority_unavailable".to_owned())?
+        let public_key = env
+            .convert_byte_array(public_key)
+            .map_err(|_| "invalid_public_key")?;
+        authority()
+            .lock()
+            .map_err(|_| "authority_unavailable".to_owned())?
             .set_recovery_public_key(&session_id, public_key, Instant::now())
-            .map(|_| "saved".to_owned()).map_err(|e| format!("recovery_key_rejected:{e:?}"))
+            .map(|_| "saved".to_owned())
+            .map_err(|e| format!("recovery_key_rejected:{e:?}"))
     })();
     result_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeBeginDevicePairing(
-    mut env: JNIEnv, _class: JClass, session_id: JString, target_device_id: JString,
-    platform: JString, public_key: JByteArray,
+    mut env: JNIEnv,
+    _class: JClass,
+    session_id: JString,
+    target_device_id: JString,
+    platform: JString,
+    public_key: JByteArray,
 ) -> jstring {
     let result = (|| {
         let session_id = read_string(&mut env, &session_id)?;
         let target_device_id = read_string(&mut env, &target_device_id)?;
         let platform = read_platform(&read_string(&mut env, &platform)?)?;
-        let public_key = env.convert_byte_array(public_key).map_err(|_| "invalid_public_key")?;
-        let challenge = authority().lock().map_err(|_| "authority_unavailable".to_owned())?
-            .begin_device_pairing(&session_id, DeviceId(target_device_id), platform, public_key)
+        let public_key = env
+            .convert_byte_array(public_key)
+            .map_err(|_| "invalid_public_key")?;
+        let challenge = authority()
+            .lock()
+            .map_err(|_| "authority_unavailable".to_owned())?
+            .begin_device_pairing(
+                &session_id,
+                DeviceId(target_device_id),
+                platform,
+                public_key,
+            )
             .map_err(|e| format!("pairing_rejected:{e:?}"))?;
         serde_json::to_string(&serde_json::json!({
             "challengeId": challenge.challenge_id,
@@ -229,7 +321,8 @@ pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_n
             "challenge": hex(&challenge.bytes),
             "nonce": hex(&challenge_nonce(&challenge.bytes)),
             "expiresInSeconds": 120
-        })).map_err(|_| "encoding_failed".to_owned())
+        }))
+        .map_err(|_| "encoding_failed".to_owned())
     })();
     result_string(&mut env, result)
 }
@@ -239,11 +332,22 @@ fn challenge_nonce(bytes: &[u8]) -> Vec<u8> {
     // rather than trying to derive it from IDs or accepting a nonce from a caller.
     let mut offset = b"miss-minutes-device-pair-v1\0".len();
     for _ in 0..7 {
-        if offset + 4 > bytes.len() { return Vec::new(); }
-        let length = u32::from_be_bytes([bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]]) as usize;
+        if offset + 4 > bytes.len() {
+            return Vec::new();
+        }
+        let length = u32::from_be_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ]) as usize;
         offset += 4;
-        if offset + length > bytes.len() { return Vec::new(); }
-        if offset + length == bytes.len() { return bytes[offset..].to_vec(); }
+        if offset + length > bytes.len() {
+            return Vec::new();
+        }
+        if offset + length == bytes.len() {
+            return bytes[offset..].to_vec();
+        }
         offset += length;
     }
     Vec::new()
@@ -254,36 +358,55 @@ pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_n
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let result = authority().lock().map_err(|_| "authority_unavailable".to_owned()).map(|mut engine| {
-        engine.cancel_device_pairing();
-        "cancelled".to_owned()
-    });
+    let result = authority()
+        .lock()
+        .map_err(|_| "authority_unavailable".to_owned())
+        .map(|mut engine| {
+            engine.cancel_device_pairing();
+            "cancelled".to_owned()
+        });
     result_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeCompleteDevicePairing(
-    mut env: JNIEnv, _class: JClass, challenge_id: JString, signature: JByteArray,
+    mut env: JNIEnv,
+    _class: JClass,
+    challenge_id: JString,
+    signature: JByteArray,
 ) -> jstring {
     let result = (|| {
         let challenge_id = read_string(&mut env, &challenge_id)?;
-        let signature = env.convert_byte_array(signature).map_err(|_| "invalid_signature")?;
-        authority().lock().map_err(|_| "authority_unavailable".to_owned())?
+        let signature = env
+            .convert_byte_array(signature)
+            .map_err(|_| "invalid_signature")?;
+        authority()
+            .lock()
+            .map_err(|_| "authority_unavailable".to_owned())?
             .complete_device_pairing_with_signature(&challenge_id, &signature)
-            .map(|device_id| device_id.0).map_err(|e| format!("pairing_rejected:{e:?}"))
+            .map(|device_id| device_id.0)
+            .map_err(|e| format!("pairing_rejected:{e:?}"))
     })();
     result_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeBeginDeviceRecovery(
-    mut env: JNIEnv, _class: JClass, target_device_id: JString, platform: JString, public_key: JByteArray,
+    mut env: JNIEnv,
+    _class: JClass,
+    target_device_id: JString,
+    platform: JString,
+    public_key: JByteArray,
 ) -> jstring {
     let result = (|| {
         let target_device_id = read_string(&mut env, &target_device_id)?;
         let platform = read_platform(&read_string(&mut env, &platform)?)?;
-        let public_key = env.convert_byte_array(public_key).map_err(|_| "invalid_public_key")?;
-        let challenge = authority().lock().map_err(|_| "authority_unavailable".to_owned())?
+        let public_key = env
+            .convert_byte_array(public_key)
+            .map_err(|_| "invalid_public_key")?;
+        let challenge = authority()
+            .lock()
+            .map_err(|_| "authority_unavailable".to_owned())?
             .begin_device_recovery(DeviceId(target_device_id), platform, public_key)
             .map_err(|e| format!("recovery_rejected:{e:?}"))?;
         serde_json::to_string(&serde_json::json!({
@@ -294,27 +417,40 @@ pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_n
             "targetPublicKey": hex(&challenge.target_public_key),
             "challenge": hex(&challenge.bytes),
             "expiresInSeconds": 120
-        })).map_err(|_| "encoding_failed".to_owned())
+        }))
+        .map_err(|_| "encoding_failed".to_owned())
     })();
     result_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeCompleteDeviceRecovery(
-    mut env: JNIEnv, _class: JClass, challenge_id: JString, signature: JByteArray,
+    mut env: JNIEnv,
+    _class: JClass,
+    challenge_id: JString,
+    signature: JByteArray,
 ) -> jstring {
     let result = (|| {
         let challenge_id = read_string(&mut env, &challenge_id)?;
-        let signature = env.convert_byte_array(signature).map_err(|_| "invalid_signature")?;
-        authority().lock().map_err(|_| "authority_unavailable".to_owned())?
+        let signature = env
+            .convert_byte_array(signature)
+            .map_err(|_| "invalid_signature")?;
+        authority()
+            .lock()
+            .map_err(|_| "authority_unavailable".to_owned())?
             .complete_device_recovery(&challenge_id, &signature)
-            .map(|device_id| device_id.0).map_err(|e| format!("recovery_rejected:{e:?}"))
+            .map(|device_id| device_id.0)
+            .map_err(|e| format!("recovery_rejected:{e:?}"))
     })();
     result_string(&mut env, result)
 }
 
 fn platform_name(platform: DevicePlatform) -> &'static str {
-    match platform { DevicePlatform::Android => "android", DevicePlatform::Windows => "windows", DevicePlatform::Linux => "linux" }
+    match platform {
+        DevicePlatform::Android => "android",
+        DevicePlatform::Windows => "windows",
+        DevicePlatform::Linux => "linux",
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -537,6 +673,69 @@ pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_n
     if result { 1 } else { 0 }
 }
 
+fn operating_mode_name(mode: OperatingMode) -> &'static str {
+    match mode {
+        OperatingMode::OwnerMode => "owner_mode",
+        OperatingMode::OwnerCandidate => "owner_candidate",
+        OperatingMode::GuestMode => "guest_mode",
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeRecordFaceCandidate(
+    mut env: JNIEnv,
+    _class: JClass,
+    confidence: jfloat,
+    liveness_passed: jboolean,
+) -> jstring {
+    let result = authority()
+        .lock()
+        .map_err(|_| "authority_unavailable".to_owned())
+        .and_then(|mut engine| {
+            engine
+                .record_face_candidate(confidence, liveness_passed != 0)
+                .map(|mode| operating_mode_name(mode).to_owned())
+                .map_err(|_| "candidate_rejected".to_owned())
+        });
+    result_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeRecordVoiceCandidate(
+    mut env: JNIEnv,
+    _class: JClass,
+    confidence: jfloat,
+) -> jstring {
+    let result = authority()
+        .lock()
+        .map_err(|_| "authority_unavailable".to_owned())
+        .and_then(|mut engine| {
+            engine
+                .record_voice_candidate(confidence)
+                .map(|mode| operating_mode_name(mode).to_owned())
+                .map_err(|_| "candidate_rejected".to_owned())
+        });
+    result_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeRecordGazePresence(
+    mut env: JNIEnv,
+    _class: JClass,
+    engaged: jboolean,
+) -> jstring {
+    let result = authority()
+        .lock()
+        .map_err(|_| "authority_unavailable".to_owned())
+        .and_then(|mut engine| {
+            engine
+                .record_gaze_presence(engaged != 0)
+                .map(|mode| operating_mode_name(mode).to_owned())
+                .map_err(|_| "candidate_rejected".to_owned())
+        });
+    result_string(&mut env, result)
+}
+
 /// Returns the current `AuthState` as a snake_case string so the UI can display the right
 /// authority status pill without exposing private session IDs or capability details.
 #[unsafe(no_mangle)]
@@ -549,18 +748,227 @@ pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_n
         .map_err(|_| "authority_unavailable".to_owned())
         .map(|engine| {
             match engine.state() {
-                crate::AuthState::Unenrolled           => "unenrolled",
-                crate::AuthState::Locked               => "locked",
-                crate::AuthState::OwnerCandidate        => "owner_candidate",
+                crate::AuthState::Unenrolled => "unenrolled",
+                crate::AuthState::Locked => "locked",
+                crate::AuthState::OwnerCandidate => "owner_candidate",
                 crate::AuthState::AuthenticationPending => "authentication_pending",
-                crate::AuthState::OwnerAuthenticated    => "owner_authenticated",
-                crate::AuthState::StepUpRequired        => "step_up_required",
-                crate::AuthState::GuestActive           => "guest_active",
-                crate::AuthState::Revoked               => "revoked",
-                crate::AuthState::DeviceUntrusted       => "device_untrusted",
+                crate::AuthState::OwnerAuthenticated => "owner_authenticated",
+                crate::AuthState::StepUpRequired => "step_up_required",
+                crate::AuthState::GuestActive => "guest_active",
+                crate::AuthState::Revoked => "revoked",
+                crate::AuthState::DeviceUntrusted => "device_untrusted",
             }
             .to_owned()
         });
+    result_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeGetOperatingMode(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let result = authority()
+        .lock()
+        .map_err(|_| "authority_unavailable".to_owned())
+        .map(|engine| operating_mode_name(engine.operating_mode(Instant::now())).to_owned());
+    result_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeVerifyKeyAttestation(
+    mut env: JNIEnv,
+    _class: JClass,
+    cert_chain: JObjectArray,
+    challenge: JByteArray,
+    expected_public_key: JByteArray,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Result<String, String> {
+            let len = env
+                .get_array_length(&cert_chain)
+                .map_err(|_| "invalid_cert_chain".to_owned())?;
+            if !(2..=16).contains(&len) {
+                return Err("invalid_chain_length".to_owned());
+            }
+            let mut certs: Vec<Vec<u8>> = Vec::with_capacity(len as usize);
+            for idx in 0..len {
+                let elem = env
+                    .get_object_array_element(&cert_chain, idx)
+                    .map_err(|_| "invalid_cert_element".to_owned())?;
+                let bytes = env
+                    .convert_byte_array(JByteArray::from(elem))
+                    .map_err(|_| "invalid_cert_bytes".to_owned())?;
+                certs.push(bytes);
+            }
+            let refs: Vec<&[u8]> = certs.iter().map(Vec::as_slice).collect();
+            let challenge_bytes = env
+                .convert_byte_array(challenge)
+                .map_err(|_| "invalid_challenge".to_owned())?;
+            let pubkey_bytes = env
+                .convert_byte_array(expected_public_key)
+                .map_err(|_| "invalid_public_key".to_owned())?;
+            let verified =
+                verify_android_key_attestation(&refs, &challenge_bytes, Some(&pubkey_bytes))
+                    .map_err(|e| format!("attestation_rejected:{e:?}"))?;
+            let level = match verified.security_level {
+                AttestationSecurityLevel::StrongBox => "strongbox",
+                AttestationSecurityLevel::TrustedEnvironment => "tee",
+                AttestationSecurityLevel::Software => {
+                    return Err("software_backed_rejected".to_owned());
+                }
+            };
+            Ok(format!("verified:{level}"))
+        },
+    ))
+    .unwrap_or_else(|_| Err("panic_in_attestation".to_owned()));
+    result_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeFeedWakeFrame(
+    mut env: JNIEnv,
+    _class: JClass,
+    pcm: JShortArray,
+    transcript: JString,
+    phrase_confidence: jfloat,
+    now_ms: jlong,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Result<String, String> {
+            let text = if transcript.is_null() {
+                None
+            } else {
+                Some(read_string(&mut env, &transcript)?)
+            };
+            let pcm_len = env
+                .get_array_length(&pcm)
+                .map_err(|_| "invalid_pcm".to_owned())?
+                .max(0) as usize;
+            let clamped_len = pcm_len.min(16_384);
+            let mut samples = vec![0i16; clamped_len];
+            if clamped_len > 0 {
+                env.get_short_array_region(&pcm, 0, &mut samples)
+                    .map_err(|_| "pcm_read_failed".to_owned())?;
+            }
+            let ts = u64::try_from(now_ms).unwrap_or(0);
+            let mut wake = wake_engine()
+                .lock()
+                .map_err(|_| "wake_unavailable".to_owned())?;
+            let outcome = wake.process_pcm_frame(&samples, text.as_deref(), phrase_confidence, ts);
+            if matches!(outcome, WakeOutcome::EmergencyStop { .. })
+                && let Ok(mut engine) = authority().lock()
+            {
+                engine.emergency_kill();
+            }
+            serde_json::to_string(&outcome).map_err(|_| "wake_encode_failed".to_owned())
+        },
+    ))
+    .unwrap_or_else(|_| Err("panic_in_wake".to_owned()));
+    result_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeResetWake(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let result = wake_engine()
+        .lock()
+        .map_err(|_| "wake_unavailable".to_owned())
+        .map(|mut wake| {
+            wake.reset();
+            "reset".to_owned()
+        });
+    result_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeValidateDelegation(
+    mut env: JNIEnv,
+    _class: JClass,
+    grant_json: JString,
+    required_scope_json: JString,
+    spend_minor: jlong,
+    now_ms: jlong,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Result<String, String> {
+            let grant_str = read_string(&mut env, &grant_json)?;
+            let scope_str = read_string(&mut env, &required_scope_json)?;
+            let grant: DelegationGrant =
+                serde_json::from_str(&grant_str).map_err(|_| "invalid_grant".to_owned())?;
+            let scope: mm_computer::CapabilityScope =
+                serde_json::from_str(&scope_str).map_err(|_| "invalid_scope".to_owned())?;
+            let spend = u64::try_from(spend_minor).map_err(|_| "invalid_spend".to_owned())?;
+            grant
+                .permits(scope, spend, now_ms)
+                .map(|_| "allowed".to_owned())
+                .map_err(|e| format!("delegation_denied:{e}"))
+        },
+    ))
+    .unwrap_or_else(|_| Err("panic_in_delegation".to_owned()));
+    result_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeVerifyAuditChain(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let result = authority()
+        .lock()
+        .map_err(|_| "authority_unavailable".to_owned())
+        .and_then(|engine| {
+            if engine.verify_audit_chain() {
+                Ok(format!("valid:{}", engine.audit_log().len()))
+            } else {
+                Err("audit_chain_corrupted".to_owned())
+            }
+        });
+    result_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeEmergencyKill(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Result<String, String> {
+            if let Ok(mut wake) = wake_engine().lock() {
+                wake.reset();
+            }
+            let mut engine = authority()
+                .lock()
+                .map_err(|_| "authority_unavailable".to_owned())?;
+            engine.emergency_kill();
+            Ok("killed".to_owned())
+        },
+    ))
+    .unwrap_or_else(|_| Err("panic_in_kill".to_owned()));
+    result_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_patel5600_missminute_mobile_app_OwnerAuthority_nativeConsumeRecoveryCode(
+    mut env: JNIEnv,
+    _class: JClass,
+    code: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Result<String, String> {
+            let code_str = read_string(&mut env, &code)?;
+            let mut engine = authority()
+                .lock()
+                .map_err(|_| "authority_unavailable".to_owned())?;
+            engine
+                .verify_and_consume_recovery_code(&code_str)
+                .map(|_| "ok".to_owned())
+                .map_err(|e| format!("recovery_rejected:{e:?}"))
+        },
+    ))
+    .unwrap_or_else(|_| Err("panic_in_recovery".to_owned()));
     result_string(&mut env, result)
 }
 
@@ -572,7 +980,15 @@ mod tests {
     #[test]
     fn pairing_nonce_is_the_final_length_prefixed_challenge_field() {
         let mut challenge = b"miss-minutes-device-pair-v1\0".to_vec();
-        for field in [b"owner".as_slice(), b"source", b"target", b"android", &[4; 65], b"challenge-id", &[9; 32]] {
+        for field in [
+            b"owner".as_slice(),
+            b"source",
+            b"target",
+            b"android",
+            &[4; 65],
+            b"challenge-id",
+            &[9; 32],
+        ] {
             challenge.extend_from_slice(&(field.len() as u32).to_be_bytes());
             challenge.extend_from_slice(field);
         }

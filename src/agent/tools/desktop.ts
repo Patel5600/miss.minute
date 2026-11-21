@@ -237,24 +237,14 @@ const confirmTools = [
     describe: args => `Move ${args.path} to the Recycle Bin`,
     failure: "Couldn't delete that",
   }),
-  confirmTool<{ command: string; cwd?: string; timeout_seconds?: number }>({
-    name: 'run_command',
-    description: 'Runs one PowerShell command and returns its output. Prefer the specific file tools when they fit.',
-    properties: {
-      command: { type: 'string', description: 'The exact PowerShell command.' },
-      cwd: pathProperty('Working folder (optional).'),
-      timeout_seconds: { type: 'integer', minimum: 1, maximum: 600, description: 'Stop after this many seconds.' },
-    },
-    required: ['command'],
-    parse(args) {
-      const command = requiredText(args, 'command', 8000, { raw: true }).trim();
-      if (!command) throw new ToolInputError("'command' is required.");
-      const cwd = args.cwd === undefined ? undefined : checkPath(args, 'cwd');
-      const timeout = optionalNumber(args, 'timeout_seconds', { min: 1, max: 600, integer: true, unit: 'seconds' });
-      return { command, ...(cwd ? { cwd } : {}), ...(timeout !== undefined ? { timeout_seconds: timeout } : {}) };
-    },
-    describe: args => `Run in PowerShell: ${clip(args.command, 200)}`,
-    failure: 'The command failed to run',
+  confirmTool<Record<string, never>>({
+    name: 'inspect_foreground_ui',
+    description: 'Reads accessible names and control roles from the foreground window (excluding password fields and values).',
+    properties: {},
+    required: [],
+    parse: () => ({}),
+    describe: () => 'Read accessible controls from the foreground window',
+    failure: "Couldn't inspect the foreground window UI",
     longOutput: true,
   }),
 ];

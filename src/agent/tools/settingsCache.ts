@@ -3,7 +3,7 @@
  * settings parameter (shared contract), so the home city is read from here, falling back to
  * the settings the app persisted in this browser profile.
  */
-import type { AISettings } from '../../types';
+import type { AISettings } from '../../types/index.ts';
 
 const STORED_SETTINGS_KEY = 'miss_minutes_settings';
 

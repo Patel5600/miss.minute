@@ -1,11 +1,15 @@
 package com.patel5600.missminute.mobile.app;
 
 import android.app.Application;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Build;
 
 import com.patel5600.missminute.mobile.BuildConfig;
 import com.patel5600.missminute.mobile.MetadataCompanionService;
+import com.patel5600.missminute.mobile.OwnerDataDb;
 import com.patel5600.missminute.mobile.core.Clock;
 import com.patel5600.missminute.mobile.core.audit.AuditLog;
 import com.patel5600.missminute.mobile.core.kill.KillCore;
@@ -14,6 +18,8 @@ import com.patel5600.missminute.mobile.core.kill.Killable;
 import com.patel5600.missminute.mobile.core.policy.PermissionStore;
 import com.patel5600.missminute.mobile.kill.KillSwitch;
 import com.patel5600.missminute.mobile.overlay.OverlayService;
+import com.patel5600.missminute.mobile.voice.MissMinutesConnectionService;
+import com.patel5600.missminute.mobile.voice.WakeWordForegroundService;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -31,6 +37,12 @@ public final class MissMinutesApp extends Application {
     private KillStateStore killStateStore;
     private AuditLog auditLog;
     private KillSwitch killSwitch;
+    private OwnerDataDb ownerDataDb;
+    private final BroadcastReceiver screenOffOwnerLock = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) OwnerAuthority.lock();
+        }
+    };
 
     public static MissMinutesApp from(Context context) {
         return (MissMinutesApp) context.getApplicationContext();
@@ -40,6 +52,12 @@ public final class MissMinutesApp extends Application {
     public void onCreate() {
         super.onCreate();
         Notifications.createChannels(this);
+        IntentFilter screenOff = new IntentFilter(Intent.ACTION_SCREEN_OFF);
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(screenOffOwnerLock, screenOff, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(screenOffOwnerLock, screenOff);
+        }
         if (BuildConfig.DEBUG) {
             new MainThreadWatchdog().start();
         }
@@ -88,6 +106,25 @@ public final class MissMinutesApp extends Application {
         return killSwitch;
     }
 
+    /** Lazily opens the encrypted owner store. Callers must pass the owner-session gate first. */
+    public synchronized OwnerDataDb ownerDataDb() throws Exception {
+        if (ownerDataDb == null) {
+            ownerDataDb = new OwnerDataDb(this);
+        }
+        return ownerDataDb;
+    }
+
+    @Override
+    public void onTerminate() {
+        synchronized (this) {
+            if (ownerDataDb != null) {
+                ownerDataDb.close();
+                ownerDataDb = null;
+            }
+        }
+        super.onTerminate();
+    }
+
     /**
      * What a kill must do even when no component is alive to register itself. Labels go to the audit
      * log, so they are fixed words. Alarms the owner set are not touched.
@@ -125,6 +162,24 @@ public final class MissMinutesApp extends Application {
             @Override
             public void run() throws Exception {
                 permissionStore().save(KillCore.applyAfterKill(permissionStore().load()));
+            }
+        }));
+        list.add(KillSwitch.killable("owner-authority", new KillSwitch.Action() {
+            @Override
+            public void run() {
+                OwnerAuthority.emergencyKill();
+            }
+        }));
+        list.add(KillSwitch.killable("wake-service", new KillSwitch.Action() {
+            @Override
+            public void run() {
+                WakeWordForegroundService.stop(app);
+            }
+        }));
+        list.add(KillSwitch.killable("voip-calls", new KillSwitch.Action() {
+            @Override
+            public void run() {
+                MissMinutesConnectionService.hangupAll(app);
             }
         }));
         return list;

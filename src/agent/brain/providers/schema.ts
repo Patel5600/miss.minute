@@ -3,7 +3,7 @@
  * JSON Schema as is; Gemini's function declarations accept an OpenAPI subset, so unsupported
  * keywords are dropped and non-string enums removed.
  */
-import type { JsonSchema } from '../../tools/types';
+import type { JsonSchema } from '../../tools/types.ts';
 
 /** Root object schema with `properties` always present (some servers require it). */
 export function jsonSchemaFor(schema: JsonSchema): Record<string, unknown> {

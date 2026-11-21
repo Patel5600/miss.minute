@@ -2,9 +2,9 @@
  * Provider-neutral conversation pieces: earlier chat messages turned into model history, tool
  * specs, tool calls the model made, and tool results shaped (and capped) for the model.
  */
-import type { Attachment, ChatMessage } from '../../types';
-import type { JsonSchema, ToolResult } from '../tools/types';
-import { stripCueTags } from './cueParser';
+import type { Attachment, ChatMessage } from '../../types/index.ts';
+import type { JsonSchema, ToolResult } from '../tools/types.ts';
+import { stripCueTags } from './cueParser.ts';
 
 export interface ConvUser {
   role: 'user';

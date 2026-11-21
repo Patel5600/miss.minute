@@ -10,7 +10,7 @@ public final class VisibilityPolicy {
     }
 
     public static Visibility decide(VisibilityInputs in) {
-        if (in.fullscreenDetected || in.quietHours) {
+        if (in.fullscreenDetected || in.quietHours || in.appForeground) {
             return Visibility.HIDDEN;
         }
         if (!in.screenOn || in.keyguardLocked) {

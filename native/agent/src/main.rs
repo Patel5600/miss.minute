@@ -13,7 +13,11 @@ use miss_minute_agent::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "miss-minute-agent", version, about = "Local-first background agent for Miss Minutes")]
+#[command(
+    name = "miss-minute-agent",
+    version,
+    about = "Local-first background agent for Miss Minutes"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -143,7 +147,11 @@ enum Commands {
 
 fn execute(cli: Cli) -> Result<()> {
     match cli.command {
-        Commands::Init { config, allow_roots, confirm_owner_permission } => {
+        Commands::Init {
+            config,
+            allow_roots,
+            confirm_owner_permission,
+        } => {
             let created = create_config(&config, &allow_roots, confirm_owner_permission)?;
             println!("Configuration created: {}", config.display());
             println!("Local database: {}", created.database_path.display());
@@ -160,14 +168,20 @@ fn execute(cli: Cli) -> Result<()> {
             let report = scan_roots(&config_data, &mut store)?;
             println!(
                 "Files observed: {} | discovered: {} | changed: {} | inaccessible: {}",
-                report.files_seen, report.resources_discovered,
-                report.resources_changed, report.inaccessible_entries
+                report.files_seen,
+                report.resources_discovered,
+                report.resources_changed,
+                report.inaccessible_entries
             );
             if report.inaccessible_entries > 0 {
                 println!("Coverage is incomplete: at least one entry could not be inspected.");
             }
         }
-        Commands::Run { config, quiet_window_seconds, rescan_seconds } => {
+        Commands::Run {
+            config,
+            quiet_window_seconds,
+            rescan_seconds,
+        } => {
             let config_data = load_config(&config)?;
             run_agent(&config_data, quiet_window_seconds, rescan_seconds)?;
         }
@@ -177,25 +191,49 @@ fn execute(cli: Cli) -> Result<()> {
             let (events, resources, decisions) = store.counts()?;
             println!("Agent schema: {}", config_data.schema_version);
             println!("Owner consent recorded: {}", config_data.consent.confirmed);
-            println!("Authorized roots: {}", config_data.consent.allowed_roots.len());
+            println!(
+                "Authorized roots: {}",
+                config_data.consent.allowed_roots.len()
+            );
             for root in &config_data.consent.allowed_roots {
                 println!("  {}", root.display());
             }
-            println!("File contents captured: {}", config_data.capture.file_contents);
+            println!(
+                "File contents captured: {}",
+                config_data.capture.file_contents
+            );
             println!("Symlink traversal: {}", config_data.capture.follow_symlinks);
             println!("Local events: {events}");
             println!("Indexed current files: {resources}");
             println!("Reasoning decisions: {decisions}");
             println!("Retention: {} days", config_data.retention_days);
-            println!("Approved note-write folders: {}", config_data.approved_note_roots.len());
-            println!("Automatic note creation: {}", config_data.automation.auto_create_notes);
-            println!("Automatic daily quota: {} notes (UTC)", config_data.automation.max_notes_per_utc_day);
+            println!(
+                "Approved note-write folders: {}",
+                config_data.approved_note_roots.len()
+            );
+            println!(
+                "Automatic note creation: {}",
+                config_data.automation.auto_create_notes
+            );
+            println!(
+                "Automatic daily quota: {} notes (UTC)",
+                config_data.automation.max_notes_per_utc_day
+            );
             for root in &config_data.approved_note_roots {
                 println!("  {}", root.display());
             }
-            println!("Reasoner: {}", if config_data.reasoner.is_some() { "configured" } else { "disabled" });
+            println!(
+                "Reasoner: {}",
+                if config_data.reasoner.is_some() {
+                    "configured"
+                } else {
+                    "disabled"
+                }
+            );
             println!("Database: {}", config_data.database_path.display());
-            println!("Completeness: not guaranteed; event delivery and OS permissions can create gaps.");
+            println!(
+                "Completeness: not guaranteed; event delivery and OS permissions can create gaps."
+            );
         }
         Commands::Recent { config, limit } => {
             let config_data = load_config(&config)?;
@@ -217,7 +255,9 @@ fn execute(cli: Cli) -> Result<()> {
         Commands::Think { config } => {
             let config_data = load_config(&config)?;
             if config_data.reasoner.is_none() {
-                anyhow::bail!("No reasoner configured. Configure local Ollama or an explicitly approved HTTPS endpoint first.");
+                anyhow::bail!(
+                    "No reasoner configured. Configure local Ollama or an explicitly approved HTTPS endpoint first."
+                );
             }
             if !run_one_reasoning_cycle(&config_data)? {
                 println!("No unprocessed evidence. No model request was sent.");
@@ -230,15 +270,47 @@ fn execute(cli: Cli) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&decision)?);
             }
         }
-        Commands::ConfigureReasoner { config, endpoint, model, api_key_env, confirm_remote_metadata_egress } => {
+        Commands::ConfigureReasoner {
+            config,
+            endpoint,
+            model,
+            api_key_env,
+            confirm_remote_metadata_egress,
+        } => {
             let updated = configure_reasoner(
-                &config, endpoint, model, api_key_env, confirm_remote_metadata_egress,
+                &config,
+                endpoint,
+                model,
+                api_key_env,
+                confirm_remote_metadata_egress,
             )?;
             println!("Reasoner configuration saved.");
-            println!("Endpoint: {}", updated.reasoner.as_ref().map(|value| value.endpoint.as_str()).unwrap_or("disabled"));
-            println!("Model: {}", updated.reasoner.as_ref().map(|value| value.model.as_str()).unwrap_or("disabled"));
-            println!("API key value: read from the configured environment variable at runtime; never stored in config.");
-            println!("Remote metadata sharing: {}", updated.reasoner.as_ref().is_some_and(|value| value.share_local_metadata_with_remote));
+            println!(
+                "Endpoint: {}",
+                updated
+                    .reasoner
+                    .as_ref()
+                    .map(|value| value.endpoint.as_str())
+                    .unwrap_or("disabled")
+            );
+            println!(
+                "Model: {}",
+                updated
+                    .reasoner
+                    .as_ref()
+                    .map(|value| value.model.as_str())
+                    .unwrap_or("disabled")
+            );
+            println!(
+                "API key value: read from the configured environment variable at runtime; never stored in config."
+            );
+            println!(
+                "Remote metadata sharing: {}",
+                updated
+                    .reasoner
+                    .as_ref()
+                    .is_some_and(|value| value.share_local_metadata_with_remote)
+            );
         }
         Commands::DisableReasoner { config } => {
             clear_reasoner(&config)?;
@@ -246,15 +318,38 @@ fn execute(cli: Cli) -> Result<()> {
         }
         Commands::SetAutoNoteCreation { config, enabled } => {
             let updated = configure_auto_note_creation(&config, enabled)?;
-            println!("Automatic note creation: {}", if updated.automation.auto_create_notes { "enabled" } else { "disabled" });
-            println!("Daily quota: {} successful note(s) per UTC day.", updated.automation.max_notes_per_utc_day);
-            println!("Only the typed create_note capability is eligible. No overwrite, shell, script, move, or delete actions are available.");
+            println!(
+                "Automatic note creation: {}",
+                if updated.automation.auto_create_notes {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+            println!(
+                "Daily quota: {} successful note(s) per UTC day.",
+                updated.automation.max_notes_per_utc_day
+            );
+            println!(
+                "Only the typed create_note capability is eligible. No overwrite, shell, script, move, or delete actions are available."
+            );
             println!("Restart a running standalone agent after changing this policy.");
         }
-        Commands::AuthorizeNoteRoot { config, path, confirm_write_permission } => {
+        Commands::AuthorizeNoteRoot {
+            config,
+            path,
+            confirm_write_permission,
+        } => {
             let updated = authorize_note_root(&config, &path, confirm_write_permission)?;
             println!("Separate Markdown-note write permission granted:");
-            println!("  {}", updated.approved_note_roots.last().map(|value| value.display().to_string()).unwrap_or_default());
+            println!(
+                "  {}",
+                updated
+                    .approved_note_roots
+                    .last()
+                    .map(|value| value.display().to_string())
+                    .unwrap_or_default()
+            );
             println!("This does not grant permission to overwrite, move, or delete files.");
         }
         Commands::RevokeNoteRoot { config, path } => {
@@ -271,16 +366,26 @@ fn execute(cli: Cli) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&action)?);
             }
         }
-        Commands::ApproveAction { config, action_id, confirm_exact_action } => {
+        Commands::ApproveAction {
+            config,
+            action_id,
+            confirm_exact_action,
+        } => {
             if !confirm_exact_action {
-                anyhow::bail!("Review the matching pending-actions payload and pass --confirm-exact-action to approve this exact operation.");
+                anyhow::bail!(
+                    "Review the matching pending-actions payload and pass --confirm-exact-action to approve this exact operation."
+                );
             }
             let config_data = load_config(&config)?;
             let mut store = Store::open(&config_data.database_path)?;
             let outcome = approve_and_execute(&config_data, &mut store, &action_id)?;
             println!("{}", serde_json::to_string_pretty(&outcome)?);
         }
-        Commands::RejectAction { config, action_id, confirm_rejection } => {
+        Commands::RejectAction {
+            config,
+            action_id,
+            confirm_rejection,
+        } => {
             if !confirm_rejection {
                 anyhow::bail!("Pass --confirm-rejection to reject this action.");
             }
@@ -289,9 +394,14 @@ fn execute(cli: Cli) -> Result<()> {
             store.reject_pending_action(&action_id)?;
             println!("Action rejected: {action_id}");
         }
-        Commands::ForgetHistory { config, confirm_permanent_deletion } => {
+        Commands::ForgetHistory {
+            config,
+            confirm_permanent_deletion,
+        } => {
             if !confirm_permanent_deletion {
-                anyhow::bail!("Pass --confirm-permanent-deletion to erase all local events, indexed metadata and decisions.");
+                anyhow::bail!(
+                    "Pass --confirm-permanent-deletion to erase all local events, indexed metadata and decisions."
+                );
             }
             let config_data = load_config(&config)?;
             let mut store = Store::open(&config_data.database_path)?;

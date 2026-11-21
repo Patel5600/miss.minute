@@ -4,7 +4,7 @@
  * the moment the tag closes, and holds back only the few characters that might still turn
  * into a tag. inferEmotion picks a mood from the words when a model forgets the tag.
  */
-import { EMOTIONS, GESTURES, type CharacterCue, type Emotion, type Gesture } from '../../types';
+import { EMOTIONS, GESTURES, type CharacterCue, type Emotion, type Gesture } from '../../types/index.ts';
 
 const MOOD_SYNONYMS: Record<string, Emotion> = {
   happy: 'cheerful', joyful: 'cheerful', excited: 'cheerful', glad: 'cheerful', delighted: 'cheerful', friendly: 'cheerful', warm: 'cheerful', bright: 'cheerful', chipper: 'cheerful',

@@ -7,10 +7,10 @@
 //! protecting them at rest.
 
 use aes_gcm::{
-    aead::{Aead, KeyInit, Nonce},
     Aes256Gcm, Key,
+    aead::{Aead, KeyInit, Nonce},
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
 /// Version byte prefixing every sealed blob, so the on-disk format can evolve.
@@ -20,7 +20,8 @@ const NONCE_LEN: usize = 12;
 /// Fills a buffer with cryptographically secure random bytes.
 pub fn random_bytes(len: usize) -> Result<Vec<u8>, String> {
     let mut buffer = vec![0_u8; len];
-    getrandom::getrandom(&mut buffer).map_err(|error| format!("Secure randomness is unavailable: {error}"))?;
+    getrandom::getrandom(&mut buffer)
+        .map_err(|error| format!("Secure randomness is unavailable: {error}"))?;
     Ok(buffer)
 }
 
@@ -69,7 +70,7 @@ pub fn open(key: &[u8], blob: &[u8]) -> Result<Vec<u8>, String> {
     }
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce = Nonce::<Aes256Gcm>::from_slice(&blob[1..1 + NONCE_LEN]);
-    cipher
-        .decrypt(nonce, &blob[1 + NONCE_LEN..])
-        .map_err(|_| "The stored credential could not be decrypted (wrong key or modified).".to_owned())
+    cipher.decrypt(nonce, &blob[1 + NONCE_LEN..]).map_err(|_| {
+        "The stored credential could not be decrypted (wrong key or modified).".to_owned()
+    })
 }

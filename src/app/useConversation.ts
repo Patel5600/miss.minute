@@ -5,10 +5,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AISettings, Attachment, ChatMessage, CharacterCue, ToolCallRecord } from '../types';
 import { brain, autoTitleChat } from '../agent/brain';
-import { createChat, deleteChat, listChats, messagesForChat, newId, onDbChange, saveMessage, type ChatRecord, type StoredMessage } from '../store/db';
+import { createChat, deleteChat, listChats, messagesForChat, newId, onDbChange, renameChat as renameChatRecord, saveMessage, type ChatRecord, type StoredMessage } from '../store/db';
 import { emitCue } from '../character/cues';
 import { speaker } from './speaker';
-import { isAndroidApp } from '../../native/mobile/web/src/shared/bridge';
+import { isAndroidApp } from '../agent/platform';
 import { isDesktopRuntime } from '../desktop/bridge';
 
 const ACTIVE_CHAT_KEY = 'mm-active-chat';
@@ -33,6 +33,7 @@ export interface Conversation {
   decide(callId: string, approved: boolean): void;
   newChat(): Promise<void>;
   openChat(id: string): void;
+  renameChat(id: string, title: string): Promise<void>;
   removeChat(id: string): Promise<void>;
   /** Adds a line from her that did not come from a turn (clicks, alarms). Not saved. */
   note(text: string, sender?: 'miss_minute' | 'system'): void;
@@ -66,21 +67,22 @@ export function useConversation(settings: AISettings, onCueReceived: (cue: Chara
   const messagesRef = useRef<ChatMessage[]>([]);
   messagesRef.current = messages;
   const guestChatId = useRef<string | null>(null);
-  const previousGuestMode = useRef(guestMode);
+  const restricted = Boolean(guestMode || ownerCandidate);
+  const previousRestricted = useRef(restricted);
 
   // Chat list, live across windows.
   useEffect(() => {
     let active = true;
-    const load = () => { if (guestMode) { setChats([]); return; } void listChats().then(list => { if (active) setChats(list); }); };
+    const load = () => { if (restricted) { setChats([]); return; } void listChats().then(list => { if (active) setChats(list); }); };
     load();
     const stop = onDbChange('chats', load);
     return () => { active = false; stop(); };
-  }, [guestMode]);
+  }, [restricted]);
 
   // Messages of the open chat.
   useEffect(() => {
     if (nativeOwnerStore) clearBrowserActiveChat();
-    if (guestMode) { if (!nativeOwnerStore) clearBrowserActiveChat(); setMessages([]); return; }
+    if (restricted) { if (!nativeOwnerStore) clearBrowserActiveChat(); setMessages([]); return; }
     if (!nativeOwnerStore) {
       try {
         if (chatId) localStorage.setItem(ACTIVE_CHAT_KEY, chatId);
@@ -99,7 +101,7 @@ export function useConversation(settings: AISettings, onCueReceived: (cue: Chara
       });
     });
     return () => { active = false; };
-  }, [chatId, guestMode, nativeOwnerStore]);
+  }, [chatId, restricted, nativeOwnerStore]);
 
   const patchMessage = useCallback((id: string, patch: (m: ChatMessage) => ChatMessage) => {
     setMessages(current => current.map(m => (m.id === id ? patch(m) : m)));
@@ -124,27 +126,27 @@ export function useConversation(settings: AISettings, onCueReceived: (cue: Chara
   useEffect(() => () => stop(), [stop]);
 
   useEffect(() => {
-    if (previousGuestMode.current !== guestMode) {
-      previousGuestMode.current = guestMode;
+    if (previousRestricted.current !== restricted) {
+      previousRestricted.current = restricted;
       stop();
       guestChatId.current = null;
       setMessages([]);
       setChatId(null);
     }
-  }, [guestMode, stop]);
+  }, [restricted, stop]);
 
   const send = useCallback(async (raw: string, attachments?: Attachment[]) => {
     const text = raw.trim();
     if (!text && !attachments?.length) return;
     if (abortRef.current) stop();
 
-    let id = guestMode ? guestChatId.current : chatId;
+    let id = restricted ? guestChatId.current : chatId;
     let isNewChat = false;
-    if (guestMode && !id) {
+    if (restricted && !id) {
       id = newId();
       isNewChat = true;
       guestChatId.current = id;
-    } else if (!guestMode && (!id || !chats.some(c => c.id === id))) {
+    } else if (!restricted && (!id || !chats.some(c => c.id === id))) {
       const chat = await createChat();
       id = chat.id;
       isNewChat = true;
@@ -165,7 +167,7 @@ export function useConversation(settings: AISettings, onCueReceived: (cue: Chara
       streaming: true, toolCalls: [],
     };
     setMessages(current => [...current.filter(m => m.chatId === chat), user, reply]);
-    if (!guestMode) await saveMessage(user);
+    if (!restricted) await saveMessage(user);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -227,37 +229,42 @@ export function useConversation(settings: AISettings, onCueReceived: (cue: Chara
       final = { ...final, streaming: false };
       patchMessage(replyId, () => final);
       setBusy(false);
-      if (!guestMode && (final.text.trim() || final.toolCalls?.length)) {
+      if (!restricted && (final.text.trim() || final.toolCalls?.length)) {
         await saveMessage(final);
         if (isNewChat) {
           void autoTitleChat(chat, { userText: text, replyText: final.text, settings: settingsRef.current }).catch(() => undefined);
         }
       }
     }
-  }, [chatId, chats, guestMode, patchMessage, stop]);
+  }, [chatId, chats, guestMode, ownerCandidate, restricted, patchMessage, stop]);
 
   const newChat = useCallback(async () => {
     stop();
-    if (guestMode) { guestChatId.current = null; setMessages([]); return; }
+    if (restricted) { guestChatId.current = null; setMessages([]); return; }
     const chat = await createChat();
     setChatId(chat.id);
-  }, [guestMode, stop]);
+  }, [restricted, stop]);
 
   const openChat = useCallback((id: string) => {
     stop();
     setChatId(id);
   }, [stop]);
 
+  const renameChat = useCallback(async (id: string, title: string) => {
+    if (restricted) return;
+    await renameChatRecord(id, title);
+  }, [restricted]);
+
   const removeChat = useCallback(async (id: string) => {
     if (id === chatId) stop();
-    if (!guestMode) await deleteChat(id);
+    if (!restricted) await deleteChat(id);
     if (id === chatId) setChatId(null);
-  }, [chatId, guestMode, stop]);
+  }, [chatId, restricted, stop]);
 
   const note = useCallback((text: string, sender: 'miss_minute' | 'system' = 'miss_minute') => {
     const at = Date.now();
     setMessages(current => [...current, { id: newId(), chatId: chatId ?? undefined, sender, text, createdAt: at, timestamp: clock(at) }]);
   }, [chatId]);
 
-  return { chats, chatId, messages, busy, approvals, send, stop, decide, newChat, openChat, removeChat, note };
+  return { chats, chatId, messages, busy, approvals, send, stop, decide, newChat, openChat, renameChat, removeChat, note };
 }

@@ -32,4 +32,19 @@ public interface UiBridge {
 
     /** Pushes an event ({@code state.changed}, {@code kill.happened}) to the dashboard page. */
     void push(String eventName, JSONObject payload);
+
+    /** Refresh native owner/session controls after an authentication or recovery transition. */
+    void refreshOwnerControls();
+
+    /** Native permission & confirmation helpers for wake microphone and ethical outbound calls. */
+    default boolean hasRecordAudioPermission() {
+        return false;
+    }
+
+    default void requestRecordAudioPermission() {
+    }
+
+    default void confirmAction(String title, String message, String positiveLabel, String negativeLabel, Confirmed result) {
+        result.onResult(false);
+    }
 }

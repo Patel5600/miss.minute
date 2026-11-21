@@ -2,7 +2,7 @@
  * Local date/time parsing and formatting shared by tools, the scheduler, the model context and
  * the panels. The model speaks ISO 8601 in the owner's local time; the owner reads locale text.
  */
-import { ToolInputError } from './args';
+import { ToolInputError } from './args.ts';
 
 export const SECOND = 1000;
 export const MINUTE = 60 * SECOND;

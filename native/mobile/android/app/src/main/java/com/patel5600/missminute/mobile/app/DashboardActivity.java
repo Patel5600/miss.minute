@@ -1,10 +1,12 @@
 package com.patel5600.missminute.mobile.app;
 
 import android.Manifest;
+import android.app.AlertDialog;
 import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.BroadcastReceiver;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Insets;
@@ -15,10 +17,12 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -33,6 +37,7 @@ import com.patel5600.missminute.mobile.R;
 import com.patel5600.missminute.mobile.bridge.BridgeRouter;
 import com.patel5600.missminute.mobile.bridge.HelloHandler;
 import com.patel5600.missminute.mobile.bridge.WebHost;
+import com.patel5600.missminute.mobile.bridge.handlers.CallHandlers;
 import com.patel5600.missminute.mobile.bridge.handlers.KillHandlers;
 import com.patel5600.missminute.mobile.bridge.handlers.ChatGptHandlers;
 import com.patel5600.missminute.mobile.bridge.handlers.OverlayHandlers;
@@ -42,6 +47,7 @@ import com.patel5600.missminute.mobile.bridge.handlers.ProviderHandlers;
 import com.patel5600.missminute.mobile.bridge.handlers.PermissionHandlers;
 import com.patel5600.missminute.mobile.bridge.handlers.SettingsHandlers;
 import com.patel5600.missminute.mobile.bridge.handlers.UiBridge;
+import com.patel5600.missminute.mobile.bridge.handlers.WakeHandlers;
 import com.patel5600.missminute.mobile.core.kill.KillPath;
 import com.patel5600.missminute.mobile.core.kill.KillState;
 import com.patel5600.missminute.mobile.core.protocol.Protocol;
@@ -49,6 +55,8 @@ import com.patel5600.missminute.mobile.core.protocol.Role;
 import com.patel5600.missminute.mobile.core.runtime.CompanionRuntime;
 import com.patel5600.missminute.mobile.kill.KillSwitch;
 import com.patel5600.missminute.mobile.overlay.OverlayService;
+import com.patel5600.missminute.mobile.voice.MissMinutesConnectionService;
+import com.patel5600.missminute.mobile.voice.WakeWordForegroundService;
 
 import org.json.JSONException;
 import org.json.JSONArray;
@@ -62,9 +70,11 @@ import java.lang.ref.WeakReference;
  * flows: notifications, and Display over other apps (checked again in onResume).
  */
 public final class DashboardActivity extends FragmentActivity implements UiBridge {
+    private static WeakReference<DashboardActivity> activeDashboard = new WeakReference<>(null);
     /** Debug builds only: start her as if the owner pressed the button (adb am start --ez ... true). */
     static final String EXTRA_DEBUG_AUTOSTART = "com.patel5600.missminute.debug.AUTOSTART";
     private static final int REQUEST_NOTIFICATIONS = 4201;
+    private static final int REQUEST_RECORD_AUDIO = 4202;
     private static final long OWNER_SESSION_CHECK_MS = 5_000L;
 
     private MissMinutesApp app;
@@ -75,7 +85,26 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
     private FrameLayout migrationHolder;
     private TextView status;
     private Button stopButton;
+    private Button ownerButton;
     private CompanionRuntime.Registration runtimeRegistration;
+    private final Handler ownerSessionHandler = new Handler(Looper.getMainLooper());
+    private boolean dashboardResumed;
+    private com.patel5600.missminute.mobile.bridge.Handler.Reply migrationReply;
+    private boolean migrationCommandPending;
+    private long migrationGeneration;
+    private String migrationSessionId;
+    private final Runnable migrationTimeout = () -> finishOwnerMigration(false,
+            "Saved data migration timed out. The old browser data was kept.");
+    private final Runnable ownerSessionCheck = new Runnable() {
+        @Override public void run() {
+            if (!dashboardResumed) return;
+            boolean active = OwnerAuthority.hasOwnerSession();
+            refreshOwnerButton();
+            if (!active) cancelOwnerMigration("Owner access expired. Verify again to resume migration.");
+            push("state.changed", new JSONObject());
+            scheduleOwnerSessionCheck();
+        }
+    };
 
     private final KillSwitch.Listener killListener = new KillSwitch.Listener() {
         @Override
@@ -119,7 +148,7 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
         super.onCreate(savedInstanceState);
         activeDashboard = new WeakReference<>(this);
         app = MissMinutesApp.from(this);
-        if (OwnerAuthority.isEnrolled(this)) OwnerAuthority.restore(this);
+        if (OwnerAuthority.isEnrolled(this)) OwnerAuthority.restoreIfNeeded(this);
         buildLayout();
         buildPage();
         handleIntent(getIntent());
@@ -140,13 +169,44 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setBackgroundColor(getColor(R.color.mm_raised));
-        header.setPadding(dp(16), dp(8), dp(12), dp(8));
+        header.setPadding(dp(14), dp(6), dp(12), dp(6));
 
         status = new TextView(this);
         status.setTextColor(getColor(R.color.mm_cream));
-        status.setTextSize(14);
+        status.setTextSize(13);
+        status.setMaxLines(2);
+        status.setEllipsize(TextUtils.TruncateAt.END);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         header.addView(status, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        ownerButton = new Button(this);
+        ownerButton.setAllCaps(false);
+        ownerButton.setMinHeight(dp(48));
+        ownerButton.setMinimumHeight(dp(48));
+        ownerButton.setTextSize(12);
+        ownerButton.setTextColor(getColor(R.color.mm_cream));
+        ownerButton.setPadding(dp(14), 0, dp(14), 0);
+        ownerButton.setStateListAnimator(null);
+        GradientDrawable ownerPill = new GradientDrawable();
+        ownerPill.setColor(0xFF1D1610);
+        ownerPill.setStroke(Math.max(1, dp(1)), 0xFF382B1E);
+        ownerPill.setCornerRadius(dp(24));
+        ownerButton.setBackground(ownerPill);
+        ownerButton.setOnClickListener(view -> {
+            if (OwnerAuthority.hasOwnerSession()) {
+                OwnerAuthority.lock();
+                cancelOwnerMigration("Owner access was locked. Verify again to resume migration.");
+                refreshOwnerButton();
+                push("state.changed", new JSONObject());
+            } else if (OwnerAuthority.isEnrolled(this)) {
+                OwnerAuthority.authenticate(this, ownerCallback());
+            }
+        });
+        LinearLayout.LayoutParams ownerParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ownerParams.setMarginEnd(dp(4));
+        header.addView(ownerButton, ownerParams);
+        refreshOwnerButton();
 
         stopButton = new Button(this);
         stopButton.setText(R.string.action_stop);
@@ -154,13 +214,14 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
         stopButton.setAllCaps(false);
         stopButton.setTextColor(Color.WHITE);
         stopButton.setTypeface(Typeface.DEFAULT_BOLD);
-        stopButton.setTextSize(14);
+        stopButton.setTextSize(13);
         stopButton.setMinHeight(dp(48));
         stopButton.setMinimumHeight(dp(48));
         stopButton.setPadding(dp(14), 0, dp(14), 0);
+        stopButton.setStateListAnimator(null);
         GradientDrawable red = new GradientDrawable();
         red.setColor(getColor(R.color.mm_stop));
-        red.setCornerRadius(dp(10));
+        red.setCornerRadius(dp(24));
         stopButton.setBackground(red);
         stopButton.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -180,6 +241,11 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
         root.addView(header, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        View divider = new View(this);
+        divider.setBackgroundColor(getColor(R.color.mm_line));
+        root.addView(divider, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1))));
+
         pageHolder = new FrameLayout(this);
         root.addView(pageHolder, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
@@ -195,6 +261,12 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
     private void applyInsets() {
         if (Build.VERSION.SDK_INT >= 30) {
             getWindow().setDecorFitsSystemWindows(false);
+            WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsAppearance(0,
+                        WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                                | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
+            }
         } else {
             root.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                     | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
@@ -218,7 +290,8 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
     }
 
     private void buildPage() {
-        BridgeRouter router = new BridgeRouter(Role.DASHBOARD, OwnerAuthority::hasOwnerSession);
+        BridgeRouter router = new BridgeRouter(Role.DASHBOARD, OwnerAuthority::hasOwnerSession,
+                OwnerAuthority::currentOwnerSessionId);
         router.register("hello", new HelloHandler(Role.DASHBOARD, null, new HelloHandler.DashboardInfo() {
             @Override
             public JSONObject describe() throws JSONException {
@@ -229,10 +302,52 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
         SettingsHandlers.register(router, this, this);
         KillHandlers.register(router, this, this);
         PermissionHandlers.register(router, this, this);
-        ChatGptHandlers.register(router, this);
+        ChatGptHandlers.register(router, this, this);
         OwnerDataHandlers.register(router, this);
         OwnerHandlers.register(router, this, this);
-        ProviderHandlers.register(router, this);
+        ProviderHandlers.register(router, this, this);
+        WakeHandlers.register(router, this, this);
+        CallHandlers.register(router, this, this);
+        router.register("owner.audit.verify", (message, reply) -> {
+            if (!OwnerAuthority.hasOwnerSession()) {
+                reply.fail("owner_auth_required", "Unlock owner access before verifying the audit log.");
+                return;
+            }
+            String status = OwnerAuthority.verifyAuditChain();
+            boolean valid = status != null && status.startsWith("valid:");
+            int count = 0;
+            if (valid) {
+                try { count = Integer.parseInt(status.substring("valid:".length())); }
+                catch (NumberFormatException ignored) {}
+            }
+            reply.ok(new JSONObject().put("valid", valid).put("count", count).put("status", status));
+        });
+        router.register("owner.audit.list", (message, reply) -> {
+            if (!OwnerAuthority.hasOwnerSession()) {
+                reply.fail("owner_auth_required", "Unlock owner access before reading owner audit entries.");
+                return;
+            }
+            int limit = Math.max(1, Math.min(200, message.payload.optInt("limit", 50)));
+            JSONArray entries = new JSONArray();
+            for (String line : app.auditLog().tail(limit)) {
+                try { entries.put(new JSONObject(line)); }
+                catch (JSONException ignored) {}
+            }
+            String status = OwnerAuthority.verifyAuditChain();
+            reply.ok(new JSONObject()
+                    .put("verified", status != null && status.startsWith("valid:"))
+                    .put("verifiedStatus", status)
+                    .put("entries", entries));
+        });
+        router.register("owner.kill", (message, reply) -> {
+            KillSwitch.trigger(DashboardActivity.this, KillPath.EXTERNAL);
+            runOnUiThread(() -> {
+                refreshHeader();
+                refreshOwnerButton();
+                push("state.changed", new JSONObject());
+            });
+            reply.ok(new JSONObject().put("killed", true).put("mode", OwnerAuthority.getOperatingMode()));
+        });
         router.register("owner.migration.start", (message, reply) -> {
             if (!OwnerAuthority.hasOwnerSession()
                     || !OwnerAuthority.authorizeOwnerCapability("memory.private.read")) {
@@ -243,7 +358,7 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
         });
         router.register("owner.setup.consent", (message, reply) -> runOnUiThread(() -> new AlertDialog.Builder(this)
                 .setTitle("Local camera and microphone setup")
-                .setMessage("Face and speaker profiles are optional and processed on this device. Camera and microphone start only after you open and start each setup step; this app does not run a background camera or wake-word listener yet. Sensor access can be paused by closing the setup screen or changing Android permissions. Staged profiles stay encrypted and inactive until the initial owner credential is verified.")
+                .setMessage("Face and speaker profiles are optional and processed on-device. Camera enrollment runs only in the foreground screen; optional wake-word listening only runs while explicitly started by you and shows an ongoing Stop notification with all audio zeroed locally in memory. Staged profiles stay encrypted and inactive until the initial owner credential is verified.")
                 .setNegativeButton("Cancel", (dialog, which) -> reply.fail("cancelled", "Sensor setup consent was not given."))
                 .setPositiveButton("I understand", (dialog, which) -> {
                     boolean saved = getSharedPreferences("owner_setup", MODE_PRIVATE).edit()
@@ -468,12 +583,17 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
                 .put("ownerSessionId", OwnerAuthority.currentOwnerSessionId())
                 .put("ownerCandidate", OwnerAuthority.isOwnerCandidate())
                 .put("authState", OwnerAuthority.getAuthState())
+                .put("operatingMode", OwnerAuthority.getOperatingMode())
                 .put("faceProfileEnrolled", FaceProfileStore.exists(this))
                 .put("faceProfilePending", FaceProfileStore.existsPending(this))
                 .put("speakerProfileEnrolled", SpeakerIdentityEngine.hasProfile(this))
                 .put("speakerProfilePending", SpeakerProfileStore.existsPending(this))
                 .put("sensorConsentGiven", getSharedPreferences("owner_setup", MODE_PRIVATE).getBoolean("sensor_consent_v1", false))
                 .put("ownerClaimPending", getSharedPreferences("owner_setup", MODE_PRIVATE).getBoolean("owner_claim_pending_v1", false))
+                .put("wakeListening", WakeWordForegroundService.isRunning())
+                .put("micPermission", hasRecordAudioPermission())
+                .put("activeCalls", MissMinutesConnectionService.activeCallCount())
+                .put("auditChainStatus", OwnerAuthority.verifyAuditChain())
                 .put("overlay", OverlayHandlers.status(this, this));
         JSONObject notice = KillHandlers.notice(this);
         out.put("killNotice", notice == null ? JSONObject.NULL : notice);
@@ -485,6 +605,7 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
     @Override
     protected void onStart() {
         super.onStart();
+        OverlayService.setDashboardForeground(this, true);
         app.killSwitch().addListener(killListener);
         runtimeRegistration = CompanionRuntime.process().observe(runtimeListener, true);
     }
@@ -508,6 +629,7 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
 
     @Override
     protected void onStop() {
+        OverlayService.setDashboardForeground(this, false);
         dashboardResumed = false;
         ownerSessionHandler.removeCallbacks(ownerSessionCheck);
         app.killSwitch().removeListener(killListener);
@@ -613,7 +735,7 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQUEST_NOTIFICATIONS) {
+        if (requestCode == REQUEST_NOTIFICATIONS || requestCode == REQUEST_RECORD_AUDIO) {
             refreshHeader();
             push("state.changed", new JSONObject());
         }
@@ -726,6 +848,53 @@ public final class DashboardActivity extends FragmentActivity implements UiBridg
             refreshHeader();
             push("state.changed", new JSONObject());
             scheduleOwnerSessionCheck();
+        });
+    }
+
+    @Override
+    public boolean hasRecordAudioPermission() {
+        return checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    @Override
+    public void requestRecordAudioPermission() {
+        runOnUiThread(() -> {
+            if (!hasRecordAudioPermission()) {
+                requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQUEST_RECORD_AUDIO);
+            }
+        });
+    }
+
+    @Override
+    public void confirmAction(String title, String message, String positiveLabel, String negativeLabel, Confirmed result) {
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) {
+                result.onResult(false);
+                return;
+            }
+            final boolean[] answered = {false};
+            new AlertDialog.Builder(this)
+                    .setTitle(title)
+                    .setMessage(message)
+                    .setPositiveButton(positiveLabel, (dialog, which) -> {
+                        if (!answered[0]) {
+                            answered[0] = true;
+                            result.onResult(true);
+                        }
+                    })
+                    .setNegativeButton(negativeLabel, (dialog, which) -> {
+                        if (!answered[0]) {
+                            answered[0] = true;
+                            result.onResult(false);
+                        }
+                    })
+                    .setOnCancelListener(dialog -> {
+                        if (!answered[0]) {
+                            answered[0] = true;
+                            result.onResult(false);
+                        }
+                    })
+                    .show();
         });
     }
 }

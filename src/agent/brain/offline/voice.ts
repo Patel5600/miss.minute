@@ -18,45 +18,45 @@ export function pick(seed: string, options: readonly string[]): string {
 }
 
 export const LINES = {
-  done: ['You got it, sugar.', 'Done and done.', "All set, darlin'.", 'Consider it handled.', "There we go, sugar."],
-  timer: ["Clock's tickin', sugar.", 'Timer is running.', "You got it. I'll holler when time's up.", "Tick-tock, darlin'."],
-  reminder: ["I'll make sure you don't forget, sugar.", 'Noted on the Sacred Timeline.', "I'll give you a nudge.", "Consider it filed, darlin'."],
-  alarm: ["Alarm's set. Don't you hit snooze on the Sacred Timeline, now.", 'Alarm is set, sugar.', "I'll ring right on time."],
-  event: ['On the calendar it goes.', 'Penciled in. Well, inked, really.', "It's on your timeline, sugar."],
-  todo: ['Added to your list, sugar.', 'On the list it goes.', 'Jotted down.'],
-  note: ['Filed away in your notes.', "Got it written down, darlin'.", 'Saved to your notes.'],
-  remembered: ["I'll remember that, sugar.", 'Filed in your dossier.', "Noted. I don't forget much, darlin'."],
-  denied: ["Alright, sugar, I'll leave that be.", 'No problem. Nothing was changed.', "Fair enough, darlin'. I won't touch it."],
-  failed: ['Well, shoot.', 'Hmm, that hit a snag.', 'Oh dear, that didn\'t take.'],
+  done: ['You got it.', 'Done and done.', 'All set.', 'Consider it handled.', 'There we go.'],
+  timer: ["Clock's tickin'.", 'Timer is running.', "You got it. I'll holler when time's up.", 'Tick-tock, right on cue.'],
+  reminder: ["I'll make sure you don't forget.", 'Noted on the Sacred Timeline.', "I'll give you a nudge.", 'Consider it filed.'],
+  alarm: ["Alarm's set. Don't you hit snooze on the Sacred Timeline, now.", 'Alarm is set.', "I'll ring right on time."],
+  event: ['On the calendar it goes.', 'Penciled in. Well, inked, really.', "It's on your timeline."],
+  todo: ['Added to your list.', 'On the list it goes.', 'Jotted down.'],
+  note: ['Filed away in your notes.', 'Got it written down.', 'Saved to your notes.'],
+  remembered: ["I'll remember that.", 'Filed in your dossier.', "Noted. I don't forget much."],
+  denied: ["Alright, I'll leave that be.", 'No problem. Nothing was changed.', "Fair enough. I won't touch it."],
+  failed: ['Well, shoot.', 'Hmm, that hit a snag.', "Oh dear, that didn't take."],
   unavailable: [
-    "That drawer of my desk isn't hooked up in this build, sugar.",
-    "I can't reach that tool here, darlin'.",
+    "That drawer of my desk isn't hooked up in this build.",
+    "I can't reach that tool here.",
   ],
-  greeting: ['Well, howdy, sugar!', "Hey y'all!", "Hello there, darlin'!", 'Why, hello!'],
-  thanks: ['Anytime, sugar.', "My pleasure, darlin'.", "Don't mention it. Really, the Time-Keepers frown on paperwork.", 'Happy to help.'],
+  greeting: ['Well, howdy!', "Hey y'all!", 'Hello there!', 'Why, hello!'],
+  thanks: ['Anytime.', 'My pleasure.', "Don't mention it. Really, the Time-Keepers frown on paperwork.", 'Happy to help.'],
   howAreYou: [
-    "Fit as a fiddle and right on schedule, sugar. How can I help?",
+    'Fit as a fiddle and right on schedule. How can I help?',
     "Busy keepin' the Sacred Timeline tidy, but never too busy for you. What do you need?",
-    "Tickin' along just fine, darlin'. What can I do for you?",
+    "Tickin' along just fine. What can I do for you?",
   ],
-  bye: ['Bye now, sugar. For all time. Always.', "See you later, darlin'. Stay on your timeline.", "Toodle-oo! I'll be right here."],
+  bye: ['Bye now. For all time. Always.', 'See you later. Stay on your timeline.', "Toodle-oo! I'll be right here."],
   fallback: [
-    "Well, I'll be. That one's a little beyond me in offline mode, sugar.",
-    "Hmm. Without a model hooked up, I can't chat about that one, darlin'.",
-    "Bless your heart, that's outside what I can do offline.",
+    "Well, I'll be. That one's a little beyond me in offline mode.",
+    "Hmm. Without a model hooked up, I can't chat about that one.",
+    "That's outside what I can do offline.",
   ],
 } as const;
 
 export function partOfDayGreeting(now: Date): string {
   const hour = now.getHours();
-  if (hour < 5) return "You're up late, sugar.";
-  if (hour < 12) return 'Good mornin\'!';
+  if (hour < 5) return "You're up late.";
+  if (hour < 12) return "Good mornin'!";
   if (hour < 17) return 'Good afternoon!';
-  return 'Good evenin\'!';
+  return "Good evenin'!";
 }
 
 export const OFFLINE_HELP = [
-  "Even without an AI model I can get plenty done, sugar:",
+  'Even without an AI model I can get plenty done:',
   '- **Timers**: "set a 10 minute timer for pasta", "pause the timer", "how much time is left"',
   '- **Alarms and reminders**: "wake me up at 6:30", "remind me to call Mom tomorrow at 5", "remind me every weekday at 9 to stand up"',
   '- **Calendar**: "add dentist on Friday at 3", "what\'s on tomorrow", "anything this weekend?"',

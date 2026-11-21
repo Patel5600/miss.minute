@@ -52,27 +52,40 @@ fn book() -> &'static Mutex<Book> {
 }
 
 fn persist(book: &Book) {
-    if let Some(path) = &book.path {
-        if let Ok(bytes) = serde_json::to_vec(&book.pending) {
-            let _ = atomic_write(path, &bytes);
-        }
+    if let Some(path) = &book.path
+        && let Ok(bytes) = serde_json::to_vec(&book.pending)
+    {
+        let _ = atomic_write(path, &bytes);
     }
 }
 
 /// Replaces the full set of pending alerts.
 #[tauri::command]
-pub fn schedule_sync(alerts: Vec<ScheduledAlert>, window: tauri::WebviewWindow) -> Result<(), String> {
-    crate::require_dashboard(&window)?;
+pub fn schedule_sync(
+    alerts: Vec<ScheduledAlert>,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    crate::require_owner_capability(
+        &window,
+        miss_minute_identity::capabilities::PRIVATE_MEMORY_WRITE,
+    )?;
     if alerts.len() > MAX_ALERTS {
         return Err(format!("At most {MAX_ALERTS} alerts can be scheduled."));
     }
     let now = now_ms();
     let mut clean = Vec::with_capacity(alerts.len());
     for mut alert in alerts {
-        if alert.id.is_empty() || alert.id.len() > 200 || alert.at_unix_ms > now + HORIZON_MS || alert.at_unix_ms < now - LATE_LIMIT_MS {
+        if alert.id.is_empty()
+            || alert.id.len() > 200
+            || alert.at_unix_ms > now + HORIZON_MS
+            || alert.at_unix_ms < now - LATE_LIMIT_MS
+        {
             continue;
         }
-        if !matches!(alert.kind.as_str(), "timer" | "reminder" | "alarm" | "event") {
+        if !matches!(
+            alert.kind.as_str(),
+            "timer" | "reminder" | "alarm" | "event"
+        ) {
             continue;
         }
         alert.title = truncate(&alert.title, MAX_TITLE);
@@ -83,8 +96,13 @@ pub fn schedule_sync(alerts: Vec<ScheduledAlert>, window: tauri::WebviewWindow) 
         }
         clean.push(alert);
     }
-    let mut book = book().lock().map_err(|_| "The alarm clock is unavailable.".to_owned())?;
-    book.pending = clean.into_iter().filter(|a| !book.fired.contains(&a.id)).collect();
+    let mut book = book()
+        .lock()
+        .map_err(|_| "The alarm clock is unavailable.".to_owned())?;
+    book.pending = clean
+        .into_iter()
+        .filter(|a| !book.fired.contains(&a.id))
+        .collect();
     persist(&book);
     Ok(())
 }
@@ -99,40 +117,47 @@ pub fn start(app: tauri::AppHandle) {
         let Ok(mut book) = book().lock() else { return };
         if let Ok(dir) = app_data_dir(&app) {
             let path = dir.join("scheduled-alerts.json");
-            if let Ok(bytes) = std::fs::read(&path) {
-                if let Ok(saved) = serde_json::from_slice::<Vec<ScheduledAlert>>(&bytes) {
-                    book.pending = saved;
-                }
+            if let Ok(bytes) = std::fs::read(&path)
+                && let Ok(saved) = serde_json::from_slice::<Vec<ScheduledAlert>>(&bytes)
+            {
+                book.pending = saved;
             }
             book.path = Some(path);
         }
     }
-    let _ = std::thread::Builder::new().name("miss-minutes-alarms".to_owned()).spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(1));
-        let now = now_ms();
-        let due: Vec<ScheduledAlert> = {
-            let Ok(mut book) = book().lock() else { continue };
-            if !book.pending.iter().any(|a| a.at_unix_ms <= now) {
-                continue;
+    let _ = std::thread::Builder::new()
+        .name("miss-minutes-alarms".to_owned())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let now = now_ms();
+                let due: Vec<ScheduledAlert> = {
+                    let Ok(mut book) = book().lock() else {
+                        continue;
+                    };
+                    if !book.pending.iter().any(|a| a.at_unix_ms <= now) {
+                        continue;
+                    }
+                    let (due, keep): (Vec<_>, Vec<_>) =
+                        book.pending.drain(..).partition(|a| a.at_unix_ms <= now);
+                    book.pending = keep;
+                    for alert in &due {
+                        book.fired.insert(alert.id.clone());
+                    }
+                    if book.fired.len() > 5_000 {
+                        book.fired.clear();
+                    }
+                    persist(&book);
+                    due
+                };
+                for alert in due {
+                    if now - alert.at_unix_ms > LATE_LIMIT_MS {
+                        continue; // too old to announce; the dashboard records it as missed
+                    }
+                    fire(&app, &alert);
+                }
             }
-            let (due, keep): (Vec<_>, Vec<_>) = book.pending.drain(..).partition(|a| a.at_unix_ms <= now);
-            book.pending = keep;
-            for alert in &due {
-                book.fired.insert(alert.id.clone());
-            }
-            if book.fired.len() > 5_000 {
-                book.fired.clear();
-            }
-            persist(&book);
-            due
-        };
-        for alert in due {
-            if now - alert.at_unix_ms > LATE_LIMIT_MS {
-                continue; // too old to announce; the dashboard records it as missed
-            }
-            fire(&app, &alert);
-        }
-    });
+        });
 }
 
 fn fire(app: &tauri::AppHandle, alert: &ScheduledAlert) {

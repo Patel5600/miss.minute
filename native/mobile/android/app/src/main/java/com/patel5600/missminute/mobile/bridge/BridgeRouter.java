@@ -12,6 +12,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -23,6 +25,11 @@ import org.json.JSONObject;
  * the thread.
  */
 public final class BridgeRouter {
+    /** Native supplied liveness check for owner-gated dashboard messages. */
+    public interface OwnerSessionCheck {
+        boolean isActive();
+    }
+
     /** Where finished replies go: the transport that carried the request. */
     public interface Sink {
         void send(String json);
@@ -38,11 +45,25 @@ public final class BridgeRouter {
     private static final Pattern ID_IN_PREFIX = Pattern.compile("\"id\"\\s*:\\s*\"([^\"\\\\]{1,64})\"");
 
     private final Role role;
+    private final OwnerSessionCheck ownerSessionCheck;
+    private final Supplier<String> ownerSessionId;
+    private final boolean enforceOwnerSession;
     private final Map<String, Handler> handlers = new ConcurrentHashMap<>();
     private volatile FailureListener failureListener;
 
     public BridgeRouter(Role role) {
+        this(role, null, null);
+    }
+
+    public BridgeRouter(Role role, OwnerSessionCheck ownerSessionCheck) {
+        this(role, ownerSessionCheck, null);
+    }
+
+    public BridgeRouter(Role role, OwnerSessionCheck ownerSessionCheck, Supplier<String> ownerSessionId) {
         this.role = role;
+        this.enforceOwnerSession = ownerSessionCheck != null;
+        this.ownerSessionCheck = ownerSessionCheck == null ? () -> false : ownerSessionCheck;
+        this.ownerSessionId = ownerSessionId;
     }
 
     public Role role() {
@@ -96,12 +117,43 @@ public final class BridgeRouter {
             return;
         }
 
+        final boolean ownerGated = enforceOwnerSession && role == Role.DASHBOARD
+                && OwnerMessagePolicy.requiresOwnerSession(message.type);
+        final String initiatingOwnerSession;
+        if (ownerGated) {
+            boolean active;
+            try { active = ownerSessionCheck.isActive(); }
+            catch (RuntimeException | LinkageError error) { active = false; }
+            if (!active) {
+                sink.send(Protocol.error(message.id, "owner_auth_required",
+                        "Unlock Miss Minutes before using this owner capability."));
+                return;
+            }
+            String captured = null;
+            if (ownerSessionId != null) {
+                try { captured = ownerSessionId.get(); }
+                catch (RuntimeException | LinkageError ignored) { }
+            }
+            initiatingOwnerSession = captured;
+        } else {
+            initiatingOwnerSession = null;
+        }
+
         Handler handler = find(message.type);
         if (handler == null) {
             sink.send(Protocol.error(message.id, "unavailable", "This is not available in this version."));
             return;
         }
-        final Once reply = new Once(message.id, sink);
+        final Once reply = new Once(message.id, sink, () -> {
+            if (!ownerGated) return true;
+            try {
+                if (!ownerSessionCheck.isActive()) return false;
+                return ownerSessionId == null || java.util.Objects.equals(
+                        initiatingOwnerSession, ownerSessionId.get());
+            } catch (RuntimeException | LinkageError error) {
+                return false;
+            }
+        });
         try {
             handler.handle(message, reply);
         } catch (ProtocolException e) {
@@ -141,17 +193,21 @@ public final class BridgeRouter {
     private static final class Once implements Handler.Reply {
         private final String id;
         private final Sink sink;
+        private final BooleanSupplier authorizationStillValid;
         private final AtomicBoolean done = new AtomicBoolean(false);
 
-        Once(String id, Sink sink) {
+        Once(String id, Sink sink, BooleanSupplier authorizationStillValid) {
             this.id = id;
             this.sink = sink;
+            this.authorizationStillValid = authorizationStillValid;
         }
 
         @Override
         public void ok(JSONObject payload) {
             if (done.compareAndSet(false, true)) {
-                sink.send(Protocol.reply(id, payload));
+                sink.send(authorizationStillValid.getAsBoolean()
+                        ? Protocol.reply(id, payload)
+                        : Protocol.error(id, "owner_auth_required", "Owner access changed before this request completed."));
             }
         }
 
@@ -159,7 +215,9 @@ public final class BridgeRouter {
         public void fail(String code, String message) {
             if (done.compareAndSet(false, true)) {
                 String safeCode = Vocabulary.ERROR_CODES.contains(code) ? code : "internal";
-                sink.send(Protocol.error(id, safeCode, message));
+                sink.send(authorizationStillValid.getAsBoolean()
+                        ? Protocol.error(id, safeCode, message)
+                        : Protocol.error(id, "owner_auth_required", "Owner access changed before this request completed."));
             }
         }
     }

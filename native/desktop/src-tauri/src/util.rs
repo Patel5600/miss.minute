@@ -22,7 +22,8 @@ pub fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_data_dir()
         .map_err(|error| format!("The app data directory is unavailable: {error}"))?;
-    std::fs::create_dir_all(&dir).map_err(|error| format!("Cannot create the app data directory: {error}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("Cannot create the app data directory: {error}"))?;
     Ok(dir)
 }
 
@@ -30,12 +31,14 @@ pub fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
 /// flush it, then rename it into place. Parent directories are created first.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
     }
     let mut temp = path.as_os_str().to_os_string();
     temp.push(".tmp");
     let temp = PathBuf::from(temp);
-    std::fs::write(&temp, bytes).map_err(|error| format!("Cannot write {}: {error}", temp.display()))?;
+    std::fs::write(&temp, bytes)
+        .map_err(|error| format!("Cannot write {}: {error}", temp.display()))?;
     // Windows `rename` refuses to replace an existing file, so clear it first. The window
     // between remove and rename is acceptable for single-app local state.
     if path.exists() {
@@ -51,9 +54,9 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// browser hand-off. The caller is responsible for not logging URLs that carry hints.
 #[cfg(windows)]
 pub fn open_in_browser(target: &str) -> Result<(), String> {
-    use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::{HSTRING, PCWSTR};
 
     let operation = HSTRING::from("open");
     let file = HSTRING::from(target);
@@ -77,7 +80,11 @@ pub fn open_in_browser(target: &str) -> Result<(), String> {
 
 #[cfg(not(windows))]
 pub fn open_in_browser(target: &str) -> Result<(), String> {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
     std::process::Command::new(opener)
         .arg(target)
         .spawn()
@@ -97,7 +104,10 @@ pub fn form_encode(pairs: &[(&str, &str)]) -> String {
 /// enforced by the caller around each read, so no overall request timeout is set here.
 /// `allow_proxy` is false for loopback (Ollama) requests so a configured system proxy is
 /// never consulted for localhost.
-pub fn http_client(connect_timeout: Duration, allow_proxy: bool) -> Result<reqwest::Client, String> {
+pub fn http_client(
+    connect_timeout: Duration,
+    allow_proxy: bool,
+) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(connect_timeout)
         .user_agent("MissMinutes-Desktop/0.1")

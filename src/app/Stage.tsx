@@ -25,6 +25,8 @@ export interface StageProps {
   /** Hands-free conversation: she listens again after every reply. */
   handsFree: boolean;
   onToggleHandsFree: () => void;
+  compact?: boolean;
+  className?: string;
 }
 
 const STATUS_TEXT: Record<StageStatus, string> = {
@@ -32,15 +34,29 @@ const STATUS_TEXT: Record<StageStatus, string> = {
   listening: 'Listening',
   thinking: 'Thinking',
   speaking: 'Talking',
-  working: 'On it',
-  approval: 'Needs your OK',
+  working: 'Working',
+  approval: 'Needs approval',
 };
 
 /**
- * The stage: Miss Minutes projected in a TVA room, the way the live-action stills show her.
+ * The stage: Miss Minutes projected in a TVA studio, the way the live-action stills show her.
  * Between conversations she lives a little: strolls, turns, glances around and gestures.
  */
-export function Stage({ emotion, gesture, gestureKey, speaking, mouth, status, line, skin, onPoke, handsFree, onToggleHandsFree }: StageProps) {
+export function Stage({
+  emotion,
+  gesture,
+  gestureKey,
+  speaking,
+  mouth,
+  status,
+  line,
+  skin,
+  onPoke,
+  handsFree,
+  onToggleHandsFree,
+  compact = false,
+  className = '',
+}: StageProps) {
   const rig = useRef<MissMinutesRigHandle>(null);
   const floor = useRef<HTMLDivElement>(null);
   const [x, setX] = useState(0); // horizontal offset in px from centre
@@ -196,42 +212,61 @@ export function Stage({ emotion, gesture, gestureKey, speaking, mouth, status, l
   const activeKey = gesture !== 'none' ? `c${gestureKey}` : `i${idleGesture.k}`;
 
   return (
-    <div className="mm-stage relative overflow-hidden rounded-3xl border border-amber-700/40 bg-[#0b0704] shadow-[0_20px_60px_rgba(0,0,0,0.6)]">
-      {/* Room: dark TVA office lit only by her projection. */}
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(70%_60%_at_50%_40%,rgba(255,140,40,0.20),transparent_70%)]" />
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/3 bg-[linear-gradient(to_top,rgba(60,30,8,0.55),transparent)]" />
-      <div className="pointer-events-none absolute inset-0 opacity-[0.07] bg-[linear-gradient(to_right,#f59e0b_1px,transparent_1px),linear-gradient(to_bottom,#f59e0b_1px,transparent_1px)] bg-[size:36px_36px]" />
+    <div
+      className={`mm-stage relative flex flex-col overflow-hidden rounded-3xl border border-white/[0.08] bg-[#0B0806] shadow-[0_20px_60px_rgba(0,0,0,0.55)] ${
+        compact ? 'h-full min-h-[320px]' : ''
+      } ${className}`}
+    >
+      {/* Volumetric obsidian projection halo */}
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(68%_58%_at_50%_42%,rgba(255,122,26,0.18),transparent_72%)]" />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/3 bg-[linear-gradient(to_top,rgba(35,18,6,0.55),transparent)]" />
 
-      {/* Status */}
-      <div className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-full border border-amber-700/40 bg-black/50 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-amber-200">
-        <span className={`h-2 w-2 rounded-full ${status === 'idle' && !speaking ? 'bg-emerald-400' : status === 'approval' ? 'bg-red-500 animate-pulse' : 'bg-amber-400 animate-pulse'}`} />
-        {STATUS_TEXT[speaking ? 'speaking' : status]}
+      {/* Top floating controls */}
+      <div className="relative z-10 flex items-center justify-between gap-2 px-4 pt-4">
+        <div className="inline-flex items-center gap-2 rounded-full border border-white/[0.09] bg-[#14100C]/85 px-3 py-1 text-[11px] font-medium tracking-wide text-[#F5EFE6] backdrop-blur">
+          <span
+            className={`h-2 w-2 rounded-full ${
+              status === 'idle' && !speaking
+                ? 'bg-emerald-400'
+                : status === 'approval'
+                  ? 'bg-red-500 animate-pulse'
+                  : 'bg-[#FF7A1A] animate-pulse'
+            }`}
+          />
+          {STATUS_TEXT[speaking ? 'speaking' : status]}
+        </div>
+
+        <button
+          type="button"
+          onClick={onToggleHandsFree}
+          aria-pressed={handsFree}
+          title={handsFree ? 'End hands-free talk' : 'Talk hands-free: she listens again after every answer'}
+          className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium backdrop-blur transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FF7A1A] ${
+            handsFree
+              ? 'border-red-400/70 bg-red-600 text-white hover:bg-red-500'
+              : 'border-white/[0.1] bg-[#14100C]/85 text-[#F5EFE6] hover:border-[#FF7A1A]/40 hover:bg-[#1E1812]'
+          }`}
+        >
+          {handsFree ? <PhoneOff className="h-3.5 w-3.5" /> : <Phone className="h-3.5 w-3.5 text-[#FF7A1A]" />}
+          {handsFree ? 'End live' : 'Hands-free'}
+        </button>
       </div>
 
-      {/* Hands-free talk */}
-      <button
-        type="button"
-        onClick={onToggleHandsFree}
-        aria-pressed={handsFree}
-        title={handsFree ? 'End hands-free talk' : 'Talk hands-free: she listens again after every answer'}
-        className={`absolute right-4 top-4 z-10 flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
-          handsFree ? 'border-red-400 bg-red-600 text-white' : 'border-amber-600/60 bg-black/50 text-amber-200 hover:border-amber-400'
+      {/* Floor and projector */}
+      <div
+        ref={floor}
+        className={`relative mx-auto w-full ${
+          compact ? 'min-h-[240px] flex-1' : 'h-[min(60vh,540px)] min-h-[360px]'
         }`}
       >
-        {handsFree ? <PhoneOff className="h-3.5 w-3.5" /> : <Phone className="h-3.5 w-3.5" />}
-        {handsFree ? 'End talk' : 'Talk hands-free'}
-      </button>
-
-      {/* Floor and projector */}
-      <div ref={floor} className="relative mx-auto h-[min(62vh,560px)] min-h-[380px] w-full">
-        <div className="pointer-events-none absolute bottom-[7%] left-1/2 h-[9%] w-[46%] -translate-x-1/2 rounded-[50%] bg-[radial-gradient(closest-side,rgba(255,160,60,0.45),rgba(255,120,30,0.12)_60%,transparent)]" />
-        <div className="pointer-events-none absolute bottom-[5.5%] left-1/2 h-[4%] w-[30%] -translate-x-1/2 rounded-[50%] border border-amber-500/40 bg-amber-900/30" />
+        <div className="pointer-events-none absolute bottom-[8%] left-1/2 h-[9%] w-[52%] -translate-x-1/2 rounded-[50%] bg-[radial-gradient(closest-side,rgba(255,140,40,0.4),rgba(255,122,26,0.1)_65%,transparent)]" />
+        <div className="pointer-events-none absolute bottom-[6%] left-1/2 h-[3.5%] w-[34%] -translate-x-1/2 rounded-[50%] border border-[#FF7A1A]/35 bg-[#2A1708]/50" />
 
         <button
           type="button"
           onClick={handlePoke}
           aria-label="Miss Minutes"
-          className="absolute inset-x-0 bottom-[4%] top-[6%] mx-auto cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+          className="absolute inset-x-0 bottom-[5%] top-[2%] mx-auto cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-[#FF7A1A]"
           style={{
             width: '100%',
             transform: `translateX(${x}px)`,
@@ -247,7 +282,7 @@ export function Stage({ emotion, gesture, gestureKey, speaking, mouth, status, l
           ))}
           <ThoughtBubble
             visible={brainLocomotion === 'think' || (status === 'thinking' && !speaking)}
-            thoughtText={status === 'thinking' ? 'CRUNCHING TIMELINE...' : undefined}
+            thoughtText={status === 'thinking' ? 'CRUNCHING TIMELINE…' : undefined}
           />
           <MissMinutesRig
             ref={rig}
@@ -266,9 +301,11 @@ export function Stage({ emotion, gesture, gestureKey, speaking, mouth, status, l
       </div>
 
       {/* Subtitles */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 flex min-h-[64px] items-end justify-center bg-gradient-to-t from-black/80 to-transparent px-6 pb-4">
+      <div className="pointer-events-none relative z-10 flex min-h-[58px] items-end justify-center bg-gradient-to-t from-black/80 via-black/40 to-transparent px-4 pb-4 pt-2">
         {line && (
-          <p className="max-w-[90%] text-center text-sm leading-snug text-amber-50 [text-shadow:0_1px_3px_rgba(0,0,0,0.9)]">{line}</p>
+          <p className="max-w-[94%] text-center text-xs leading-relaxed text-[#F5EFE6] [text-shadow:0_1px_3px_rgba(0,0,0,0.9)] sm:text-sm">
+            {line}
+          </p>
         )}
       </div>
     </div>

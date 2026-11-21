@@ -1,5 +1,6 @@
 // installFrameCap must be the first import: it replaces requestAnimationFrame before the rig loads.
 import { setFrameCap } from '../shared/installFrameCap.ts';
+import '../shared/registerPlatform.ts';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './overlay.css';

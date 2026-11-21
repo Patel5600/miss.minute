@@ -5,14 +5,17 @@ import android.content.Context;
 import androidx.fragment.app.FragmentActivity;
 
 import com.patel5600.missminute.mobile.app.MissMinutesApp;
+import com.patel5600.missminute.mobile.app.OwnerAuthority;
 import com.patel5600.missminute.mobile.app.OwnerAuthenticator;
 import com.patel5600.missminute.mobile.bridge.BridgeRouter;
 import com.patel5600.missminute.mobile.bridge.Handler;
+import com.patel5600.missminute.mobile.core.audit.AuditLog;
 import com.patel5600.missminute.mobile.core.audit.AuditRecord;
 import com.patel5600.missminute.mobile.core.policy.Capability;
 import com.patel5600.missminute.mobile.core.policy.Initiator;
 import com.patel5600.missminute.mobile.core.policy.Mode;
 import com.patel5600.missminute.mobile.core.policy.PermissionState;
+import com.patel5600.missminute.mobile.core.policy.PermissionStore;
 import com.patel5600.missminute.mobile.core.protocol.Message;
 import com.patel5600.missminute.mobile.core.protocol.ProtocolException;
 
@@ -24,21 +27,31 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * permissions.get and permissions.setMode. Stricter modes can be selected directly.
- * Raising the permission mode requires an operation-bound strong biometric followed by
- * a Keystore ECDSA signature. Persistence and the reply happen only after proof verification.
+ * permissions.get and permissions.setMode. Stricter modes can be selected directly by an
+ * authenticated owner. Raising the permission mode requires an operation-bound strong biometric
+ * followed by a Keystore ECDSA signature. Persistence and the reply happen only after proof
+ * verification.
  */
 public final class PermissionHandlers {
+    interface OwnerAccessGate {
+        boolean isOwnerMode();
+    }
+
     private PermissionHandlers() {
     }
 
     public static void register(BridgeRouter router, final Context context, final UiBridge ui) {
         final MissMinutesApp app = MissMinutesApp.from(context);
+        register(router, context, ui, app.permissionStore(), app.auditLog(),
+                () -> "OWNER_MODE".equals(OwnerAuthority.getOperatingMode()));
+    }
 
+    static void register(BridgeRouter router, final Context context, final UiBridge ui,
+            final PermissionStore permissionStore, final AuditLog auditLog, final OwnerAccessGate ownerGate) {
         router.register("permissions.get", new Handler() {
             @Override
             public void handle(Message message, Reply reply) throws Exception {
-                reply.ok(describe(app));
+                reply.ok(describe(permissionStore));
             }
         });
 
@@ -46,17 +59,30 @@ public final class PermissionHandlers {
             @Override
             public void handle(Message message, final Reply reply) throws Exception {
                 final Mode requested = parseMode(message.payload.opt("mode"));
-                final PermissionState beforePrompt = app.permissionStore().load();
+                boolean ownerMode;
+                try {
+                    ownerMode = ownerGate != null && ownerGate.isOwnerMode();
+                } catch (LinkageError | RuntimeException error) {
+                    ownerMode = false;
+                }
+                if (!ownerMode) {
+                    reply.fail("restricted_to_owner",
+                            "Owner verification is required before changing permission mode.");
+                    return;
+                }
+
+                final PermissionState beforePrompt = permissionStore.load();
 
                 if (requested == beforePrompt.mode) {
-                    reply.ok(describe(app));
+                    reply.ok(describe(permissionStore));
                     return;
                 }
 
                 // Tightening policy never requires a biometric and never revives a killed service.
                 if (requested.ordinal() < beforePrompt.mode.ordinal()) {
-                    save(app, beforePrompt.withMode(requested), requested, "explicit-stricter-mode");
-                    reply.ok(describe(app));
+                    save(permissionStore, auditLog, beforePrompt.withMode(requested), requested,
+                            "explicit-stricter-mode");
+                    reply.ok(describe(permissionStore));
                     return;
                 }
 
@@ -73,15 +99,16 @@ public final class PermissionHandlers {
                             @Override
                             public void onAuthenticated(String proofId) {
                                 try {
-                                    PermissionState latest = app.permissionStore().load();
+                                    PermissionState latest = permissionStore.load();
                                     if (!sameState(beforePrompt, latest)) {
                                         reply.fail("cancelled", "Permission settings changed during authentication. Retry the operation.");
                                         return;
                                     }
-                                    save(app, latest.withMode(requested), requested, "keystore-ecdsa:" + proofId);
+                                    save(permissionStore, auditLog, latest.withMode(requested), requested,
+                                            "keystore-ecdsa:" + proofId);
                                     // The bridge reply is sent only after the durable policy write and
                                     // audit record attempt. The UI then refreshes from the native store.
-                                    reply.ok(describe(app));
+                                    reply.ok(describe(permissionStore));
                                 } catch (IOException | JSONException | RuntimeException error) {
                                     reply.fail("internal", "Authentication succeeded, but the permission change could not be saved.");
                                 }
@@ -119,15 +146,20 @@ public final class PermissionHandlers {
         throw new ProtocolException("bad_payload", "mode must be OBSERVE, SUGGEST or AUTHORIZED");
     }
 
-    private static void save(MissMinutesApp app, PermissionState next, Mode mode, String proof) throws IOException {
-        app.permissionStore().save(next);
-        app.auditLog().append(AuditRecord.Kind.PERMISSION, null, null, Initiator.OWNER,
+    private static void save(PermissionStore store, AuditLog auditLog, PermissionState next, Mode mode, String proof)
+            throws IOException {
+        store.save(next);
+        auditLog.append(AuditRecord.Kind.PERMISSION, null, null, Initiator.OWNER,
                 AuditRecord.Outcome.OK, "mode=" + mode.name() + " authorization=" + proof);
     }
 
     /** What the page may know about the permission state. */
     public static JSONObject describe(MissMinutesApp app) throws JSONException {
-        PermissionState state = app.permissionStore().load();
+        return describe(app.permissionStore());
+    }
+
+    static JSONObject describe(PermissionStore store) throws JSONException {
+        PermissionState state = store.load();
         JSONArray grants = new JSONArray();
         for (Capability capability : state.grants) {
             grants.put(capability.wireName);

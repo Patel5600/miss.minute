@@ -11,10 +11,19 @@ public final class VisibilityInputs {
     public final boolean quietHours;
     public final boolean focusMode;
     public final PowerTier batteryTier;
+    public final boolean appForeground;
 
     public VisibilityInputs(boolean screenOn, boolean keyguardLocked, boolean fullscreenDetected,
                             boolean userRoamingOff, long hiddenUntilMs, long nowMs,
                             boolean quietHours, boolean focusMode, PowerTier batteryTier) {
+        this(screenOn, keyguardLocked, fullscreenDetected, userRoamingOff, hiddenUntilMs, nowMs,
+                quietHours, focusMode, batteryTier, false);
+    }
+
+    public VisibilityInputs(boolean screenOn, boolean keyguardLocked, boolean fullscreenDetected,
+                            boolean userRoamingOff, long hiddenUntilMs, long nowMs,
+                            boolean quietHours, boolean focusMode, PowerTier batteryTier,
+                            boolean appForeground) {
         this.screenOn = screenOn;
         this.keyguardLocked = keyguardLocked;
         this.fullscreenDetected = fullscreenDetected;
@@ -24,5 +33,6 @@ public final class VisibilityInputs {
         this.quietHours = quietHours;
         this.focusMode = focusMode;
         this.batteryTier = batteryTier;
+        this.appForeground = appForeground;
     }
 }

@@ -1,20 +1,22 @@
 /**
- * Anthropic Messages API, streamed. Browser requests carry the documented opt-in header
+ * Anthropic Messages API, streamed. Native Desktop and Android hosts proxy requests and inject
+ * credentials outside WebView. Browser-only requests carry the documented opt-in header
  * `anthropic-dangerous-direct-browser-access: true`. Within a tool loop the assistant turn is
  * replayed exactly as streamed (thinking blocks with signatures included), because current
  * Claude models reject or degrade on edited thinking; the system prompt and tools stay
  * identical across rounds for the same reason.
  */
-import type { AISettings } from '../../../types';
-import { isDesktopRuntime } from '../../../desktop/bridge';
-import { defaultModelFor } from '../../settings';
-import type { ModelOption } from '../types';
-import { ProviderError, httpError } from '../errors';
-import { openHttpStream, readMessages } from '../transport';
-import { parseDataUrl, parseToolArguments, toolOutputText, type ConvMessage, type ModelToolCall, type ToolResultForModel } from '../conversation';
-import { requireCredential, webKey } from './auth';
-import { jsonSchemaFor } from './schema';
-import type { FinishReason, ProviderAdapter, ProviderSession, RoundOptions, RoundResult, SessionInit } from './types';
+import type { AISettings } from '../../../types/index.ts';
+import { isDesktopRuntime } from '../../../desktop/bridge.ts';
+import { isAndroidApp } from '../../platform.ts';
+import { defaultModelFor } from '../../settings.ts';
+import type { ModelOption } from '../types.ts';
+import { ProviderError, httpError } from '../errors.ts';
+import { openHttpStream, readMessages } from '../transport.ts';
+import { parseDataUrl, parseToolArguments, toolOutputText, type ConvMessage, type ModelToolCall, type ToolResultForModel } from '../conversation.ts';
+import { requireCredential, webKey } from './auth.ts';
+import { jsonSchemaFor } from './schema.ts';
+import type { FinishReason, ProviderAdapter, ProviderSession, RoundOptions, RoundResult, SessionInit } from './types.ts';
 
 type Item = Record<string, unknown>;
 
@@ -24,7 +26,7 @@ const UTILITY_MODEL = 'claude-haiku-5-5';
 
 function headers(settings: AISettings): { headers: Record<string, string>; secret?: Record<string, string> } {
   const base: Record<string, string> = { 'Content-Type': 'application/json', 'anthropic-version': VERSION };
-  if (isDesktopRuntime()) return { headers: base };
+  if (isDesktopRuntime() || isAndroidApp()) return { headers: base };
   const key = webKey('anthropic', settings);
   return {
     headers: { ...base, 'anthropic-dangerous-direct-browser-access': 'true' },

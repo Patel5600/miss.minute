@@ -2679,8 +2679,19 @@ dependencies = [
  "getrandom 0.2.17",
  "jsonwebtoken",
  "miss-minute-agent",
+ "miss-minute-identity",
+ "mm-computer",
+ "mm-face",
+ "mm-gaze",
+ "mm-mission",
+ "mm-presence",
+ "mm-speaker",
+ "mm-telemetry",
+ "mm-wake",
  "png",
  "reqwest",
+ "ring",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
@@ -2694,6 +2705,94 @@ dependencies = [
  "uuid",
  "windows",
  "zeroize",
+]
+
+[[package]]
+name = "miss-minute-identity"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "jni 0.21.1",
+ "mm-computer",
+ "mm-face",
+ "mm-gaze",
+ "mm-presence",
+ "mm-speaker",
+ "mm-telemetry",
+ "mm-wake",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "mm-computer"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
+name = "mm-face"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mm-gaze"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mm-mission"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
+name = "mm-presence"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "mm-speaker"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mm-telemetry"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "mm-wake"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

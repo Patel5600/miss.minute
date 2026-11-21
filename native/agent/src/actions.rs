@@ -7,7 +7,7 @@ use std::{
 #[cfg(unix)]
 use std::fs::File;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -58,7 +58,11 @@ pub struct ActionExecutionResult {
 
 pub fn validate_payload(payload: &ActionPayload, approved_root_count: usize) -> Result<()> {
     match payload {
-        ActionPayload::CreateNote { root_index, filename, content } => {
+        ActionPayload::CreateNote {
+            root_index,
+            filename,
+            content,
+        } => {
             if *root_index >= approved_root_count {
                 bail!("The action refers to a note folder that has not been approved.");
             }
@@ -72,11 +76,14 @@ pub fn validate_payload(payload: &ActionPayload, approved_root_count: usize) -> 
 }
 
 fn validate_note_filename(filename: &str) -> Result<()> {
-    let stem = filename.strip_suffix(".md")
+    let stem = filename
+        .strip_suffix(".md")
         .context("Only new Markdown files with a .md extension are supported.")?;
     if stem.is_empty()
         || stem.len() > 48
-        || !stem.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        || !stem
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
     {
         bail!("Note filename must be a 1–48 character ASCII slug followed by .md.");
     }
@@ -106,16 +113,27 @@ fn create_note(root: &Path, filename: &str, content: &str) -> Result<PathBuf> {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(&temporary)
-            .with_context(|| format!("Cannot create temporary note in {}", canonical_root.display()))?;
-        file.write_all(content.as_bytes()).context("Cannot write note body")?;
-        file.sync_all().context("Cannot flush note contents to disk")?;
+        let mut file = options.open(&temporary).with_context(|| {
+            format!(
+                "Cannot create temporary note in {}",
+                canonical_root.display()
+            )
+        })?;
+        file.write_all(content.as_bytes())
+            .context("Cannot write note body")?;
+        file.sync_all()
+            .context("Cannot flush note contents to disk")?;
         drop(file);
 
         // Hard-link creation is atomic and fails when the destination exists.
-        fs::hard_link(&temporary, &destination)
-            .with_context(|| format!("Cannot create {} without overwriting an existing path", destination.display()))?;
-        fs::remove_file(&temporary).context("Note was created, but the temporary hard link could not be removed")?;
+        fs::hard_link(&temporary, &destination).with_context(|| {
+            format!(
+                "Cannot create {} without overwriting an existing path",
+                destination.display()
+            )
+        })?;
+        fs::remove_file(&temporary)
+            .context("Note was created, but the temporary hard link could not be removed")?;
 
         #[cfg(unix)]
         File::open(&canonical_root)
@@ -143,8 +161,14 @@ fn execute_claimed_action(
         validate_payload(&payload, config.approved_note_roots.len())?;
 
         match payload {
-            ActionPayload::CreateNote { root_index, filename, content } => {
-                let root = config.approved_note_roots.get(root_index)
+            ActionPayload::CreateNote {
+                root_index,
+                filename,
+                content,
+            } => {
+                let root = config
+                    .approved_note_roots
+                    .get(root_index)
                     .context("Approved note folder no longer exists in the permission set")?;
                 let path = create_note(root, &filename, &content)?;
                 Ok((path, content.len()))
@@ -159,7 +183,8 @@ fn execute_claimed_action(
                 status: "succeeded".to_owned(),
                 created_path: Some(path.display().to_string()),
                 bytes_written,
-                detail: "A new Markdown note was created. Existing files were not overwritten.".to_owned(),
+                detail: "A new Markdown note was created. Existing files were not overwritten."
+                    .to_owned(),
             };
             store.complete_action(&pending.id, true, &json!(outcome))?;
             Ok(outcome)
@@ -198,7 +223,9 @@ pub fn auto_execute_if_enabled(
         return Ok(None);
     }
     if config.approved_note_roots.is_empty() {
-        bail!("Automatic note creation is enabled without an approved output folder; refusing execution.");
+        bail!(
+            "Automatic note creation is enabled without an approved output folder; refusing execution."
+        );
     }
 
     let now = crate::config::now_unix_ms();
@@ -208,7 +235,8 @@ pub fn auto_execute_if_enabled(
         action_id,
         utc_day_start,
         config.automation.max_notes_per_utc_day,
-    )? else {
+    )?
+    else {
         return Ok(None);
     };
 
@@ -260,12 +288,14 @@ mod tests {
             "filename": filename,
             "content": "# Metadata summary\\n\\nGenerated from owner-authorized file metadata only."
         });
-        store.create_pending_action(
-            through,
-            "Create a metadata summary note",
-            &payload,
-            &["evidence-event".to_owned()],
-        ).unwrap()
+        store
+            .create_pending_action(
+                through,
+                "Create a metadata summary note",
+                &payload,
+                &["evidence-event".to_owned()],
+            )
+            .unwrap()
     }
 
     #[test]
@@ -274,8 +304,16 @@ mod tests {
         let mut store = Store::open_for_tests(&config.database_path).unwrap();
         let id = queue_note(&mut store, 1, "manual-review.md");
 
-        assert!(auto_execute_if_enabled(&config, &mut store, &id).unwrap().is_none());
-        assert!(!config.approved_note_roots[0].join("manual-review.md").exists());
+        assert!(
+            auto_execute_if_enabled(&config, &mut store, &id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !config.approved_note_roots[0]
+                .join("manual-review.md")
+                .exists()
+        );
         assert_eq!(store.pending_action_count().unwrap(), 1);
 
         drop(store);
@@ -288,7 +326,9 @@ mod tests {
         let mut store = Store::open_for_tests(&config.database_path).unwrap();
         let id = queue_note(&mut store, 2, "automatic-note.md");
 
-        let outcome = auto_execute_if_enabled(&config, &mut store, &id).unwrap().unwrap();
+        let outcome = auto_execute_if_enabled(&config, &mut store, &id)
+            .unwrap()
+            .unwrap();
         assert_eq!(outcome.status, "succeeded");
         assert_eq!(
             fs::read_to_string(config.approved_note_roots[0].join("automatic-note.md")).unwrap(),
@@ -305,10 +345,18 @@ mod tests {
         let (config, base) = fixture(true, 1);
         let mut store = Store::open_for_tests(&config.database_path).unwrap();
         let first = queue_note(&mut store, 3, "first.md");
-        assert!(auto_execute_if_enabled(&config, &mut store, &first).unwrap().is_some());
+        assert!(
+            auto_execute_if_enabled(&config, &mut store, &first)
+                .unwrap()
+                .is_some()
+        );
 
         let second = queue_note(&mut store, 4, "second.md");
-        assert!(auto_execute_if_enabled(&config, &mut store, &second).unwrap().is_none());
+        assert!(
+            auto_execute_if_enabled(&config, &mut store, &second)
+                .unwrap()
+                .is_none()
+        );
         assert!(!config.approved_note_roots[0].join("second.md").exists());
         assert_eq!(store.pending_action_count().unwrap(), 1);
 
@@ -328,8 +376,17 @@ mod tests {
 
     #[test]
     fn payload_rejects_traversal_and_non_markdown_targets() {
-        for filename in ["../escape.md", "subdir/note.md", "note.txt", ".hidden.md", "bad name.md"] {
-            assert!(validate_note_filename(filename).is_err(), "{filename} should be rejected");
+        for filename in [
+            "../escape.md",
+            "subdir/note.md",
+            "note.txt",
+            ".hidden.md",
+            "bad name.md",
+        ] {
+            assert!(
+                validate_note_filename(filename).is_err(),
+                "{filename} should be rejected"
+            );
         }
     }
 

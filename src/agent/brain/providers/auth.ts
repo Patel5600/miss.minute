@@ -6,10 +6,11 @@
  * Browser: the key comes from the settings being edited or from secrets-web, and is checked
  * against the provider so a key typed for one service is never sent to another.
  */
-import type { AISettings } from '../../../types';
-import { invokeNative, isDesktopRuntime } from '../../../desktop/bridge';
-import { getWebSecret, type WebSecretId } from '../../secrets-web';
-import { ProviderError } from '../errors';
+import type { AISettings } from '../../../types/index.ts';
+import { invokeNative, isDesktopRuntime } from '../../../desktop/bridge.ts';
+import { androidProviderSecretStatus, isAndroidApp } from '../../platform.ts';
+import { getWebSecret, type WebSecretId } from '../../secrets-web.ts';
+import { ProviderError } from '../errors.ts';
 
 export type KeyedProvider = Extract<WebSecretId, 'openai' | 'gemini' | 'anthropic' | 'openrouter' | 'ollama'>;
 
@@ -42,17 +43,29 @@ const PRESENT_TTL_MS = 15_000;
 
 /** Desktop: whether the vault holds a credential for this provider. Positive answers are cached briefly. */
 export async function desktopHasCredential(provider: string): Promise<boolean> {
-  const cached = presentCache.get(provider);
+  const cacheKey = `desktop:${provider}`;
+  const cached = presentCache.get(cacheKey);
   if (cached && Date.now() - cached < PRESENT_TTL_MS) return true;
   const present = await invokeNative<boolean>('provider_has_credential', { provider });
-  if (present) presentCache.set(provider, Date.now());
-  else presentCache.delete(provider);
+  if (present) presentCache.set(cacheKey, Date.now());
+  else presentCache.delete(cacheKey);
+  return present;
+}
+
+/** Android: whether Keystore-backed native storage holds a credential for this provider. */
+export async function androidHasCredential(provider: KeyedProvider): Promise<boolean> {
+  const cacheKey = `android:${provider}`;
+  const cached = presentCache.get(cacheKey);
+  if (cached && Date.now() - cached < PRESENT_TTL_MS) return true;
+  const { present } = await androidProviderSecretStatus(provider);
+  if (present) presentCache.set(cacheKey, Date.now());
+  else presentCache.delete(cacheKey);
   return present;
 }
 
 /**
- * Makes sure a credential exists. Returns the browser key ('' on desktop, where the host
- * adds it). Throws ProviderError('config') with a message the owner can act on.
+ * Makes sure a credential exists. Returns the browser key ('' on desktop and Android, where the
+ * native host injects it). Throws ProviderError('config') with a message the owner can act on.
  */
 export async function requireCredential(provider: KeyedProvider, settings: AISettings, label: string): Promise<string> {
   if (isDesktopRuntime()) {
@@ -62,6 +75,17 @@ export async function requireCredential(provider: KeyedProvider, settings: AISet
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       throw new ProviderError('config', `I couldn't check the Windows credential vault for your ${label} key (${reason}).`);
+    }
+    if (!present) throw new ProviderError('config', `No ${label} API key is saved yet. Add one in Settings and I'll be ready.`);
+    return '';
+  }
+  if (isAndroidApp()) {
+    let present = false;
+    try {
+      present = await androidHasCredential(provider);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new ProviderError('config', `I couldn't check Android Keystore for your ${label} key (${reason}).`);
     }
     if (!present) throw new ProviderError('config', `No ${label} API key is saved yet. Add one in Settings and I'll be ready.`);
     return '';

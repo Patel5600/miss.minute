@@ -46,7 +46,7 @@ public final class HelloHandler implements Handler {
     public void handle(Message message, Reply reply) throws Exception {
         JSONObject out = new JSONObject()
                 .put("protocol", Protocol.VERSION)
-                .put("role", role == Role.OVERLAY ? "overlay" : "dashboard");
+                .put("role", role == Role.OVERLAY ? "overlay" : role == Role.MIGRATION ? "migration" : "dashboard");
         if (role == Role.OVERLAY) {
             if (overlay != null) {
                 double scale = message.payload.optDouble("rigScale", 0);

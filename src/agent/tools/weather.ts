@@ -147,11 +147,15 @@ export const weatherTools = [
       return `Check the weather${args.city ? ` in ${args.city}` : ' at home'} (${args.days} day${args.days === 1 ? '' : 's'})`;
     },
     async run(args, ctx) {
-      const city = args.city || ctx.settings?.homeCity?.trim() || knownHomeCity();
+      const city = args.city || (!ctx.guestMode ? (ctx.settings?.homeCity?.trim() || knownHomeCity()) : undefined);
       if (!city) {
-        throw new ToolInputError('No city was given and no home city is set. Ask the owner which city (they can also set a home city in the Dossier or Settings).');
+        throw new ToolInputError(
+          ctx.guestMode
+            ? 'Please specify which city to check the weather for.'
+            : 'No city was given and no home city is set. Ask the owner which city (they can also set a home city in the Dossier or Settings).',
+        );
       }
-      const place = await geocode(city, ctx.signal);
+      const place = await geocode(city, ctx.signal, !ctx.guestMode);
       const units = localeUnits();
       const data = await forecast(place, args.days, units, ctx.signal);
       const tempUnit = data.current_units?.temperature_2m ?? (units.temperature === 'fahrenheit' ? '°F' : '°C');

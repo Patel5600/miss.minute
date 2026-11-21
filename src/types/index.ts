@@ -87,6 +87,18 @@ export interface AISettings {
   memoryEnabled?: boolean;
   /** Ask before every tool call, including timers, notes and searches. */
   strictApprovals?: boolean;
+  /** User-controlled continuous wake listener on desktop/Android (never authenticates by itself). */
+  wakeWordEnabled?: boolean;
+  /** Custom wake phrases paired with built-in "Hey Miss Minutes", "Hey Miss", "Hey Minute", etc. */
+  customWakePhrases?: string[];
+  /** Numbers blocked from autonomous outbound call preparation. */
+  dncNumbers?: string[];
+  /** Enforce local quiet hours (default 21:00–08:00) on outbound call preparation. */
+  callQuietHoursEnabled?: boolean;
+  /** Quiet hours start minute of day [0..1439] (default 21:00 = 1260). */
+  callQuietStartMin?: number;
+  /** Quiet hours end minute of day [0..1439] (default 08:00 = 480). */
+  callQuietEndMin?: number;
 }
 
 export interface Attachment {

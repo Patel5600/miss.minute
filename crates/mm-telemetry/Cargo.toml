@@ -1,0 +1,9 @@
+[package]
+name = "mm-telemetry"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Monotonic microsecond latency histograms, counters, queue depths, and runtime snapshots"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }

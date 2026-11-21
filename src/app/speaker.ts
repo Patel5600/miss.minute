@@ -23,6 +23,11 @@ import { SpeakableStream, speakableText } from '../agent/realtime/speechText';
 import { getWebSecret } from '../agent/secrets-web';
 import { loadSettings, onSettingsChange, saveSettings } from '../agent/settings';
 import {
+  androidProviderSecretStatus,
+  isAndroidApp,
+  onAndroidEvent,
+} from '../agent/platform';
+import {
   invokeNative,
   isClonedVoice,
   isDesktopRuntime,
@@ -73,13 +78,12 @@ const instructions = Array.isArray(HOSTESS_VOICE_INSTRUCTIONS)
 
 const FAILURE_HOLD_MS = 30_000;
 
-/**
- * The dashboard window. main.tsx loads this module in the overlay window as well, where the voice
- * commands are not permitted and the overlay plays its own audio, so only the dashboard watches
- * the voice engine.
- */
-function isDashboardWindow(): boolean {
-  return isDesktopRuntime() && new URLSearchParams(window.location.search).get('overlay') !== '1';
+function isDesktopDashboard(): boolean {
+  return isDesktopRuntime() && typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('overlay') !== '1';
+}
+
+function isAndroidDashboard(): boolean {
+  return typeof window !== 'undefined' && isAndroidApp() && window.location?.hostname === 'dashboard.missminutes.local';
 }
 
 function newUtteranceId(): string {
@@ -115,6 +119,8 @@ class Speaker {
   private syncedPreference: boolean | null = null;
   /** The last voice_cancel request; a new local utterance is sent only after it has landed. */
   private nativeCancel: Promise<void> = Promise.resolve();
+  private androidKeys = new Set<'openai' | 'elevenlabs'>();
+  private androidKeysLoaded = false;
 
   constructor() {
     voiceService.onSpeakingChange(speaking => {
@@ -124,7 +130,8 @@ class Speaker {
     voiceService.onVisemeChange(frame => {
       if (this.cloudActive === 0) this.patch({ mouth: frame });
     });
-    if (isDashboardWindow()) this.watchNativeVoice();
+    if (isDesktopDashboard()) this.watchNativeVoice();
+    else if (isAndroidDashboard()) this.watchAndroidSecrets();
   }
 
   subscribe(fn: (state: SpeakerState) => void): () => void {
@@ -181,11 +188,43 @@ class Speaker {
     };
     void invokeNative<NativeVoiceStatus>('voice_status').then(apply).catch(() => undefined);
     void listenNative<NativeVoiceStatus>('miss-minutes:voice-status', apply).catch(() => undefined);
+    void listenNative<unknown>('miss-minutes:killed', () => { this.stop(); }).catch(() => undefined);
     this.syncPreference(loadSettings());
     onSettingsChange(settings => {
       this.syncPreference(settings);
       this.voiceChanged();
     });
+  }
+
+  private watchAndroidSecrets() {
+    void this.refreshAndroidKeys();
+    onAndroidEvent('state.changed', () => { void this.refreshAndroidKeys(); });
+    onAndroidEvent('kill.happened', () => {
+      this.stop();
+      this.androidKeys.clear();
+      this.androidKeysLoaded = false;
+      this.voiceChanged();
+    });
+    if (typeof window !== 'undefined') {
+      window.addEventListener('miss-minutes:keys-changed', () => { void this.refreshAndroidKeys(); });
+    }
+    onSettingsChange(() => {
+      void this.refreshAndroidKeys();
+      this.voiceChanged();
+    });
+  }
+
+  private async refreshAndroidKeys() {
+    const [openai, elevenlabs] = await Promise.all([
+      androidProviderSecretStatus('openai').catch(() => ({ present: false, remembered: false })),
+      androidProviderSecretStatus('elevenlabs').catch(() => ({ present: false, remembered: false })),
+    ]);
+    const next = new Set<'openai' | 'elevenlabs'>();
+    if (openai.present) next.add('openai');
+    if (elevenlabs.present) next.add('elevenlabs');
+    this.androidKeys = next;
+    this.androidKeysLoaded = true;
+    this.voiceChanged();
   }
 
   /**
@@ -230,6 +269,7 @@ class Speaker {
   private resolve(settings: AISettings): { engine: Engine; reason: string | null } {
     const wanted = settings.voiceEngine ?? 'system';
     const desktop = isDesktopRuntime();
+    const android = !desktop && isAndroidApp();
     if (wanted === 'local') {
       if (!desktop) return { engine: 'system', reason: 'her cloned voice runs only in the desktop app' };
       const status = this.native;
@@ -243,10 +283,18 @@ class Speaker {
       return { engine: 'local', reason: null };
     }
     if (wanted === 'openai') {
-      if (!desktop && !getWebSecret('openai')) return { engine: 'system', reason: 'no OpenAI key is saved' };
+      if (android) {
+        if (!this.androidKeysLoaded) return { engine: 'system', reason: 'checking saved OpenAI key' };
+        if (!this.androidKeys.has('openai')) return { engine: 'system', reason: 'no OpenAI key is saved' };
+      } else if (!desktop && !getWebSecret('openai')) {
+        return { engine: 'system', reason: 'no OpenAI key is saved' };
+      }
     } else if (wanted === 'elevenlabs') {
       if (!settings.elevenLabsVoiceId?.trim()) return { engine: 'system', reason: 'no ElevenLabs voice ID is set' };
-      if (!desktop && !getWebSecret('elevenlabs') && !settings.elevenLabsKey) {
+      if (android) {
+        if (!this.androidKeysLoaded) return { engine: 'system', reason: 'checking saved ElevenLabs key' };
+        if (!this.androidKeys.has('elevenlabs')) return { engine: 'system', reason: 'no ElevenLabs key is saved' };
+      } else if (!desktop && !getWebSecret('elevenlabs') && !settings.elevenLabsKey) {
         return { engine: 'system', reason: 'no ElevenLabs key is saved' };
       }
     } else {
@@ -399,6 +447,7 @@ class Speaker {
       if (generation === this.generation) this.patch({ line: text, speaking: true });
     });
 
+    const nativeHost = isDesktopRuntime() || isAndroidApp();
     void streamCloudSpeech({
       engine,
       text,
@@ -406,7 +455,7 @@ class Speaker {
       openaiVoice: settings.openaiVoice,
       instructions,
       elevenLabsVoiceId: settings.elevenLabsVoiceId,
-      key: isDesktopRuntime() ? undefined : (engine === 'openai' ? getWebSecret('openai') : getWebSecret('elevenlabs') || settings.elevenLabsKey) || undefined,
+      key: nativeHost ? undefined : (engine === 'openai' ? getWebSecret('openai') : getWebSecret('elevenlabs') || settings.elevenLabsKey) || undefined,
       signal: controller.signal,
       onAudio: bytes => segment.pushPcm16(bytes, CLOUD_SAMPLE_RATE),
     })

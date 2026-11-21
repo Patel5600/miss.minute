@@ -4,10 +4,15 @@
  */
 import type { AISettings } from '../../types';
 import { calculateTools } from './calculate';
+import { callingTools } from './calling';
 import { clockTools } from './clock';
+import { connectorTools } from './connectors';
 import { desktopTools } from './desktop';
+import { availabilityTools } from './availability';
 import { memoryTools } from './memory';
+import { missionTools } from './missions';
 import { noteTools } from './notes';
+import { offerTools } from './offers';
 import { scheduleTools } from './schedule';
 import { searchTools } from './search';
 import { rememberSettings } from './settingsCache';
@@ -32,6 +37,11 @@ const tools: ToolDef[] = [
   ...memoryTools,
   ...visionTools,
   ...deviceTools,
+  ...availabilityTools,
+  ...offerTools,
+  ...missionTools,
+  ...callingTools,
+  ...connectorTools,
   ...desktopTools,
 ];
 
@@ -45,7 +55,7 @@ if (import.meta.env.DEV) {
 
 /** Tools usable in this context (e.g. desktop-only tools are hidden in the browser). */
 export function listTools(ctx: ToolContext): ToolDef[] {
-  rememberSettings(ctx.settings);
+  if (!ctx.guestMode) rememberSettings(ctx.settings);
   return tools.filter(tool => tool.available?.(ctx) ?? true);
 }
 

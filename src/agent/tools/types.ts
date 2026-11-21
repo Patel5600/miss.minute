@@ -8,7 +8,7 @@
  *     exactly what will happen. Nothing runs until the owner approves that exact preview.
  *   - "Always ask first" (settings.strictApprovals) makes every tool ask.
  */
-import type { AISettings, Attachment } from '../../types';
+import type { AISettings, Attachment } from '../../types/index.ts';
 
 /** JSON Schema for tool arguments. Root must be `{ type: 'object' }`. */
 export interface JsonSchema {
@@ -31,6 +31,8 @@ export interface ToolContext {
   settings: AISettings;
   /** True inside the Tauri desktop app. */
   desktop: boolean;
+  /** True when the turn is restricted (guest or unverified OwnerCandidate). */
+  guestMode?: boolean;
   signal?: AbortSignal;
   chatId?: string;
 }

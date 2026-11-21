@@ -266,6 +266,20 @@ public class BridgeRouterTest {
     }
 
     @Test
+    public void ownerAuthRequiredErrorCodePassesThroughIntact() throws Exception {
+        BridgeRouter router = new BridgeRouter(Role.DASHBOARD).register("settings.get", new Handler() {
+            @Override
+            public void handle(Message message, Reply reply) {
+                reply.fail("owner_auth_required", "Unlock owner access first.");
+            }
+        });
+        router.dispatch(request("oa1", "settings.get", "{}"), sink);
+        JSONObject error = only().getJSONObject("error");
+        assertEquals("owner_auth_required", error.getString("code"));
+        assertEquals("Unlock owner access first.", error.getString("message"));
+    }
+
+    @Test
     public void aFamilyHandlerAnswersEveryTypeWithThatPrefix() throws Exception {
         List<String> seen = new ArrayList<>();
         BridgeRouter router = new BridgeRouter(Role.DASHBOARD).register("reminders.*", echo(seen));

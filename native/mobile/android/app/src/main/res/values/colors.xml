@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Same palette as the web layer (native/mobile/web/src/dashboard/theme.css). -->
-    <color name="mm_base">#0D0905</color>
-    <color name="mm_raised">#1A130C</color>
-    <color name="mm_line">#33261A</color>
-    <color name="mm_cream">#EEEDDB</color>
-    <color name="mm_muted">#A99A85</color>
-    <color name="mm_face">#FF711C</color>
-    <color name="mm_stop">#C62828</color>
-    <color name="mm_stop_pressed">#8E1B1B</color>
-    <color name="mm_icon_background">#0D0905</color>
+    <!-- Obsidian & Clockwork Amber palette (matched with native/mobile/web/src/dashboard/theme.css). -->
+    <color name="mm_base">#0B0908</color>
+    <color name="mm_raised">#110D0A</color>
+    <color name="mm_line">#2A2119</color>
+    <color name="mm_cream">#F5EFE6</color>
+    <color name="mm_muted">#9D9082</color>
+    <color name="mm_face">#FF7A1A</color>
+    <color name="mm_stop">#D93025</color>
+    <color name="mm_stop_pressed">#A52219</color>
+    <color name="mm_icon_background">#0B0908</color>
 </resources>

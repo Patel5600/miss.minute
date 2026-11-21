@@ -8,9 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::Method;
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::ipc::Channel;
@@ -41,17 +41,28 @@ pub struct ProviderHttpRequest {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "event", rename_all = "camelCase")]
 pub enum ProviderStreamEvent {
-    Head { status: u16, headers: HashMap<String, String> },
-    Data { text: String },
-    Bytes { base64: String },
+    Head {
+        status: u16,
+        headers: HashMap<String, String>,
+    },
+    Data {
+        text: String,
+    },
+    Bytes {
+        base64: String,
+    },
     End,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
+
+type CancelHandle = (Arc<Notify>, Arc<AtomicBool>);
 
 /// Tracks in-flight streams so `provider_http_cancel` can abort one by request id.
 #[derive(Default)]
 pub struct ProviderState {
-    inflight: Mutex<HashMap<String, (Arc<Notify>, Arc<AtomicBool>)>>,
+    inflight: Mutex<HashMap<String, CancelHandle>>,
 }
 
 impl ProviderState {
@@ -68,8 +79,17 @@ impl ProviderState {
     }
 
     fn cancel(&self, id: &str) {
+        if let Ok(map) = self.inflight.lock()
+            && let Some((notify, flag)) = map.get(id)
+        {
+            flag.store(true, Ordering::Release);
+            notify.notify_waiters();
+        }
+    }
+
+    pub fn cancel_all(&self) {
         if let Ok(map) = self.inflight.lock() {
-            if let Some((notify, flag)) = map.get(id) {
+            for (notify, flag) in map.values() {
                 flag.store(true, Ordering::Release);
                 notify.notify_waiters();
             }
@@ -88,6 +108,7 @@ pub async fn provider_http_stream(
     state: tauri::State<'_, ProviderState>,
 ) -> Result<(), String> {
     crate::require_dashboard(&window)?;
+    crate::require_owner_capability(&window, miss_minute_identity::capabilities::AI_PROVIDER_USE)?;
 
     let notify = Arc::new(Notify::new());
     let flag = Arc::new(AtomicBool::new(false));
@@ -101,7 +122,9 @@ pub async fn provider_http_stream(
         Err(message) => {
             // Surface the failure on the channel too, so the renderer sees it even if it
             // ignores the promise rejection.
-            let _ = on_event.send(ProviderStreamEvent::Error { message: message.clone() });
+            let _ = on_event.send(ProviderStreamEvent::Error {
+                message: message.clone(),
+            });
             Err(message)
         }
     }
@@ -126,6 +149,7 @@ pub fn provider_has_credential(
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
     crate::require_dashboard(&window)?;
+    crate::require_owner_capability(&window, miss_minute_identity::capabilities::AI_PROVIDER_USE)?;
     match provider.as_str() {
         // Ollama is a local server: no credential is needed, so treat it as always available.
         "ollama" => Ok(true),
@@ -148,6 +172,7 @@ pub async fn realtime_client_secret(
     window: tauri::WebviewWindow,
 ) -> Result<serde_json::Value, String> {
     crate::require_dashboard(&window)?;
+    crate::require_owner_capability(&window, miss_minute_identity::capabilities::AI_PROVIDER_USE)?;
     match provider.as_str() {
         "openai" => {
             let key = stored_secret("openai")?;
@@ -173,7 +198,9 @@ pub async fn realtime_client_secret(
                 .map_err(describe_error)?;
             read_json_or_error(response).await
         }
-        _ => Err("Realtime secrets are available for the openai and gemini providers only.".to_owned()),
+        _ => Err(
+            "Realtime secrets are available for the openai and gemini providers only.".to_owned(),
+        ),
     }
 }
 
@@ -225,10 +252,10 @@ async fn run_stream(
         }
     };
 
-    if let Some(body) = &request.body {
-        if body.len() > MAX_BODY_BYTES {
-            return Err("The request body exceeds the 20 MB limit.".to_owned());
-        }
+    if let Some(body) = &request.body
+        && body.len() > MAX_BODY_BYTES
+    {
+        return Err("The request body exceeds the 20 MB limit.".to_owned());
     }
 
     let mut headers = sanitize_headers(request.headers.as_ref())?;
@@ -243,7 +270,13 @@ async fn run_stream(
     let response = builder.send().await.map_err(describe_error)?;
     let status = response.status().as_u16();
     let safe_headers = safe_response_headers(response.headers());
-    send_event(on_event, ProviderStreamEvent::Head { status, headers: safe_headers })?;
+    send_event(
+        on_event,
+        ProviderStreamEvent::Head {
+            status,
+            headers: safe_headers,
+        },
+    )?;
 
     let bytes_mode = matches!(request.response_type.as_deref(), Some("bytes"));
     let mut response = response;
@@ -264,7 +297,12 @@ async fn run_stream(
             Ok(Err(error)) => return Err(describe_error(error)),
         };
         if bytes_mode {
-            send_event(on_event, ProviderStreamEvent::Bytes { base64: STANDARD.encode(&chunk) })?;
+            send_event(
+                on_event,
+                ProviderStreamEvent::Bytes {
+                    base64: STANDARD.encode(&chunk),
+                },
+            )?;
         } else {
             carry.extend_from_slice(&chunk);
             drain_text(&mut carry, on_event)?;
@@ -281,7 +319,9 @@ async fn run_stream(
 }
 
 fn cancelled(on_event: &Channel<ProviderStreamEvent>) -> Result<(), String> {
-    let _ = on_event.send(ProviderStreamEvent::Error { message: "The request was cancelled.".to_owned() });
+    let _ = on_event.send(ProviderStreamEvent::Error {
+        message: "The request was cancelled.".to_owned(),
+    });
     Ok(())
 }
 
@@ -292,7 +332,12 @@ fn drain_text(carry: &mut Vec<u8>, on_event: &Channel<ProviderStreamEvent>) -> R
         match std::str::from_utf8(carry) {
             Ok(text) => {
                 if !text.is_empty() {
-                    send_event(on_event, ProviderStreamEvent::Data { text: text.to_owned() })?;
+                    send_event(
+                        on_event,
+                        ProviderStreamEvent::Data {
+                            text: text.to_owned(),
+                        },
+                    )?;
                 }
                 carry.clear();
                 return Ok(());
@@ -306,7 +351,12 @@ fn drain_text(carry: &mut Vec<u8>, on_event: &Channel<ProviderStreamEvent>) -> R
                 match error.error_len() {
                     // Genuinely invalid bytes: surface a replacement char and skip them.
                     Some(bad) => {
-                        send_event(on_event, ProviderStreamEvent::Data { text: "\u{FFFD}".to_owned() })?;
+                        send_event(
+                            on_event,
+                            ProviderStreamEvent::Data {
+                                text: "\u{FFFD}".to_owned(),
+                            },
+                        )?;
                         carry.drain(..valid + bad);
                         if carry.is_empty() {
                             return Ok(());
@@ -323,7 +373,10 @@ fn drain_text(carry: &mut Vec<u8>, on_event: &Channel<ProviderStreamEvent>) -> R
     }
 }
 
-fn send_event(on_event: &Channel<ProviderStreamEvent>, event: ProviderStreamEvent) -> Result<(), String> {
+fn send_event(
+    on_event: &Channel<ProviderStreamEvent>,
+    event: ProviderStreamEvent,
+) -> Result<(), String> {
     on_event
         .send(event)
         .map_err(|error| format!("The response channel closed: {error}"))
@@ -372,11 +425,14 @@ fn sanitize_headers(headers: Option<&HashMap<String, String>>) -> Result<HeaderM
     for (name, value) in headers {
         let lower = name.to_ascii_lowercase();
         if is_forbidden_header(&lower) {
-            return Err(format!("The {name} header is set by the host and cannot be supplied by the app."));
+            return Err(format!(
+                "The {name} header is set by the host and cannot be supplied by the app."
+            ));
         }
         let header_name = HeaderName::from_bytes(lower.as_bytes())
             .map_err(|_| format!("The header name {name} is not valid."))?;
-        let header_value = HeaderValue::from_str(value).map_err(|_| format!("The {name} header value is not valid."))?;
+        let header_value = HeaderValue::from_str(value)
+            .map_err(|_| format!("The {name} header value is not valid."))?;
         out.insert(header_name, header_value);
     }
     Ok(out)
@@ -390,7 +446,11 @@ fn is_forbidden_header(lower: &str) -> bool {
 }
 
 /// Injects the provider credential as the correct header.
-async fn inject_credential(provider: &str, headers: &mut HeaderMap, app: &tauri::AppHandle) -> Result<(), String> {
+async fn inject_credential(
+    provider: &str,
+    headers: &mut HeaderMap,
+    app: &tauri::AppHandle,
+) -> Result<(), String> {
     match provider {
         "openai" | "openrouter" => {
             let key = stored_secret(provider)?;
@@ -402,7 +462,10 @@ async fn inject_credential(provider: &str, headers: &mut HeaderMap, app: &tauri:
         }
         "gemini" => {
             let key = stored_secret("gemini")?;
-            headers.insert(HeaderName::from_static("x-goog-api-key"), header_value(&key)?);
+            headers.insert(
+                HeaderName::from_static("x-goog-api-key"),
+                header_value(&key)?,
+            );
         }
         "anthropic" => {
             let key = stored_secret("anthropic")?;
@@ -437,7 +500,8 @@ fn bearer(token: &str) -> Result<HeaderValue, String> {
 }
 
 fn header_value(raw: &str) -> Result<HeaderValue, String> {
-    let mut value = HeaderValue::from_str(raw).map_err(|_| "The stored credential is not a valid header value.".to_owned())?;
+    let mut value = HeaderValue::from_str(raw)
+        .map_err(|_| "The stored credential is not a valid header value.".to_owned())?;
     value.set_sensitive(true);
     Ok(value)
 }
@@ -472,7 +536,11 @@ async fn read_json_or_error(response: reqwest::Response) -> Result<Value, String
 }
 
 pub(crate) fn api_error_message(body: &Value, status: u16) -> String {
-    if let Some(message) = body.get("error").and_then(|error| error.get("message")).and_then(Value::as_str) {
+    if let Some(message) = body
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+    {
         return format!("Provider error {status}: {message}");
     }
     if let Some(detail) = body.get("detail").and_then(Value::as_str) {

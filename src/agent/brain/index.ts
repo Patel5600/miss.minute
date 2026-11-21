@@ -49,3 +49,11 @@ export { resetChatGptCache, CHATGPT_USAGE_URL } from './providers/responses';
 export { forgetCredentialCache } from './providers/auth';
 export { generateChatTitle, autoTitleChat, fallbackTitle, DEFAULT_CHAT_TITLE } from '../memory/titles';
 export { extractMemories, scheduleMemoryExtraction } from '../memory/extract';
+export {
+  LoopTracker,
+  extractJsonObject,
+  repairAndParseJson,
+  type LoopPhase,
+  type LoopStepTrace,
+  type LoopTrace,
+} from './universalLoop';

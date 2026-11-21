@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.Intent;
 
 import com.patel5600.missminute.mobile.core.kill.KillPath;
+import com.patel5600.missminute.mobile.voice.WakeWordForegroundService;
 
 /**
  * Target of the "Stop Miss Minutes" notification action. Not exported: only the PendingIntent the app
@@ -13,12 +14,18 @@ import com.patel5600.missminute.mobile.core.kill.KillPath;
  */
 public final class KillReceiver extends BroadcastReceiver {
     public static final String ACTION_KILL = "com.patel5600.missminute.action.KILL";
+    public static final String ACTION_STOP_WAKE = "com.patel5600.missminute.action.STOP_WAKE";
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (intent == null || !ACTION_KILL.equals(intent.getAction())) {
+        if (intent == null) {
             return;
         }
-        KillSwitch.trigger(context, KillPath.NOTIFICATION);
+        String action = intent.getAction();
+        if (ACTION_STOP_WAKE.equals(action)) {
+            WakeWordForegroundService.stop(context);
+        } else if (ACTION_KILL.equals(action)) {
+            KillSwitch.trigger(context, KillPath.NOTIFICATION);
+        }
     }
 }

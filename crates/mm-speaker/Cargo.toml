@@ -1,0 +1,10 @@
+[package]
+name = "mm-speaker"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Local speaker embedding profile enrollment and similarity verification"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+thiserror = "=2.0.21"

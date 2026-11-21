@@ -7,6 +7,7 @@
 import type { CharacterCue, ToolCallRecord } from '../../types';
 import { emitCue } from '../../character/cues';
 import { isDesktopRuntime } from '../../desktop/bridge';
+import { isAndroidApp } from '../platform.ts';
 import { buildDynamicContext } from '../context';
 import { scheduleMemoryExtraction } from '../memory/extract';
 import { formatMemories, memoriesForTurn } from '../memory/recall';
@@ -20,7 +21,8 @@ import { buildInstructions } from './persona';
 import { adapterFor } from './providers';
 import type { ModelProfile, RoundResult } from './providers/types';
 import { ToolRunner } from './toolRunner';
-import { captureOwnerSessionSnapshot, isOwnerSessionActive } from './toolAuthority';
+import { captureOwnerSessionSnapshot, isOwnerSessionActive, scrubSettingsForGuest } from './toolAuthority';
+import { incrementCounter, nowUs, recordLatency } from '../telemetry';
 import type { BrainEvent, TurnInput } from './types';
 
 const MAX_ROUNDS = 8;
@@ -128,19 +130,22 @@ function basicContext(now: Date): string {
 }
 
 function offlineDeps(input: TurnInput, runner: ToolRunner): OfflineDeps {
+  const restricted = Boolean(input.guestMode || input.ownerCandidate);
   return {
     now: new Date(),
-    settings: input.settings,
+    settings: restricted ? scrubSettingsForGuest(input.settings) : input.settings,
     history: input.history,
+    restricted,
+    ownerCandidate: Boolean(input.ownerCandidate),
     tools: {
       has: name => runner.has(name),
       run: (name, args) => runner.run(name, args),
     },
     memory: {
-      list: () => input.guestMode ? Promise.resolve([]) : listMemories(),
-      search: query => input.guestMode ? Promise.resolve([]) : searchMemories(query, 5),
+      list: () => restricted ? Promise.resolve([]) : listMemories(),
+      search: query => restricted ? Promise.resolve([]) : searchMemories(query, 5),
       save: async (fact, category) => {
-        if (input.guestMode) return;
+        if (restricted) return;
         await upsertMemory(fact, category, 'chat', { chatId: input.chatId });
       },
     },
@@ -211,8 +216,18 @@ async function offlineTurn(input: TurnInput, out: TurnOutput, runner: ToolRunner
   out.say(note ? `${note}\n\n${reply.text}` : reply.text);
 }
 
-async function modelTurn(input: TurnInput, out: TurnOutput, runner: ToolRunner, desktop: boolean): Promise<string> {
+async function modelTurn(
+  input: TurnInput,
+  out: TurnOutput,
+  runner: ToolRunner,
+  desktop: boolean,
+  ownerSessionSnapshot: string | null,
+): Promise<string> {
   const { settings, signal } = input;
+  const restricted = Boolean(input.guestMode || input.ownerCandidate);
+  const requiresStableOwnerSession = !restricted && (desktop || isAndroidApp());
+  const ownerSessionIntact = async () => !requiresStableOwnerSession
+    || (ownerSessionSnapshot !== null && await isOwnerSessionActive(ownerSessionSnapshot));
   const adapter = adapterFor(settings.provider);
   const fallbackModel = settings.model.trim() || defaultModelFor(settings.provider);
   if (!adapter) {
@@ -242,12 +257,17 @@ async function modelTurn(input: TurnInput, out: TurnOutput, runner: ToolRunner, 
   const now = new Date();
   const available = profile.tools ? runner.available() : [];
   const [context, memories] = await Promise.all([
-    input.guestMode ? Promise.resolve(basicContext(now)) : withTimeout(buildDynamicContext(now), CONTEXT_TIMEOUT_MS, basicContext(now)),
+    restricted ? Promise.resolve(basicContext(now)) : withTimeout(buildDynamicContext(now), CONTEXT_TIMEOUT_MS, basicContext(now)),
     // Memories are only provided in a fully authenticated owner session.
-    (input.guestMode || input.ownerCandidate || settings.memoryEnabled === false) ? Promise.resolve('') : withTimeout(memoriesForTurn(input.user.text).then(formatMemories), CONTEXT_TIMEOUT_MS, ''),
+    (restricted || settings.memoryEnabled === false) ? Promise.resolve('') : withTimeout(memoriesForTurn(input.user.text).then(formatMemories), CONTEXT_TIMEOUT_MS, ''),
   ]);
+  // Do not send owner context gathered by one session to a provider after lock and re-unlock.
+  if (!await ownerSessionIntact()) {
+    out.error('The owner session changed before the request could be sent. Start a new message after unlocking.', false);
+    return profile.model;
+  }
   const instructions = buildInstructions({
-    settings,
+    settings: restricted ? scrubSettingsForGuest(settings) : settings,
     tools: available.map(entry => ({ name: entry.tool.name, policy: entry.policy })),
     desktop,
     vision: profile.vision,
@@ -270,12 +290,19 @@ async function modelTurn(input: TurnInput, out: TurnOutput, runner: ToolRunner, 
   let model = profile.model;
   for (let round = 0; round < MAX_ROUNDS; round += 1) {
     if (signal.aborted) break;
+    if (!await ownerSessionIntact()) {
+      out.error('The owner session changed. This turn has been stopped.', false);
+      break;
+    }
     const last = round === MAX_ROUNDS - 1;
     out.beginRound();
+    const roundStartedUs = nowUs();
     let result: RoundResult;
     try {
       result = await session.round({ signal, toolChoice: last ? 'none' : 'auto', onText: delta => out.push(delta) });
+      recordLatency('brain.round.latency_us', Math.max(0, nowUs() - roundStartedUs));
     } catch (error) {
+      recordLatency('brain.round.latency_us', Math.max(0, nowUs() - roundStartedUs));
       out.endRound();
       if (isAbortError(error) || signal.aborted) break;
       await recover(error, input, out, runner, round === 0 && !out.text.trim() && runner.records.length === 0);
@@ -299,6 +326,7 @@ async function modelTurn(input: TurnInput, out: TurnOutput, runner: ToolRunner, 
       } else if (index >= MAX_CALLS_PER_ROUND) {
         results.push(blockedResult(call, `Too many tool calls in one step (limit ${MAX_CALLS_PER_ROUND}). Do the rest in the next step.`));
       } else {
+        incrementCounter('brain.tool.count', 1);
         results.push((await runner.execute(call, profile.vision)).forModel);
       }
     }
@@ -314,13 +342,16 @@ async function modelTurn(input: TurnInput, out: TurnOutput, runner: ToolRunner, 
 }
 
 export async function runTurn(input: TurnInput): Promise<void> {
+  const turnStartedUs = nowUs();
+  incrementCounter('brain.turn.count', 1);
   const out = new TurnOutput(input.onEvent);
   const desktop = isDesktopRuntime();
-  const ownerSessionSnapshot = input.guestMode ? null : await captureOwnerSessionSnapshot();
+  const restricted = Boolean(input.guestMode || input.ownerCandidate);
+  const ownerSessionSnapshot = restricted ? null : await captureOwnerSessionSnapshot();
   const runner = new ToolRunner({
     settings: input.settings,
     desktop,
-    guestMode: input.guestMode,
+    guestMode: restricted,
     ownerSessionSnapshot,
     chatId: input.chatId,
     signal: input.signal,
@@ -332,19 +363,21 @@ export async function runTurn(input: TurnInput): Promise<void> {
   try {
     if (!input.signal.aborted) {
       if (offline) await offlineTurn(input, out, runner);
-      else model = await modelTurn(input, out, runner, desktop);
+      else model = await modelTurn(input, out, runner, desktop, ownerSessionSnapshot);
     }
   } catch (error) {
     if (!isAbortError(error) && !input.signal.aborted) {
+      incrementCounter('brain.turn.error_count', 1);
       const failure = toProviderError(error);
       out.error(failure.message, failure.recoverable);
       out.forceCue({ emotion: 'worried', gesture: 'shrug' });
       out.say(`Well, shoot. Something in my gears slipped: ${failure.message}`);
     }
   }
+  recordLatency('brain.turn.latency_us', Math.max(0, nowUs() - turnStartedUs));
   if (input.signal.aborted) runner.finishPending('Stopped.');
   out.done(model);
-  if (!input.guestMode && !input.signal.aborted && input.settings.memoryEnabled !== false && !runner.usedMemoryTools && out.text.trim()) {
+  if (!restricted && !input.signal.aborted && input.settings.memoryEnabled !== false && !runner.usedMemoryTools && out.text.trim()) {
     if (await isOwnerSessionActive(ownerSessionSnapshot)) {
       scheduleMemoryExtraction({ chatId: input.chatId, userText: input.user.text, replyText: out.text, settings: input.settings });
     }

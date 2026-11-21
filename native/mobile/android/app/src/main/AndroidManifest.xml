@@ -8,6 +8,7 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
@@ -51,6 +52,14 @@
         <activity
             android:name=".MainActivity"
             android:exported="false" />
+        <activity
+            android:name=".app.FacePresenceActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MissMinutes" />
+        <activity
+            android:name=".app.SpeakerIdentityActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MissMinutes" />
         <service
             android:name=".overlay.OverlayService"
             android:exported="false"
@@ -67,6 +76,18 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-started metadata-only monitoring of one directory explicitly selected with the Storage Access Framework, with an ongoing stop control notification." />
+        </service>
+        <service
+            android:name=".voice.WakeWordForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+        <service
+            android:name=".voice.MissMinutesConnectionService"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
         </service>
         <!-- Target of the "Stop Miss Minutes" notification action. Not exported: only the app's own PendingIntent reaches it. -->
         <receiver

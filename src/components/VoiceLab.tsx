@@ -3,7 +3,7 @@ import { AudioLines, Loader2, Play, Power, Square } from 'lucide-react';
 import scenarios from '../../native/voice/scenarios.json';
 import { invokeNative, isClonedVoice, isDesktopRuntime } from '../desktop/bridge';
 import type { NativeVoiceEnd, NativeVoiceStatus } from '../desktop/bridge';
-import { AIService } from '../services/aiService';
+import { saveSettings } from '../agent/settings';
 import { voiceService } from '../services/voiceService';
 import { speaker } from '../app/speaker';
 import type { AISettings } from '../types';
@@ -101,7 +101,7 @@ export function VoiceLab({ settings, onSettingsChange, isSpeaking }: VoiceLabPro
   // Choosing here is the owner's choice, so the cloned-voice default never overrides it later.
   const setPreferred = useCallback((enabled: boolean) => {
     const next: AISettings = { ...settings, voiceEngine: enabled ? 'local' : 'system', localVoice: enabled, voiceEngineChosen: true };
-    AIService.saveSettings(next);
+    saveSettings(next);
     onSettingsChange(next);
   }, [settings, onSettingsChange]);
 
@@ -134,20 +134,20 @@ export function VoiceLab({ settings, onSettingsChange, isSpeaking }: VoiceLabPro
   const toneClass = summary.tone === 'ok' ? 'text-emerald-300' : summary.tone === 'bad' ? 'text-red-300' : 'text-amber-300';
 
   return (
-    <div className="bg-amber-950/40 border border-amber-600/30 rounded-2xl p-4 backdrop-blur-md shadow-xl font-mono text-amber-200 flex flex-col gap-3">
+    <div className="bg-[#16120E] border border-white/[0.08] rounded-2xl p-4 shadow-lg text-[#F5EFE6] flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <AudioLines className="w-4 h-4 text-amber-400" />
-          <span className="text-[10px] uppercase font-bold text-amber-400/80 tracking-[0.2em]">Voice Lab</span>
+          <AudioLines className="w-4 h-4 text-[#FF9240]" />
+          <span className="text-xs font-semibold uppercase text-[#CBBEB0] tracking-wider">Voice Lab</span>
         </div>
         <button
           type="button"
           onClick={() => void toggleEngine()}
           disabled={!status?.installed}
           title={running ? 'Stop the voice engine' : 'Start the voice engine'}
-          className="flex items-center gap-1 px-2 py-1 rounded-lg border border-amber-700/40 bg-amber-950/60 text-[10px] uppercase text-amber-300 hover:border-amber-500/60 disabled:opacity-40"
+          className="flex cursor-pointer items-center gap-1.5 px-2.5 py-1 rounded-xl border border-white/[0.1] bg-white/[0.04] text-xs font-medium text-[#F5EFE6] hover:bg-white/[0.09] disabled:opacity-40"
         >
-          <Power className="w-3 h-3" /> {running ? 'Stop engine' : 'Start engine'}
+          <Power className="w-3.5 h-3.5" /> {running ? 'Stop engine' : 'Start engine'}
         </button>
       </div>
 

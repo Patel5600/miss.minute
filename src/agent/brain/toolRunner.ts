@@ -10,11 +10,15 @@ import type { ToolContext, ToolDef, ToolPreview, ToolResult } from '../tools/typ
 import { findTool, listTools, resolvePolicy } from '../tools/registry';
 import { payloadFromResult, type ModelToolCall, type ToolResultForModel } from './conversation';
 import { cancelledError, isAbortError } from './errors';
+import { isGuestToolAllowed, isOwnerSessionActive, scrubSettingsForGuest, toolPrincipalAuthorized } from './toolAuthority';
 import type { ApprovalHandler } from './types';
 
 export interface ToolRunnerOptions {
   settings: AISettings;
   desktop: boolean;
+  guestMode?: boolean;
+  /** Bind execution to the native owner session that started this turn. */
+  ownerSessionSnapshot?: string | null;
   chatId?: string;
   signal: AbortSignal;
   requestApproval: ApprovalHandler;
@@ -58,8 +62,9 @@ export class ToolRunner {
   context(): ToolContext {
     return {
       now: new Date(),
-      settings: this.options.settings,
+      settings: this.options.guestMode ? scrubSettingsForGuest(this.options.settings) : this.options.settings,
       desktop: this.options.desktop,
+      guestMode: Boolean(this.options.guestMode),
       signal: this.options.signal,
       chatId: this.options.chatId,
     };
@@ -67,7 +72,7 @@ export class ToolRunner {
 
   /** Tools usable right now, with the owner's policy applied. */
   available(): Array<{ tool: ToolDef; policy: 'auto' | 'confirm' }> {
-    return listTools(this.context()).map(tool => {
+    return listTools(this.context()).filter(tool => !this.options.guestMode || isGuestToolAllowed(tool.name)).map(tool => {
       let policy: 'auto' | 'confirm';
       try {
         policy = resolvePolicy(tool, {}, this.options.settings);
@@ -80,7 +85,7 @@ export class ToolRunner {
 
   has(name: string): boolean {
     const tool = findTool(name);
-    return !!tool && (tool.available?.(this.context()) ?? true);
+    return !!tool && (!this.options.guestMode || isGuestToolAllowed(name)) && (tool.available?.(this.context()) ?? true);
   }
 
   /** True when remember/forget ran successfully this turn (automatic extraction then stands down). */
@@ -126,6 +131,13 @@ export class ToolRunner {
     const ctx = this.context();
     const tool = findTool(call.name);
     if (!tool) return fail(`There is no tool named "${call.name}".`);
+    if (this.options.guestMode && !isGuestToolAllowed(call.name)) {
+      return fail('This capability is available only in an authenticated owner session.');
+    }
+    if (!await toolPrincipalAuthorized(!!this.options.guestMode,
+      () => isOwnerSessionActive(this.options.ownerSessionSnapshot), this.options.ownerSessionSnapshot)) {
+      return fail('The owner session is no longer active. Unlock Miss Minutes and try again.');
+    }
     if (!(tool.available?.(ctx) ?? true)) {
       return fail(`${call.name} isn't available here${ctx.desktop ? '' : ' (it needs the Miss Minutes desktop app)'}.`);
     }
@@ -162,7 +174,9 @@ export class ToolRunner {
       if (!approved) {
         record.status = 'denied';
         this.emit(record);
-        void logActivity('approval', `Declined: ${prepared.text}`.slice(0, 240), { tool: call.name }).catch(() => undefined);
+        if (!this.options.guestMode) {
+          void logActivity('approval', `Declined: ${prepared.text}`.slice(0, 240), { tool: call.name }).catch(() => undefined);
+        }
         return {
           record,
           forModel: {
@@ -187,6 +201,12 @@ export class ToolRunner {
 
     let result: ToolResult;
     try {
+      // Approval may outlive the session that initiated this action. Do not let a later unlock
+      // adopt the pending action; require the exact original native session at execution time.
+      if (!await toolPrincipalAuthorized(!!this.options.guestMode,
+        () => isOwnerSessionActive(this.options.ownerSessionSnapshot), this.options.ownerSessionSnapshot)) {
+        return fail('The owner session changed before this action could run. Start a new message after unlocking.');
+      }
       result = await tool.run(args, { ...ctx, now: new Date() }, prepared);
     } catch (error) {
       result = { ok: false, summary: `${call.name} failed: ${messageOf(error)}` };

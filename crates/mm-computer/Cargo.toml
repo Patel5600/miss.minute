@@ -1,0 +1,11 @@
+[package]
+name = "mm-computer"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Semantic computer control traits, zero-spend delegation grants, bounded agent runs, and prompt-injection defenses"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+thiserror = "=2.0.21"
+uuid = { version = "=1.29.0", features = ["v4"] }

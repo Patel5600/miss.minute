@@ -144,29 +144,29 @@ public final class AppRegistry {
         String lowerName = (appName != null ? appName.toLowerCase(Locale.US) : "");
 
         if (lowerPkg.contains("imo") || lowerName.contains("imo")) {
-            return "Keepin' tabs on all your cross-temporal chats on imo, sugar!";
+            return "Keepin' tabs on all your cross-temporal chats on imo!";
         }
         if (lowerPkg.contains("uniclare") || lowerName.contains("uniclare")) {
             return "Studying hard for the Sacred Timeline? Miss Minutes approves of proper education on Uniclare!";
         }
         if (lowerPkg.contains("binance") || lowerName.contains("binance")) {
-            return "Watchin' the crypto charts jump like timeline branches on Binance! Don't get liquidated, darlin'!";
+            return "Watchin' the crypto charts jump like timeline branches on Binance! Keep an eye on that volatility!";
         }
         if (lowerPkg.contains("flipkart") || lowerName.contains("flipkart")) {
-            return "Browsin' the timeline bazaar on Flipkart! Look out for temporal bargains, sugar!";
+            return "Browsin' the timeline bazaar on Flipkart! Look out for temporal bargains!";
         }
         if (lowerPkg.contains("canva") || lowerName.contains("canva")) {
             return "Cookin' up TVA graphics on Canva? Make sure my face has that sweet vintage orange hue!";
         }
         if (lowerPkg.contains("whatsapp") || lowerName.contains("whatsapp")) {
-            return "Encrypted timeline dispatches on WhatsApp! The Time Variance Authority sees all anyway, honey!";
+            return "Encrypted timeline dispatches on WhatsApp! The Time Variance Authority sees all anyway!";
         }
 
         switch (category) {
             case COMMUNICATION:
-                return "Sendin' messages across the branches? Be mindful who you're talkin' to, darlin'!";
+                return "Sendin' messages across the branches? Be mindful who you're talkin' to!";
             case FINANCE:
-                return "Countin' temporal credits, sugar? The TVA monitors every single transaction!";
+                return "Countin' temporal credits? The TVA monitors every single transaction!";
             case EDUCATION:
                 return "Knowledge is power in the Sacred Timeline! Keep studyin' hard now!";
             case SHOPPING:
@@ -179,7 +179,7 @@ public final class AppRegistry {
                 return "Tinker' with your device settings? Don't prune any critical system branches!";
             case GENERAL:
             default:
-                return "Ooh, look at this app icon! Mind if I sit right on top of it, sugar?";
+                return "Ooh, look at this app icon! Mind if I sit right on top of it?";
         }
     }
 

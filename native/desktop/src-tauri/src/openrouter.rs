@@ -1,6 +1,7 @@
 //! OpenRouter pairing (OAuth PKCE). Two modes:
 //!   - "loopback": the host listens on 127.0.0.1 and the browser redirects back automatically;
 //!   - "code": no callback; OpenRouter shows a one-time code the owner pastes into the app.
+//!
 //! The resulting user-scoped API key goes straight into the OS vault. The PKCE verifier lives
 //! only in host memory and is discarded after use or after ten minutes.
 
@@ -42,10 +43,11 @@ pub async fn openrouter_pair_start(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, OpenRouterState>,
 ) -> Result<OpenRouterPairing, String> {
-    crate::require_dashboard(&window)?;
+    crate::require_owner_capability(&window, miss_minute_identity::capabilities::SETTINGS_MODIFY)?;
 
     let (verifier, challenge) = crate::crypto::pkce_pair()?;
-    let mut url = Url::parse("https://openrouter.ai/auth").map_err(|_| "Internal URL error.".to_owned())?;
+    let mut url =
+        Url::parse("https://openrouter.ai/auth").map_err(|_| "Internal URL error.".to_owned())?;
 
     let listener = match mode.as_str() {
         "loopback" => {
@@ -100,7 +102,7 @@ pub async fn openrouter_pair_complete(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, OpenRouterState>,
 ) -> Result<(), String> {
-    crate::require_dashboard(&window)?;
+    crate::require_owner_capability(&window, miss_minute_identity::capabilities::SETTINGS_MODIFY)?;
 
     // Take the pending attempt out so the verifier is single-use regardless of outcome.
     let pending = {
@@ -116,27 +118,28 @@ pub async fn openrouter_pair_complete(
         return Err("This pairing attempt expired. Please start again.".to_owned());
     }
 
-    let code = match pending.mode.as_str() {
-        "loopback" => {
-            let listener = pending
-                .listener
-                .ok_or_else(|| "The loopback listener was lost. Start again.".to_owned())?;
-            let callback = loopback::wait_for_callback(&listener, "/callback", Duration::from_secs(300)).await?;
-            if callback.query.contains_key("error") {
-                return Err("OpenRouter sign-in was cancelled.".to_owned());
+    let code =
+        match pending.mode.as_str() {
+            "loopback" => {
+                let listener = pending
+                    .listener
+                    .ok_or_else(|| "The loopback listener was lost. Start again.".to_owned())?;
+                let callback =
+                    loopback::wait_for_callback(&listener, "/callback", Duration::from_secs(300))
+                        .await?;
+                if callback.query.contains_key("error") {
+                    return Err("OpenRouter sign-in was cancelled.".to_owned());
+                }
+                callback.query.get("code").cloned().ok_or_else(|| {
+                    "The callback did not include an authorization code.".to_owned()
+                })?
             }
-            callback
-                .query
-                .get("code")
-                .cloned()
-                .ok_or_else(|| "The callback did not include an authorization code.".to_owned())?
-        }
-        "code" => code
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "Paste the code OpenRouter showed you.".to_owned())?,
-        _ => return Err("Unknown pairing mode.".to_owned()),
-    };
+            "code" => code
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "Paste the code OpenRouter showed you.".to_owned())?,
+            _ => return Err("Unknown pairing mode.".to_owned()),
+        };
 
     let client = util::http_client(Duration::from_secs(15), true)?;
     let response = client
@@ -165,6 +168,7 @@ pub async fn openrouter_pair_complete(
         .filter(|key| !key.is_empty())
         .ok_or_else(|| "OpenRouter did not return an API key.".to_owned())?;
 
-    miss_minute_agent::secrets::set_provider_secret("openrouter", key).map_err(|error| format!("{error:#}"))?;
+    miss_minute_agent::secrets::set_provider_secret("openrouter", key)
+        .map_err(|error| format!("{error:#}"))?;
     Ok(())
 }

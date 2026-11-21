@@ -4,16 +4,17 @@
  * thought signatures, to be sent back exactly as received during function calling, so the
  * session keeps the streamed parts and replays them.
  */
-import type { AISettings } from '../../../types';
-import { isDesktopRuntime } from '../../../desktop/bridge';
-import { defaultModelFor } from '../../settings';
-import type { ModelOption } from '../types';
-import { ProviderError, httpError } from '../errors';
-import { openHttpStream, readMessages } from '../transport';
-import { parseDataUrl, type ConvMessage, type ModelToolCall, type ToolResultForModel } from '../conversation';
-import { requireCredential, webKey } from './auth';
-import { geminiSchema } from './schema';
-import type { FinishReason, ProviderAdapter, ProviderSession, RoundOptions, RoundResult, SessionInit } from './types';
+import type { AISettings } from '../../../types/index.ts';
+import { isDesktopRuntime } from '../../../desktop/bridge.ts';
+import { isAndroidApp } from '../../platform.ts';
+import { defaultModelFor } from '../../settings.ts';
+import type { ModelOption } from '../types.ts';
+import { ProviderError, httpError } from '../errors.ts';
+import { openHttpStream, readMessages } from '../transport.ts';
+import { parseDataUrl, type ConvMessage, type ModelToolCall, type ToolResultForModel } from '../conversation.ts';
+import { requireCredential, webKey } from './auth.ts';
+import { geminiSchema } from './schema.ts';
+import type { FinishReason, ProviderAdapter, ProviderSession, RoundOptions, RoundResult, SessionInit } from './types.ts';
 
 type Item = Record<string, unknown>;
 
@@ -32,7 +33,7 @@ function isGemini3Plus(model: string): boolean {
 
 function headers(settings: AISettings): { headers: Record<string, string>; secret?: Record<string, string> } {
   const base = { 'Content-Type': 'application/json' };
-  if (isDesktopRuntime()) return { headers: base };
+  if (isDesktopRuntime() || isAndroidApp()) return { headers: base };
   const key = webKey('gemini', settings);
   return { headers: base, secret: key ? { 'x-goog-api-key': key } : undefined };
 }

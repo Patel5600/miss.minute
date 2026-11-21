@@ -87,7 +87,7 @@ function timerCopy(timer: TimerRecord): Copy {
   return {
     title: label ? `Timer done: ${label}` : 'Timer done',
     body: `${formatDuration(timer.durationMs)} timer finished at ${formatTime(timer.endsAt)}`,
-    speech: `Ding ding! Your ${name} is done, sugar.`,
+    speech: `Ding ding! Your ${name} is done.`,
     cue: { emotion: 'surprised', gesture: 'knock' },
   };
 }
@@ -99,7 +99,7 @@ function itemCopy(item: ScheduleItem, at: number): Copy {
     return {
       title: labelled ? `Alarm: ${item.title}` : `Alarm ${time}`,
       body: labelled ? `${time}${item.recurrence === 'none' ? '' : `, ${recurrenceText(item.recurrence, item.startAt)}`}` : 'Time to get moving.',
-      speech: labelled ? `It's ${time}, sugar. ${item.title}!` : `Rise and shine, it's ${time}!`,
+      speech: labelled ? `It's ${time}. ${item.title}!` : `Rise and shine, it's ${time}!`,
       cue: { emotion: 'cheerful', gesture: 'wave' },
     };
   }
@@ -115,7 +115,7 @@ function itemCopy(item: ScheduleItem, at: number): Copy {
   return {
     title: `Reminder: ${item.title}`,
     body: item.notes?.trim() || `Due ${time}`,
-    speech: `Friendly reminder, sugar: ${item.title}.`,
+    speech: `Friendly reminder: ${item.title}.`,
     cue: { emotion: 'talking', gesture: 'point' },
   };
 }

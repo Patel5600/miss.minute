@@ -62,12 +62,12 @@ function matchesQualifier(result: GeocodingResult, qualifier: string): boolean {
     });
 }
 
-export async function geocode(query: string, signal?: AbortSignal): Promise<Place> {
+export async function geocode(query: string, signal?: AbortSignal, allowPersistentCache = true): Promise<Place> {
   const cleaned = query.replace(/\s+/g, ' ').trim();
   if (!cleaned) throw new ToolInputError('A city name is required.');
   if (cleaned.length > 120) throw new ToolInputError('The city name is too long.');
   const key = fold(cleaned);
-  const cached = memory.get(key) ?? (await kvGet<Place>(`geo:${key}`).catch(() => undefined));
+  const cached = memory.get(key) ?? (allowPersistentCache ? await kvGet<Place>(`geo:${key}`).catch(() => undefined) : undefined);
   if (cached) {
     memory.set(key, cached);
     return cached;
@@ -100,6 +100,6 @@ export async function geocode(query: string, signal?: AbortSignal): Promise<Plac
     admin1: best.admin1,
   };
   memory.set(key, place);
-  void kvSet(`geo:${key}`, place).catch(() => undefined);
+  if (allowPersistentCache) void kvSet(`geo:${key}`, place).catch(() => undefined);
   return place;
 }

@@ -2,7 +2,7 @@
  * OpenAI Responses API (POST /v1/responses, streamed), shared by two providers:
  *
  *  - openai: the owner's API key.
- *  - chatgpt: "Sign in with ChatGPT" plan usage, desktop only. The host adds the OAuth token.
+ *  - chatgpt: "Sign in with ChatGPT" plan usage, delegated to the platform host. The host adds the OAuth token.
  *    Per OpenAI's rules for this route every request is store:false + stream:true, carries the
  *    whole history in `input`, uses `instructions` (never system-role items), omits the
  *    unsupported fields (temperature, max_output_tokens, previous_response_id, metadata, ...),
@@ -22,6 +22,7 @@ import { parseToolArguments, toolOutputText, type ConvMessage, type ModelToolCal
 import { requireCredential, webKey } from './auth';
 import { jsonSchemaFor } from './schema';
 import type { FinishReason, ModelProfile, ProviderAdapter, ProviderSession, Purpose, RoundOptions, RoundResult, SessionInit } from './types';
+import { androidChatGptAccount, androidChatGptModels, isAndroidApp } from '../../platform';
 
 const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const MODELS_URL = 'https://api.openai.com/v1/models';
@@ -229,7 +230,7 @@ class ResponsesSession implements ProviderSession {
 
   private async attempt(options: RoundOptions): Promise<RoundResult> {
     const { profile, settings } = this.init;
-    const key = this.kind === 'openai' && !isDesktopRuntime() ? webKey('openai', settings) : '';
+    const key = this.kind === 'openai' && !isDesktopRuntime() && !isAndroidApp() ? webKey('openai', settings) : '';
     const stream = await openHttpStream({
       provider: this.kind,
       url: RESPONSES_URL,
@@ -397,24 +398,28 @@ let modelCache: { at: number; models: ModelOption[] } | null = null;
 
 async function chatgptAccount(fresh = false): Promise<ChatGptAccount> {
   if (!fresh && accountCache && Date.now() - accountCache.at < 30_000) return accountCache.account;
-  const account = await invokeNative<ChatGptAccount>('chatgpt_account');
+  const account = isAndroidApp()
+    ? await androidChatGptAccount()
+    : await invokeNative<ChatGptAccount>('chatgpt_account');
   accountCache = { at: Date.now(), account };
   return account;
 }
 
 async function chatgptModels(fresh = false): Promise<ModelOption[]> {
   if (!fresh && modelCache && Date.now() - modelCache.at < 300_000) return modelCache.models;
-  const raw = await invokeNative<ChatGptModel[]>('chatgpt_models');
+  const raw = isAndroidApp()
+    ? await androidChatGptModels()
+    : await invokeNative<ChatGptModel[]>('chatgpt_models');
   const models = (Array.isArray(raw) ? raw : [])
     .filter(model => model && typeof model.slug === 'string' && model.slug)
-    .map(model => ({ id: model.slug, label: model.displayName ?? model.display_name ?? model.slug, vision: true, tools: true }));
+    .map(model => ({ id: model.slug, label: model.displayName ?? model.slug, vision: true, tools: true }));
   modelCache = { at: Date.now(), models };
   return models;
 }
 
 function requireDesktopForChatGpt(): void {
-  if (!isDesktopRuntime()) {
-    throw new ProviderError('config', 'Sign in with ChatGPT works in the Miss Minutes desktop app. In the browser, use OpenAI with an API key or OpenRouter instead.', { recoverable: false });
+  if (!isDesktopRuntime() && !isAndroidApp()) {
+    throw new ProviderError('config', 'Connect ChatGPT inside the Miss Minutes Android or desktop app. In a regular browser, use OpenAI with an API key or OpenRouter instead.', { recoverable: false });
   }
 }
 
@@ -524,26 +529,24 @@ export const chatgptAdapter: ProviderAdapter = {
     return chatgptModels(true);
   },
   async testConnection(settings) {
-    requireDesktopForChatGpt();
-    let account: ChatGptAccount;
+    const started = performance.now();
     try {
-      account = await chatgptAccount(true);
+      const profile = await chatgptProfile(settings);
+      const session = new ResponsesSession('chatgpt', {
+        settings,
+        profile,
+        instructions: { stable: 'This is a provider connection check. Reply with the single word OK.', dynamic: '' },
+        conversation: [{ role: 'user', text: 'Reply with OK.', images: [] }],
+        tools: [],
+        purpose: 'chat',
+        maxOutputTokens: 16,
+      });
+      const result = await session.round({ onText: () => undefined, signal: new AbortController().signal, toolChoice: 'none' });
+      if (!result.text.trim()) return { ok: false, message: `ChatGPT accepted the request but returned no text (${profile.model}).` };
+      return { ok: true, message: `ChatGPT responded with ${profile.model} in ${Math.round(performance.now() - started)} ms.` };
     } catch (error) {
-      throw hostError(error, "I couldn't check your ChatGPT sign-in");
+      return { ok: false, message: error instanceof Error ? error.message : "I couldn't complete the ChatGPT inference check." };
     }
-    if (!account.signedIn) return { ok: false, message: 'Not signed in with ChatGPT yet.' };
-    if (!account.planUsage) return { ok: false, message: `Signed in${account.email ? ` as ${account.email}` : ''}, but ChatGPT plan usage was not granted. Sign in again and allow it.` };
-    const models = await chatgptModels(true);
-    const model = settings.model.trim() || models[0]?.id || '';
-    const listed = models.some(option => option.id === model);
-    return {
-      ok: models.length > 0 && listed,
-      message: models.length === 0
-        ? 'Signed in, but your ChatGPT account did not list any models for apps.'
-        : listed
-          ? `Signed in${account.email ? ` as ${account.email}` : ''}. ChatGPT plan usage is on; ${model} is available. Usage: ${CHATGPT_USAGE_URL}`
-          : `Signed in, but "${model}" isn't in your account's catalog. Pick one of: ${models.slice(0, 5).map(option => option.id).join(', ')}.`,
-    };
   },
 };
 

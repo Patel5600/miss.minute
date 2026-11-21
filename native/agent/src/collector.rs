@@ -2,9 +2,9 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, RecvTimeoutError, SyncSender, TrySendError},
-        Arc,
     },
     time::{Duration, Instant},
 };
@@ -18,7 +18,6 @@ use crate::{
     config::AgentConfig,
     reasoner,
     store::{EventRecord, Store},
-
 };
 
 #[derive(Debug, Default)]
@@ -30,7 +29,8 @@ pub struct ScanReport {
 }
 
 fn sanitize_foreground_title(raw: &str) -> Option<String> {
-    let title = raw.chars()
+    let title = raw
+        .chars()
         .filter(|character| !character.is_control())
         .take(512)
         .collect::<String>()
@@ -105,7 +105,10 @@ pub fn scan_roots(config: &AgentConfig, store: &mut Store) -> Result<ScanReport>
                 Ok(_) => continue,
                 Err(error) => {
                     report.inaccessible_entries += 1;
-                    eprintln!("[coverage] Metadata unavailable for {}: {error}", path.display());
+                    eprintln!(
+                        "[coverage] Metadata unavailable for {}: {error}",
+                        path.display()
+                    );
                     continue;
                 }
             };
@@ -199,8 +202,13 @@ fn evaluate_context(store: &mut Store, config: &AgentConfig) -> Result<Option<re
 
     let through_seq = evidence.last().map(|event| event.seq).unwrap_or(cursor);
     let owner_context = store.enabled_owner_contexts()?;
-    let decision = reasoner::evaluate(reasoner_config, &evidence, &config.approved_note_roots, &owner_context)?;
-    
+    let decision = reasoner::evaluate(
+        reasoner_config,
+        &evidence,
+        &config.approved_note_roots,
+        &owner_context,
+    )?;
+
     if let Some(action) = &decision.proposed_action {
         let payload = serde_json::to_value(&action.payload)?;
         let action_id = store.create_pending_action(
@@ -213,18 +221,26 @@ fn evaluate_context(store: &mut Store, config: &AgentConfig) -> Result<Option<re
             Ok(Some(outcome)) => {
                 println!(
                     "[MISS MINUTES / AUTO NOTE CREATED] {} ({} bytes)",
-                    outcome.created_path.as_deref().unwrap_or("output path unavailable"),
+                    outcome
+                        .created_path
+                        .as_deref()
+                        .unwrap_or("output path unavailable"),
                     outcome.bytes_written
                 );
             }
             Ok(None) => {
-                println!("[MISS MINUTES / APPROVAL REQUIRED] action={action_id}: {}", action.description);
+                println!(
+                    "[MISS MINUTES / APPROVAL REQUIRED] action={action_id}: {}",
+                    action.description
+                );
             }
             Err(error) => {
                 // The executor records a failed/uncertain state before returning.
                 // Consume this evidence decision so the same action is not proposed
                 // and retried on every quiet-window cycle.
-                eprintln!("[actions] Automatic note creation failed and was not retried: {error:#}");
+                eprintln!(
+                    "[actions] Automatic note creation failed and was not retried: {error:#}"
+                );
             }
         }
     }
@@ -249,12 +265,17 @@ fn evaluate_context(store: &mut Store, config: &AgentConfig) -> Result<Option<re
     Ok(Some(decision))
 }
 
-pub fn run_agent(config: &AgentConfig, quiet_window_seconds: u64, rescan_seconds: u64) -> Result<()> {
+pub fn run_agent(
+    config: &AgentConfig,
+    quiet_window_seconds: u64,
+    rescan_seconds: u64,
+) -> Result<()> {
     let stopping = Arc::new(AtomicBool::new(false));
     let signal_stopping = Arc::clone(&stopping);
     ctrlc::set_handler(move || {
         signal_stopping.store(true, Ordering::Release);
-    }).context("Cannot register shutdown handler")?;
+    })
+    .context("Cannot register shutdown handler")?;
     run_agent_until(config, quiet_window_seconds, rescan_seconds, stopping)
 }
 
@@ -266,7 +287,13 @@ pub fn run_agent_until(
     rescan_seconds: u64,
     stopping: Arc<AtomicBool>,
 ) -> Result<()> {
-    run_agent_until_with_callback(config, quiet_window_seconds, rescan_seconds, stopping, |_| {})
+    run_agent_until_with_callback(
+        config,
+        quiet_window_seconds,
+        rescan_seconds,
+        stopping,
+        |_| {},
+    )
 }
 
 /// Variant used by the native host to forward validated reasoning decisions to
@@ -289,10 +316,12 @@ where
 
     let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |notification| {
         enqueue_notification(&callback_sender, &callback_overflow, notification);
-    }).context("Cannot initialize this platform's file-system watcher")?;
+    })
+    .context("Cannot initialize this platform's file-system watcher")?;
 
     for root in &roots {
-        watcher.watch(root, RecursiveMode::Recursive)
+        watcher
+            .watch(root, RecursiveMode::Recursive)
             .with_context(|| format!("Cannot watch authorized root {}", root.display()))?;
     }
 
@@ -309,32 +338,35 @@ where
         initial.inaccessible_entries,
         deleted
     );
-    println!("[agent] Metadata only. File contents, keystrokes, clipboard, screenshots and private app data are not collected.");
+    println!(
+        "[agent] Metadata only. File contents, keystrokes, clipboard, screenshots and private app data are not collected."
+    );
     if recovered_actions > 0 {
-        eprintln!("[actions] Marked {recovered_actions} interrupted action(s) failed for manual inspection; no automatic retry was attempted.");
+        eprintln!(
+            "[actions] Marked {recovered_actions} interrupted action(s) failed for manual inspection; no automatic retry was attempted."
+        );
     }
 
     let quiet_window = Duration::from_secs(quiet_window_seconds.clamp(5, 3600));
     let rescan_interval = Duration::from_secs(rescan_seconds.clamp(30, 86_400));
     let mut next_rescan = Instant::now() + rescan_interval;
-    let mut last_event_at: Option<Instant> = if initial.resources_discovered > 0 || initial.resources_changed > 0 {
-        Some(Instant::now())
-    } else {
-        None
-    };
+    let mut last_event_at: Option<Instant> =
+        if initial.resources_discovered > 0 || initial.resources_changed > 0 {
+            Some(Instant::now())
+        } else {
+            None
+        };
     let mut last_reasoner_error_at: Option<Instant> = None;
     let mut last_foreground_title: Option<String> = None;
     let mut next_foreground_sample = Instant::now();
 
     while !stopping.load(Ordering::Acquire) {
         match receiver.recv_timeout(Duration::from_millis(500)) {
-            Ok(Ok(event)) => {
-                match process_notification(event, &roots, &mut store) {
-                    Ok(processed) if processed > 0 => last_event_at = Some(Instant::now()),
-                    Ok(_) => {}
-                    Err(error) => eprintln!("[collector] Notification could not be stored: {error:#}"),
-                }
-            }
+            Ok(Ok(event)) => match process_notification(event, &roots, &mut store) {
+                Ok(processed) if processed > 0 => last_event_at = Some(Instant::now()),
+                Ok(_) => {}
+                Err(error) => eprintln!("[collector] Notification could not be stored: {error:#}"),
+            },
             Ok(Err(error)) => {
                 let payload = serde_json::json!({
                     "error": error.to_string(),
@@ -353,7 +385,9 @@ where
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
-                anyhow::bail!("File-system event channel disconnected; stopping to avoid silent data loss.");
+                anyhow::bail!(
+                    "File-system event channel disconnected; stopping to avoid silent data loss."
+                );
             }
         }
 
@@ -396,9 +430,14 @@ where
                 None,
                 &payload,
             )?;
-            eprintln!("[coverage] Notification queue overflowed. A rescan cannot reconstruct every missed event.");
+            eprintln!(
+                "[coverage] Notification queue overflowed. A rescan cannot reconstruct every missed event."
+            );
             let report = scan_roots(config, &mut store)?;
-            eprintln!("[collector] Recovery scan: {} files, {} inaccessible entries.", report.files_seen, report.inaccessible_entries);
+            eprintln!(
+                "[collector] Recovery scan: {} files, {} inaccessible entries.",
+                report.files_seen, report.inaccessible_entries
+            );
             last_event_at = Some(Instant::now());
         }
 
@@ -412,7 +451,10 @@ where
                 report.inaccessible_entries
             );
             next_rescan = Instant::now() + rescan_interval;
-            if report.resources_discovered > 0 || report.resources_changed > 0 || report.inaccessible_entries > 0 {
+            if report.resources_discovered > 0
+                || report.resources_changed > 0
+                || report.inaccessible_entries > 0
+            {
                 last_event_at = Some(Instant::now());
             }
         }
@@ -460,7 +502,13 @@ mod tests {
             Some("ReportDraft".to_owned())
         );
         assert!(sanitize_foreground_title("  \n  ").is_none());
-        assert!(sanitize_foreground_title(&"x".repeat(600)).unwrap().chars().count() <= 512);
+        assert!(
+            sanitize_foreground_title(&"x".repeat(600))
+                .unwrap()
+                .chars()
+                .count()
+                <= 512
+        );
         assert!(sanitize_foreground_title("Miss Minutes • TVA Companion").is_none());
     }
 

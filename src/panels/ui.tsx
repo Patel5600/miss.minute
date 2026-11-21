@@ -1,20 +1,22 @@
 /**
- * Small building blocks shared by the panels, in the TVA amber/CRT look of the original
- * Timeline Monitor: dark amber glass cards, mono type, uppercase micro-labels.
+ * Shared UI building blocks for TVA workspace panels (Sacred Timeline, Toolbelt, Dossier, Activity):
+ * obsidian cards, warm editorial contrast, accessible keyboard controls, and clockwork amber focus states.
  */
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { TriangleAlert } from 'lucide-react';
 
-export const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 focus-visible:ring-offset-1 focus-visible:ring-offset-black';
+export const focusRing =
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FF7A1A] focus-visible:ring-offset-1 focus-visible:ring-offset-[#0B0908]';
 
-export const inputClass = `bg-black/60 border border-amber-700/50 rounded px-2 py-1 text-amber-100 text-xs placeholder:text-amber-500/50 ${focusRing}`;
+export const inputClass =
+  `bg-[#0E0B08] border border-white/[0.12] rounded-xl px-3 py-1.5 text-[#F5EFE6] text-xs placeholder:text-[#786B5E] transition-colors focus:border-[#FF7A1A]/60 ${focusRing}`;
 
 const TONES = {
-  amber: 'bg-amber-600/30 hover:bg-amber-600/50 border-amber-500/40 text-amber-100',
-  solid: 'bg-amber-500 hover:bg-amber-400 border-amber-400 text-neutral-950 font-bold',
-  ghost: 'bg-transparent hover:bg-amber-900/40 border-amber-700/40 text-amber-300',
-  danger: 'bg-red-900/60 hover:bg-red-800 border-red-500/50 text-red-100',
-  quiet: 'bg-transparent hover:bg-amber-900/30 border-transparent text-amber-400/80 hover:text-amber-200',
+  amber: 'bg-[#FF7A1A]/15 hover:bg-[#FF7A1A]/25 border-[#FF7A1A]/35 text-[#FFD9B3]',
+  solid: 'bg-[#FF7A1A] hover:bg-[#FF903B] border-[#FF7A1A] text-[#110C07] font-semibold',
+  ghost: 'bg-white/[0.03] hover:bg-white/[0.08] border-white/[0.1] text-[#CBBEB0] hover:text-[#F5EFE6]',
+  danger: 'bg-red-950/60 hover:bg-red-900/70 border-red-500/40 text-red-200',
+  quiet: 'bg-transparent hover:bg-white/[0.06] border-transparent text-[#9D9082] hover:text-[#F5EFE6]',
 } as const;
 
 export type Tone = keyof typeof TONES;
@@ -38,7 +40,7 @@ export function Button(props: {
       title={props.title}
       aria-label={props.label}
       aria-pressed={props.pressed}
-      className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${TONES[props.tone ?? 'amber']} ${focusRing} ${props.className ?? ''}`}
+      className={`inline-flex cursor-pointer items-center gap-1.5 px-3 py-1.5 text-xs rounded-xl border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${TONES[props.tone ?? 'amber']} ${focusRing} ${props.className ?? ''}`}
     >
       {props.children}
     </button>
@@ -46,7 +48,14 @@ export function Button(props: {
 }
 
 /** Icon-only button; `label` is required for screen readers and the tooltip. */
-export function IconButton(props: { label: string; onClick: () => void; children: ReactNode; tone?: Tone; disabled?: boolean; pressed?: boolean }) {
+export function IconButton(props: {
+  label: string;
+  onClick: () => void;
+  children: ReactNode;
+  tone?: Tone;
+  disabled?: boolean;
+  pressed?: boolean;
+}) {
   return (
     <button
       type="button"
@@ -55,7 +64,7 @@ export function IconButton(props: { label: string; onClick: () => void; children
       aria-label={props.label}
       aria-pressed={props.pressed}
       title={props.label}
-      className={`inline-flex items-center justify-center w-7 h-7 rounded border transition-colors disabled:opacity-40 ${TONES[props.tone ?? 'ghost']} ${focusRing}`}
+      className={`inline-flex cursor-pointer items-center justify-center w-8 h-8 rounded-xl border transition-colors disabled:opacity-40 ${TONES[props.tone ?? 'ghost']} ${focusRing}`}
     >
       {props.children}
     </button>
@@ -79,26 +88,30 @@ export function ConfirmButton(props: {
   }, [asking]);
   if (!asking) {
     return props.iconOnly ? (
-      <IconButton label={props.label ?? props.question} onClick={() => setAsking(true)} tone={props.tone ?? 'ghost'}>{props.children}</IconButton>
+      <IconButton label={props.label ?? props.question} onClick={() => setAsking(true)} tone={props.tone ?? 'ghost'}>
+        {props.children}
+      </IconButton>
     ) : (
-      <Button tone={props.tone ?? 'ghost'} onClick={() => setAsking(true)} label={props.label}>{props.children}</Button>
+      <Button tone={props.tone ?? 'ghost'} onClick={() => setAsking(true)} label={props.label}>
+        {props.children}
+      </Button>
     );
   }
   const onKey = (event: KeyboardEvent) => {
     if (event.key === 'Escape') setAsking(false);
   };
   return (
-    <span role="group" aria-label={props.question} className="inline-flex items-center gap-1 text-[11px] text-red-200" onKeyDown={onKey}>
+    <span role="group" aria-label={props.question} className="inline-flex items-center gap-1.5 text-xs text-red-200" onKeyDown={onKey}>
       <span>{props.question}</span>
       <button
         ref={confirmRef}
         type="button"
         onClick={() => { setAsking(false); void props.onConfirm(); }}
-        className={`px-2 py-0.5 rounded border ${TONES.danger} ${focusRing}`}
+        className={`cursor-pointer px-2.5 py-1 rounded-lg border ${TONES.danger} ${focusRing}`}
       >
         {props.confirmLabel ?? 'Yes'}
       </button>
-      <button type="button" onClick={() => setAsking(false)} className={`px-2 py-0.5 rounded border ${TONES.ghost} ${focusRing}`}>
+      <button type="button" onClick={() => setAsking(false)} className={`cursor-pointer px-2.5 py-1 rounded-lg border ${TONES.ghost} ${focusRing}`}>
         No
       </button>
     </span>
@@ -118,14 +131,23 @@ export function PanelShell(props: {
   return (
     <section
       aria-labelledby={id}
-      className={`bg-amber-950/40 border ${props.alert ? 'border-red-500/50' : 'border-amber-600/30'} rounded-xl p-4 backdrop-blur-md shadow-2xl font-mono text-amber-200 flex flex-col gap-3 ${props.className ?? ''}`}
+      className={`bg-[#14100C] border ${
+        props.alert ? 'border-red-500/45' : 'border-white/[0.08]'
+      } rounded-2xl p-4 sm:p-5 shadow-[0_14px_40px_rgba(0,0,0,0.45)] text-[#F5EFE6] flex flex-col gap-3.5 ${props.className ?? ''}`}
     >
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-600/20 pb-2.5">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${props.alert ? 'bg-red-500 motion-safe:animate-pulse' : 'bg-amber-400'}`} aria-hidden="true" />
-          <span className="text-amber-400 flex-shrink-0" aria-hidden="true">{props.icon}</span>
-          <h3 id={id} className="font-bold tracking-wider text-sm uppercase text-amber-300 truncate">{props.title}</h3>
-          {props.subtitle ? <span className="text-[10px] text-amber-400/70 uppercase tracking-widest truncate">{props.subtitle}</span> : null}
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.07] pb-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <span
+            className={`w-2 h-2 rounded-full flex-shrink-0 ${props.alert ? 'bg-red-500 motion-safe:animate-pulse' : 'bg-[#FF7A1A]'}`}
+            aria-hidden="true"
+          />
+          <span className="text-[#FF9240] flex-shrink-0" aria-hidden="true">{props.icon}</span>
+          <h3 id={id} className="font-semibold tracking-tight text-base text-[#FFF8EE] truncate">
+            {props.title}
+          </h3>
+          {props.subtitle ? (
+            <span className="text-[11px] font-medium text-[#9D9082] truncate">· {props.subtitle}</span>
+          ) : null}
         </div>
         {props.actions ? <div className="flex flex-wrap items-center gap-1.5">{props.actions}</div> : null}
       </header>
@@ -137,21 +159,21 @@ export function PanelShell(props: {
 export function ErrorLine({ message }: { message: string | null | undefined }) {
   if (!message) return null;
   return (
-    <p role="alert" className="flex items-start gap-1.5 text-[11px] text-red-300 bg-red-950/40 border border-red-700/40 rounded px-2 py-1">
-      <TriangleAlert className="w-3.5 h-3.5 flex-shrink-0 mt-px" aria-hidden="true" />
+    <p role="alert" className="flex items-start gap-1.5 text-xs text-red-300 bg-red-950/35 border border-red-500/35 rounded-xl px-3 py-2">
+      <TriangleAlert className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" aria-hidden="true" />
       <span>{message}</span>
     </p>
   );
 }
 
 export function Empty({ children }: { children: ReactNode }) {
-  return <p className="text-[11px] text-amber-400/60 italic px-1 py-2">{children}</p>;
+  return <p className="text-xs text-[#9D9082] px-1 py-2">{children}</p>;
 }
 
 export function MicroLabel({ children, htmlFor }: { children: ReactNode; htmlFor?: string }) {
   return htmlFor
-    ? <label htmlFor={htmlFor} className="text-[10px] uppercase tracking-widest text-amber-500">{children}</label>
-    : <span className="text-[10px] uppercase tracking-widest text-amber-500">{children}</span>;
+    ? <label htmlFor={htmlFor} className="text-[11px] font-medium uppercase tracking-wider text-[#9D9082]">{children}</label>
+    : <span className="text-[11px] font-medium uppercase tracking-wider text-[#9D9082]">{children}</span>;
 }
 
 /** Accessible tab strip (arrow keys move between tabs). */
@@ -175,7 +197,7 @@ export function Tabs<T extends string>(props: {
     refs.current[next]?.focus();
   };
   return (
-    <div role="tablist" aria-label={props.label} className="flex flex-wrap gap-1">
+    <div role="tablist" aria-label={props.label} className="flex flex-wrap gap-1.5">
       {props.tabs.map((tab, index) => {
         const selected = tab.id === props.value;
         return (
@@ -189,7 +211,11 @@ export function Tabs<T extends string>(props: {
             tabIndex={selected ? 0 : -1}
             onClick={() => props.onChange(tab.id)}
             onKeyDown={event => onKeyDown(event, index)}
-            className={`px-2.5 py-1 text-xs rounded transition-colors ${focusRing} ${selected ? 'bg-amber-600/40 text-amber-100 font-semibold' : 'text-amber-400/70 hover:text-amber-200'}`}
+            className={`cursor-pointer px-3 py-1.5 text-xs rounded-xl border transition-colors ${focusRing} ${
+              selected
+                ? 'border-[#FF7A1A]/40 bg-[#FF7A1A]/15 text-[#FFF4E4] font-semibold'
+                : 'border-white/[0.06] bg-white/[0.02] text-[#9D9082] hover:text-[#F5EFE6]'
+            }`}
           >
             {tab.label}{tab.count !== undefined ? ` (${tab.count})` : ''}
           </button>

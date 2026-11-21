@@ -10,12 +10,17 @@
     <string name="reminders_channel_description">Timers and reminders you set.</string>
     <string name="cards_channel_name">Prompts</string>
     <string name="cards_channel_description">Short prompts, for example when she needs a permission.</string>
+    <string name="wake_channel_name">Wake word listener</string>
+    <string name="wake_channel_description">Shown while Miss Minutes listens locally on-device for wake phrases.</string>
 
     <!-- Notifications -->
     <string name="overlay_notification_title">Miss Minutes is on your screen</string>
     <string name="overlay_notification_text">Tap Stop Miss Minutes to make her disappear and stop everything she is doing.</string>
+    <string name="wake_notification_title">Miss Minutes wake listener active</string>
+    <string name="wake_notification_text">Listening locally on-device for Hey Miss Minutes or Freeze Timeline.</string>
     <string name="action_open">Open</string>
     <string name="action_stop">Stop Miss Minutes</string>
+    <string name="action_stop_wake">Stop listening</string>
     <string name="bring_back_title">Miss Minutes stopped</string>
     <string name="bring_back_text">Tap to bring her back.</string>
     <string name="overlay_permission_title">Miss Minutes needs one permission</string>

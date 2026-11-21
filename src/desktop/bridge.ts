@@ -15,6 +15,20 @@ export interface NativeAgentStatus {
   dailyNoteLimit: number;
 }
 
+export type DesktopOperatingMode = 'owner_mode' | 'owner_candidate' | 'guest_mode';
+
+export interface DesktopOwnerStatus {
+  enrolled: boolean;
+  authenticated: boolean;
+  ownerCandidate: boolean;
+  authState: string;
+  mode: DesktopOperatingMode;
+  candidateName: string | null;
+  candidateConfidence: number;
+  sessionId: string | null;
+  platform: string;
+}
+
 export interface AgentStreamTicket {
   token: string;
   cursor: number;
@@ -259,4 +273,296 @@ export async function listenNative<T>(event: string, handler: (payload: T) => vo
   const events = window.__TAURI__?.event;
   if (!events) return () => undefined;
   return events.listen<T>(event, e => handler(e.payload));
+}
+
+// ── Security, Telemetry, Wake & Mission Engine Contracts ──────────────────────
+
+export interface AuditEntry {
+  sequence: number;
+  event: string;
+  from_state: string;
+  to_state: string;
+  mode: DesktopOperatingMode;
+  detail: string;
+  prev_hash: string;
+  entry_hash: string;
+}
+
+export interface HistogramSummary {
+  count: number;
+  min_us: number;
+  p50_us: number;
+  p95_us: number;
+  p99_us: number;
+  max_us: number;
+}
+
+export interface TelemetrySnapshot {
+  histograms: Record<string, HistogramSummary>;
+  counters: Record<string, number>;
+  queue_depths: Record<string, number>;
+}
+
+export type WakeOutcome =
+  | 'silent'
+  | 'below_threshold'
+  | 'cooldown_active'
+  | { accumulating: { hits: number; required: number } }
+  | { triggered: { phrase: string; confidence: number } }
+  | { emergency_stop: { phrase: string } };
+
+export interface WakeFeedResult {
+  outcome: WakeOutcome;
+  speechActive: boolean;
+  rms: number;
+  zeroCrossingRate: number;
+  ownerStatus: DesktopOwnerStatus;
+}
+
+export type SideEffectTier = 'read_only' | 'local_write' | 'external' | 'destructive' | 'financial';
+
+export interface MissionNode {
+  id: string;
+  title: string;
+  depends_on: string[];
+  action_kind: string;
+  side_effect: SideEffectTier;
+  max_retries: number;
+}
+
+export interface MissionDag {
+  mission_id: string;
+  goal: string;
+  nodes: MissionNode[];
+}
+
+export interface NodeCheckpoint {
+  node_id: string;
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  attempts: number;
+  evidence: string | null;
+}
+
+export interface MissionRunReport {
+  run_id: string;
+  mission_id: string;
+  checkpoints: NodeCheckpoint[];
+  completed: boolean;
+}
+
+export interface TrustSignals {
+  verified_domain: boolean;
+  requires_upfront_fee_or_wire: boolean;
+  asks_off_platform_payment: boolean;
+  typosquatted_or_suspicious_url: boolean;
+  impossible_roi_or_urgency_pressure: boolean;
+  opaque_contact_or_masked_redirect: boolean;
+  transparent_terms_present: boolean;
+}
+
+export interface OfferListing {
+  id: string;
+  title: string;
+  source_domain: string;
+  fit_score: number;
+  clarity_score: number;
+  base_legitimacy_score: number;
+  signals: TrustSignals;
+}
+
+export type ScamFlag =
+  | 'upfront_fee_or_wire'
+  | 'off_platform_payment'
+  | 'suspicious_or_typosquatted_domain'
+  | 'impossible_roi_or_urgency'
+  | 'masked_redirect_or_opaque_contact';
+
+export interface RankedOffer {
+  id: string;
+  title: string;
+  source_domain: string;
+  rejected_as_scam: boolean;
+  scam_flags: ScamFlag[];
+  legitimacy_component: number;
+  fit_component: number;
+  clarity_component: number;
+  total_score: number;
+}
+
+export interface BusyInterval {
+  start_epoch_min: number;
+  end_epoch_min: number;
+  label: string;
+}
+
+export interface FreeSlot {
+  start_epoch_min: number;
+  end_epoch_min: number;
+  duration_minutes: number;
+}
+
+export interface AvailabilitySummary {
+  free_slots: FreeSlot[];
+  summary_sentence: string;
+}
+
+export type DesktopCallFact =
+  | { kind: 'scheduled_window'; summary: string }
+  | { kind: 'booking_name'; first_name: string }
+  | { kind: 'callback_number'; e164: string }
+  | { kind: 'reference_code'; code: string }
+  | { kind: 'brief_topic'; topic: string };
+
+export interface CallPolicy {
+  quiet_start_min: number;
+  quiet_end_min: number;
+  max_calls_per_day: number;
+}
+
+export interface PreparedOutboundCall {
+  call_id: string;
+  destination_e164: string;
+  caller_label: string;
+  voice: { voice_id: 'MissMinutesTva'; display_name: string };
+  disclosure_opening: string;
+  allowed_facts: DesktopCallFact[];
+  state: 'draft' | 'validated' | 'disclosed' | 'connected' | 'completed' | 'aborted';
+}
+
+export interface ToolManifest {
+  id: string;
+  name: string;
+  description: string;
+  trusted_builtin: boolean;
+  derived_side_effect: SideEffectTier;
+  owner_approved_reclassification: boolean;
+}
+
+export type CapabilityScope =
+  | 'inspect_ui'
+  | 'interact_ui'
+  | 'type_text'
+  | 'navigate'
+  | 'file_read'
+  | 'file_write'
+  | 'app_launch'
+  | 'payments_execute'
+  | 'owner_profile_modify'
+  | 'security_policy_modify';
+
+export type ComputerAction =
+  | { kind: 'observe_screen' }
+  | { kind: 'invoke_element'; element_id: string; label: string }
+  | { kind: 'set_text'; element_id: string; text: string; submit: boolean }
+  | { kind: 'focus_window'; title_substring: string }
+  | { kind: 'navigate_url'; url: string }
+  | { kind: 'wait_ms'; ms: number };
+
+export interface StepTrace {
+  step_index: number;
+  action_kind: string;
+  verified: boolean;
+  summary: string;
+}
+
+export interface DesktopAgentRunResult {
+  runId: string;
+  traces: StepTrace[];
+}
+
+export function emergencyKillSwitch(reason?: string): Promise<DesktopOwnerStatus> {
+  return invokeNative<DesktopOwnerStatus>('emergency_kill_switch', { reason: reason ?? null });
+}
+
+export function verifyAuditChain(): Promise<boolean> {
+  return invokeNative<boolean>('desktop_audit_verify');
+}
+
+export function listAuditEntries(limit = 100): Promise<AuditEntry[]> {
+  return invokeNative<AuditEntry[]>('desktop_audit_entries', { limit });
+}
+
+export function exportRecoveryKit(passphrase: string): Promise<string> {
+  return invokeNative<string>('desktop_export_recovery_kit', { passphrase });
+}
+
+export function getTelemetrySnapshot(): Promise<TelemetrySnapshot> {
+  return invokeNative<TelemetrySnapshot>('telemetry_snapshot');
+}
+
+export function feedWakeScore(params: {
+  confidence: number;
+  transcript?: string;
+  pcm16Base64?: string;
+  customPhrases?: string[];
+}): Promise<WakeFeedResult> {
+  return invokeNative<WakeFeedResult>('wake_score_feed', {
+    confidence: params.confidence,
+    transcript: params.transcript ?? null,
+    pcm16Base64: params.pcm16Base64 ?? null,
+    customPhrases: params.customPhrases ?? null,
+  });
+}
+
+export function validateMission(dag: MissionDag): Promise<string[]> {
+  return invokeNative<string[]>('mission_validate', { dag });
+}
+
+export function executeMission(dag: MissionDag): Promise<MissionRunReport> {
+  return invokeNative<MissionRunReport>('mission_execute', { dag });
+}
+
+export function rankOffers(listings: OfferListing[]): Promise<RankedOffer[]> {
+  return invokeNative<RankedOffer[]>('offers_rank', { listings });
+}
+
+export function findAvailability(params: {
+  busy: BusyInterval[];
+  windowStartMin: number;
+  windowEndMin: number;
+  minDurationMin: number;
+}): Promise<AvailabilitySummary> {
+  return invokeNative<AvailabilitySummary>('availability_find', params);
+}
+
+export function prepareOutboundCall(params: {
+  destinationE164: string;
+  ownerFirstName: string;
+  facts: DesktopCallFact[];
+  localMinuteOfDay?: number;
+  policy?: CallPolicy;
+  dncNumbers?: string[];
+  callsPlacedToday?: number;
+}): Promise<PreparedOutboundCall> {
+  return invokeNative<PreparedOutboundCall>('calls_prepare', {
+    destinationE164: params.destinationE164,
+    ownerFirstName: params.ownerFirstName,
+    facts: params.facts,
+    localMinuteOfDay: params.localMinuteOfDay ?? null,
+    policy: params.policy ?? null,
+    dncNumbers: params.dncNumbers ?? null,
+    callsPlacedToday: params.callsPlacedToday ?? null,
+  });
+}
+
+export function importMcpTool(serverName: string, toolJson: string): Promise<ToolManifest> {
+  return invokeNative<ToolManifest>('mcp_import_tool', { serverName, toolJson });
+}
+
+export function reclassifyMcpTool(manifest: ToolManifest, requested: SideEffectTier): Promise<ToolManifest> {
+  return invokeNative<ToolManifest>('mcp_reclassify_tool', { manifest, requested });
+}
+
+export function runDesktopAgent(params: {
+  delegateName: string;
+  allowedScopes: CapabilityScope[];
+  actions: ComputerAction[];
+  maxSteps?: number;
+}): Promise<DesktopAgentRunResult> {
+  return invokeNative<DesktopAgentRunResult>('desktop_agent_run', {
+    delegateName: params.delegateName,
+    allowedScopes: params.allowedScopes,
+    actions: params.actions,
+    maxSteps: params.maxSteps ?? null,
+  });
 }

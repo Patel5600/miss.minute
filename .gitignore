@@ -77,3 +77,8 @@ native/voice/voices/
 *.gguf
 # Android companion: generated web bundle
 native/mobile/android/app/src/main/assets/web/
+
+.gradle-user-home/
+native/mobile/android/app/build/
+.gradle/
+

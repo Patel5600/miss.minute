@@ -8,9 +8,17 @@
  *
  * Also home to the stream framing parsers (SSE and NDJSON) the providers read with.
  */
-import type { ProviderHttpRequest, ProviderStreamEvent } from '../../desktop/bridge';
-import { createNativeChannel, invokeNative, isDesktopRuntime } from '../../desktop/bridge';
-import { ProviderError, cancelledError, redactSecrets } from './errors';
+import type { ProviderHttpRequest, ProviderStreamEvent } from '../../desktop/bridge.ts';
+import { createNativeChannel, invokeNative, isDesktopRuntime } from '../../desktop/bridge.ts';
+import { ProviderError, cancelledError, redactSecrets } from './errors.ts';
+import {
+  isAndroidApp,
+  startAndroidChatGptStream,
+  startAndroidProviderHttpStream,
+  type PlatformProviderId,
+  type PlatformProviderStreamEvent,
+  type PlatformStreamHandle,
+} from '../platform.ts';
 
 export type ProviderName = ProviderHttpRequest['provider'];
 
@@ -45,7 +53,148 @@ const DEFAULT_IDLE_MS = 120_000;
 const END_GRACE_MS = 1_500;
 
 export function openHttpStream(request: HttpRequest): Promise<HttpStream> {
-  return isDesktopRuntime() ? openDesktop(request) : openWeb(request);
+  if (isDesktopRuntime()) return openDesktop(request);
+  if (isAndroidApp()) return openAndroidNative(request);
+  return openWeb(request);
+}
+
+/** Android native host keeps credentials out of the WebView and streams SSE/chunks incrementally. */
+async function openAndroidNative(request: HttpRequest): Promise<HttpStream> {
+  const label = request.label ?? hostOf(request.url);
+  if (request.signal?.aborted) throw cancelledError();
+  if (request.provider === 'chatgpt' && (request.method !== 'POST' || !request.body)) {
+    throw new ProviderError('config', 'Android ChatGPT requests must use the approved Responses API operation.', { recoverable: false });
+  }
+  const streamPrefix = request.provider === 'chatgpt' ? 'cgpt' : 'and';
+  const requestId = `${streamPrefix}-${newRequestId()}`.slice(0, 64);
+  const queue = new ChunkQueue();
+  let settledHead = false;
+  let resolveHead!: (head: { status: number; headers: Record<string, string> }) => void;
+  let rejectHead!: (error: unknown) => void;
+  const headPromise = new Promise<{ status: number; headers: Record<string, string> }>((resolve, reject) => {
+    resolveHead = head => { settledHead = true; resolve(head); };
+    rejectHead = error => { settledHead = true; reject(error); };
+  });
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let finished = false;
+  let handle: PlatformStreamHandle | null = null;
+  let cancelRequested = false;
+
+  const cancelNative = () => {
+    cancelRequested = true;
+    if (handle) void handle.cancel().catch(() => undefined);
+  };
+  const finish = (error?: unknown) => {
+    if (finished) return;
+    finished = true;
+    if (idleTimer) clearTimeout(idleTimer);
+    request.signal?.removeEventListener('abort', onAbort);
+    handle?.dispose();
+    if (error) {
+      if (!settledHead) rejectHead(error);
+      queue.fail(error);
+    } else {
+      if (!settledHead) rejectHead(new ProviderError('protocol', `${label} closed the connection without answering.`));
+      queue.close();
+    }
+  };
+  const armIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      cancelNative();
+      finish(new ProviderError('timeout', `${label} stopped responding.`));
+    }, request.idleTimeoutMs ?? DEFAULT_IDLE_MS);
+  };
+  function onAbort() {
+    cancelNative();
+    finish(cancelledError());
+  }
+  request.signal?.addEventListener('abort', onAbort, { once: true });
+
+  const onEvent = (ev: PlatformProviderStreamEvent) => {
+    if (finished) return;
+    armIdle();
+    switch (ev.event) {
+      case 'start':
+        if (!settledHead) {
+          resolveHead({
+            status: typeof ev.status === 'number' ? ev.status : 0,
+            headers: lowerHeaders(Object.entries(ev.headers ?? {})),
+          });
+        }
+        break;
+      case 'chunk':
+        if (ev.data) queue.push(ev.data);
+        break;
+      case 'done':
+        if (ev.cancelled) {
+          finish(cancelledError());
+        } else {
+          if (!settledHead && typeof ev.status === 'number' && ev.status >= 100) {
+            resolveHead({
+              status: ev.status,
+              headers: lowerHeaders(Object.entries(ev.headers ?? {})),
+            });
+          }
+          finish();
+        }
+        break;
+      case 'error': {
+        const msg = ev.message || 'the Android host reported an error';
+        if (ev.code === 'owner_auth_required') {
+          finish(new ProviderError('auth', redactSecrets(msg), { code: ev.code, detail: ev.message }));
+        } else {
+          finish(new ProviderError('network', `${label}: ${redactSecrets(msg)}.`, { code: ev.code, detail: ev.message }));
+        }
+        break;
+      }
+    }
+  };
+
+  armIdle();
+  try {
+    // Drop request.secretHeaders so WebView never sends credentials over the bridge.
+    const started = request.provider === 'chatgpt'
+      ? await startAndroidChatGptStream({ url: request.url, method: 'POST', body: request.body ?? '', requestId }, onEvent)
+      : await startAndroidProviderHttpStream({
+          provider: request.provider as PlatformProviderId,
+          url: request.url,
+          method: request.method ?? (request.body === undefined ? 'GET' : 'POST'),
+          headers: request.headers,
+          body: request.body,
+          requestId,
+        }, onEvent);
+    handle = started;
+    if (finished || cancelRequested) {
+      void started.cancel().catch(() => undefined);
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    const kind = /owner_auth_required|unlock/i.test(reason) ? 'auth' : 'network';
+    finish(new ProviderError(kind, `${label} on Android failed: ${redactSecrets(reason)}`, { detail: reason }));
+  }
+
+  const head = await headPromise;
+  let consumed = false;
+  async function* chunks(): AsyncGenerator<string, void, undefined> {
+    if (consumed) throw new ProviderError('protocol', 'The response body was already read.');
+    consumed = true;
+    try {
+      yield* queue.iterate();
+    } finally {
+      if (!queue.done) {
+        cancelNative();
+        finish(cancelledError());
+      }
+    }
+  }
+  return {
+    status: head.status,
+    ok: head.status >= 200 && head.status < 300,
+    headers: head.headers,
+    chunks,
+    text: (maxChars = 262_144) => readAll(chunks(), maxChars),
+  };
 }
 
 function lowerHeaders(entries: Iterable<[string, string]>): Record<string, string> {

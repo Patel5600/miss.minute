@@ -9,6 +9,7 @@ import type { MemoryCategory, MemoryRecord } from '../../../store/db';
 import { OFFLINE_LORE_RESPONSES } from '../../../data/tvaLore';
 import type { ToolOutcome } from '../toolRunner';
 import { containsSecret } from '../../memory/sensitive';
+import { stripLeadingWakePhrase } from '../../wakePhrases';
 import { findDuration } from './numbers';
 import { describeWhen, localIso, parseWhen, rangeFor, withoutSpans, type WhenResult } from './timeParser';
 import { evaluate, extractExpression, formatNumber } from './math';
@@ -52,22 +53,27 @@ export interface OfflineDeps {
   };
   /** Options passed to the time parser (tests pin the date order). */
   dayFirst?: boolean;
+  /** True when the session is in GuestMode or unverified OwnerCandidate mode. */
+  restricted?: boolean;
+  /** True when local signals matched OwnerCandidate awaiting verification. */
+  ownerCandidate?: boolean;
 }
 
 // ── Text helpers ────────────────────────────────────────────────────────────────
 
-const WAKE_NAME = /^(?:(?:hey|hi|hello|ok(?:ay)?|yo|so)\s*,?\s+)?miss\s+minutes?\b[\s,!.:]*/i;
 const WAKE_WORD = /^(?:hey|hi|hello|ok(?:ay)?|yo|so|um+|uh+)\s*[,!.]\s*(?=\S)/i;
 
 function clean(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-/** Strips "hey Miss Minutes," and "please" so patterns see the request itself. */
+/** Strips wake phrases ("Hey Miss Minutes", "Hey Miss", "Hey Minute", etc.) and polite prefixes. */
 export function normalizeRequest(text: string): string {
   let s = clean(text);
-  const stripped = s.replace(WAKE_NAME, '').replace(WAKE_WORD, '');
-  if (stripped.trim()) s = stripped;
+  const wakeStripped = stripLeadingWakePhrase(s);
+  if (wakeStripped) s = wakeStripped;
+  const fillerStripped = s.replace(WAKE_WORD, '');
+  if (fillerStripped.trim()) s = fillerStripped;
   s = s.replace(/^(?:please|pls|kindly)\s+/i, '').replace(/[\s,]+(?:please|pls|thanks|thank you)[.!?]*$/i, '');
   s = s.replace(/^(?:can|could|would|will)\s+you\s+(?:please\s+)?/i, '').replace(/^i(?:'d| would)\s+like\s+(?:you\s+)?to\s+/i, '');
   s = s.replace(/^(?:i\s+(?:want|need)\s+(?:you\s+)?to\s+)(?=set|add|make|create|start|remind|schedule|put|take|write)/i, '');
@@ -156,7 +162,7 @@ function bareMinutes(text: string): { seconds: number } | null {
 
 function timerIntent(seconds: number, label: string): Intent {
   if (seconds > 86_400) {
-    return { kind: 'ask', question: "Timers top out at 24 hours, sugar. Want a reminder instead? Tell me when, like \"remind me Friday at 9 to...\"" };
+    return { kind: 'ask', question: 'Timers top out at 24 hours. Want a reminder instead? Tell me when, like "remind me Friday at 9 to..."' };
   }
   const args: Record<string, unknown> = { duration_seconds: Math.max(1, Math.round(seconds)) };
   if (label) args.label = label;
@@ -304,7 +310,7 @@ function detectTimer(s: string, lower: string): Intent | null {
 function detectAlarm(s: string, lower: string, now: Date, deps: { dayFirst?: boolean }): Intent | null {
   if (!/\b(?:alarm|wake me(?: up)?|wake-up call|get me up)\b/.test(lower)) return null;
   if (/\b(?:cancel|delete|remove|turn off|switch off|disable|stop)\b/.test(lower)) {
-    return { kind: 'say', text: "To switch an alarm off, open the Sacred Timeline panel and tap it, sugar. I can only add alarms while I'm offline.", emotion: 'talking', gesture: 'point' };
+    return { kind: 'say', text: "To switch an alarm off, open the Sacred Timeline panel and tap it. I can only add alarms while I'm offline.", emotion: 'talking', gesture: 'point' };
   }
   if (/\b(?:what|which|list|show|any)\b.*\balarms?\b/.test(lower)) {
     return { kind: 'agenda', args: { kind: 'alarm' }, label: 'alarms' };
@@ -332,7 +338,7 @@ function detectReminder(s: string, lower: string, now: Date, deps: { dayFirst?: 
   }
   if (!title) return { kind: 'ask', question: 'What should I remind you about?' };
   if (!when.relative && when.recurrence === 'none' && when.date.getTime() <= now.getTime()) {
-    return { kind: 'ask', question: `That time has already passed today, sugar. When should I remind you to ${title}?` };
+    return { kind: 'ask', question: `That time has already passed today. When should I remind you to ${title}?` };
   }
   return reminderIntent(title, when);
 }
@@ -400,7 +406,7 @@ function detectNote(s: string, lower: string): Intent | null {
       }
     }
     const body = rest.trim();
-    if (!body) return { kind: 'ask', question: 'What should the note say, sugar?' };
+    if (!body) return { kind: 'ask', question: 'What should the note say?' };
     if (!title) title = body.split(/\s+/).slice(0, 6).join(' ').replace(/[,.;:!?]+$/, '');
     return { kind: 'tool', topic: 'note', tool: 'create_note', args: { title: capitalize(title.trim()), body: capitalize(body) } };
   }
@@ -491,7 +497,7 @@ function detectMemory(s: string, lower: string): Intent | null {
   if (/\b(?:what'?s my name|who am i|do you know my name|what do you call me|do you know who i am)\b/.test(lower)) return { kind: 'memory-name' };
   const forget = /^(?:please\s+)?forget\s+(?:that\s+|about\s+|what i said about\s+)?(.+)$/i.exec(s);
   if (forget && !/^(?:it|everything|all of it)\b/i.test(forget[1])) return { kind: 'forget', query: trimTitle(forget[1]) };
-  if (forget) return { kind: 'say', text: 'To clear my memory wholesale, open the Dossier panel, sugar. Tell me one thing to forget and I\'ll find it.', emotion: 'talking', gesture: 'point' };
+  if (forget) return { kind: 'say', text: 'To clear my memory wholesale, open the Dossier panel. Tell me one thing to forget and I\'ll find it.', emotion: 'talking', gesture: 'point' };
 
   const name = /\b(?:my name is|my name's|call me|you can call me|i go by|the name'?s|i'm called|i am called)\s+([A-Za-z][\w'-]*(?:\s+[A-Z][\w'-]*)?)/i.exec(s);
   if (name) {
@@ -525,9 +531,9 @@ function detectSmallTalk(s: string, lower: string, now: Date): Intent | null {
   }
   if (/\b(?:who are you|what are you|what is your name|what'?s your name|are you (?:real|an? ai|a robot|alive))\b/.test(lower)) {
     const intro = OFFLINE_LORE_RESPONSES.find(entry => entry.triggers.includes('who are you'));
-    return { kind: 'lore', text: intro?.text ?? "I'm Miss Minutes, sugar.", emotion: intro?.emotion ?? 'cheerful' };
+    return { kind: 'lore', text: intro?.text ?? "I'm Miss Minutes.", emotion: intro?.emotion ?? 'cheerful' };
   }
-  if (/^(?:hi|hello|hey|howdy|hiya|yo|greetings|good\s+(?:morning|afternoon|evening|day)|sup|what'?s\s+up|heya)\b[\s!.,?]*(?:there|y'?all|miss\s+minutes?|sugar)?[\s!.,?]*$/.test(lower)) {
+  if (/^(?:hi|hello|hey|howdy|hiya|yo|greetings|good\s+(?:morning|afternoon|evening|day)|sup|what'?s\s+up|heya)\b[\s!.,?]*(?:there|y'?all|(?:miss(?:\s+minutes?)?|minutes?))?[\s!.,?]*$/.test(lower)) {
     return { kind: 'say', text: `${pick(s, LINES.greeting)} ${partOfDayGreeting(now)} What can I do for you?`, emotion: 'cheerful', gesture: 'wave' };
   }
   if (/\b(?:thanks|thank you|thx|thank u|ty|cheers|much obliged|appreciate it)\b/.test(lower) && lower.length < 60) {
@@ -691,7 +697,7 @@ function toolSuccessReply(intent: Extract<Intent, { kind: 'tool' }>, outcome: To
     }
     case 'time':
     case 'date':
-      return reply(sentence(summary || 'I checked the clock, sugar'), 'cheerful', 'none', 'info');
+      return reply(sentence(summary || 'I checked the clock'), 'cheerful', 'none', 'info');
     case 'weather':
     case 'weather-tomorrow':
       return reply(sentence(summary || 'Here is the weather'), 'cheerful', 'present', 'info');
@@ -713,27 +719,41 @@ async function runTool(intent: Extract<Intent, { kind: 'tool' }>, deps: OfflineD
   return outcomeProblem(outcome, seed) ?? toolSuccessReply(intent, outcome, seed, deps.now);
 }
 
+function restrictedMemoryReply(deps: OfflineDeps): OfflineReply {
+  return reply(
+    deps.ownerCandidate
+      ? 'Tap Verify Identity first before I can access or save private memory.'
+      : 'Private memory is only available in an authenticated owner session.',
+    'stern',
+    'point',
+    'info',
+  );
+}
+
 async function memoryList(deps: OfflineDeps): Promise<OfflineReply> {
+  if (deps.restricted) return restrictedMemoryReply(deps);
   const memories = await deps.memory.list();
   if (memories.length === 0) {
-    return reply("Your dossier's empty so far, sugar. Tell me things like \"my name is Sam\" or \"remember that I like jazz\" and I'll keep them.", 'thinking', 'shrug', 'info');
+    return reply('Your dossier\'s empty so far. Tell me things like "my name is Sam" or "remember that I like jazz" and I\'ll keep them.', 'thinking', 'shrug', 'info');
   }
   const lines = memories.slice(0, 10).map(memory => `- ${memory.text}`);
   const more = memories.length > 10 ? `\n…and ${memories.length - 10} more in the Dossier panel.` : '';
-  return reply(`Here's what's in your file, darlin':\n${lines.join('\n')}${more}`, 'winking', 'present', 'info');
+  return reply(`Here's what's in your file:\n${lines.join('\n')}${more}`, 'winking', 'present', 'info');
 }
 
 async function memoryName(deps: OfflineDeps): Promise<OfflineReply> {
+  if (deps.restricted) return restrictedMemoryReply(deps);
   const memories = await deps.memory.list();
   const fact = memories.find(memory => memory.category === 'identity' && /\b(?:name|called|goes by)\b/i.test(memory.text));
-  if (!fact) return reply("I don't have your name on file yet, sugar. What should I call you?", 'thinking', 'shrug', 'question');
+  if (!fact) return reply("I don't have your name on file yet. What should I call you?", 'thinking', 'shrug', 'question');
   const name = /(?:called|name is|goes by|named)\s+([A-Z][\w'-]*(?:\s+[A-Z][\w'-]*)?)/.exec(fact.text)?.[1];
-  return reply(name ? `You're ${name}, of course. I never forget a variant, darlin'.` : `My file says: ${fact.text}`, 'winking', 'none', 'info');
+  return reply(name ? `You're ${name}, of course. I keep good records.` : `My file says: ${fact.text}`, 'winking', 'none', 'info');
 }
 
 async function remember(intent: Extract<Intent, { kind: 'remember' }>, deps: OfflineDeps, seed: string): Promise<OfflineReply> {
+  if (deps.restricted) return restrictedMemoryReply(deps);
   if (containsSecret(intent.fact)) {
-    return reply("I don't keep passwords, keys or card numbers in my dossier, sugar. A password manager is the place for those.", 'stern', 'point', 'info');
+    return reply("I don't keep passwords, keys or card numbers in my dossier. A password manager is the place for those.", 'stern', 'point', 'info');
   }
   if (deps.tools.has('remember')) {
     const outcome = await deps.tools.run('remember', { fact: intent.fact, category: intent.category });
@@ -746,8 +766,9 @@ async function remember(intent: Extract<Intent, { kind: 'remember' }>, deps: Off
 }
 
 async function forget(intent: Extract<Intent, { kind: 'forget' }>, deps: OfflineDeps, seed: string): Promise<OfflineReply> {
+  if (deps.restricted) return restrictedMemoryReply(deps);
   const matches = await deps.memory.search(intent.query);
-  if (matches.length === 0) return reply(`I don't have anything on file about "${intent.query}", sugar.`, 'thinking', 'shrug', 'info');
+  if (matches.length === 0) return reply(`I don't have anything on file about "${intent.query}".`, 'thinking', 'shrug', 'info');
   if (!deps.tools.has('forget')) return unavailable('forget', seed);
   const target = matches[0];
   const outcome = await deps.tools.run('forget', { id: target.id });
@@ -763,7 +784,7 @@ async function readNote(intent: Extract<Intent, { kind: 'note-read' }>, deps: Of
   if (problem) return problem;
   const notes = findList(list.result?.data) as Array<Record<string, unknown>> | null;
   const first = notes?.find(note => note && typeof note.id === 'string');
-  if (!first) return reply(`I couldn't find a note about "${intent.query}", sugar.`, 'thinking', 'shrug', 'info');
+  if (!first) return reply(`I couldn't find a note about "${intent.query}".`, 'thinking', 'shrug', 'info');
   const note = await deps.tools.run('read_note', { id: first.id as string });
   const readProblem = outcomeProblem(note, seed);
   if (readProblem) return readProblem;
@@ -783,7 +804,7 @@ async function math(intent: Extract<Intent, { kind: 'math' }>, deps: OfflineDeps
   }
   try {
     const value = evaluate(intent.expression);
-    return reply(`That comes out to **${formatNumber(value)}**, sugar.`, 'cheerful', 'present', 'info');
+    return reply(`That comes out to **${formatNumber(value)}**.`, 'cheerful', 'present', 'info');
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'that math';
     return reply(`I can't work that one out: ${reason}.`, 'worried', 'shrug', 'info');
@@ -798,7 +819,7 @@ async function agenda(intent: Extract<Intent, { kind: 'agenda' }>, deps: Offline
   const items = renderItems(outcome.result?.data, deps.now, 10);
   const summary = outcome.result?.summary?.trim() ?? '';
   if (items.length === 0) {
-    return reply(summary ? sentence(summary) : `Nothing on the books for ${intent.label}, sugar. A quiet stretch of the Sacred Timeline.`, 'cheerful', 'none', 'info');
+    return reply(summary ? sentence(summary) : `Nothing on the books for ${intent.label}. A quiet stretch of the Sacred Timeline.`, 'cheerful', 'none', 'info');
   }
   return reply(`${summary ? sentence(summary) : `Here's ${intent.label}:`}\n${items.map(item => `- ${item}`).join('\n')}`, 'talking', 'present', 'info');
 }

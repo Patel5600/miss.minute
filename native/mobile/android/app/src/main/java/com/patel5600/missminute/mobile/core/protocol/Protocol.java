@@ -120,7 +120,13 @@ public final class Protocol {
     public static void authorize(Message m, Role role) throws ProtocolException {
         Authority a = m.authority != null ? m.authority : MessageTypes.authorityOf(m.type);
         boolean allowed;
-        if (a == null || a == Authority.NATIVE_ONLY) {
+        if (role == Role.MIGRATION) {
+            // This WebView retains legacy IndexedDB, so it has a deliberately tiny IPC surface.
+            // Its handler also binds every operation to the exact initiating owner session.
+            allowed = "hello".equals(m.type) || "owner.store".equals(m.type)
+                    || "owner.migration.progress".equals(m.type)
+                    || "owner.migration.complete".equals(m.type);
+        } else if (a == null || a == Authority.NATIVE_ONLY) {
             allowed = false;
         } else if (a == Authority.OVERLAY) {
             allowed = role == Role.OVERLAY;

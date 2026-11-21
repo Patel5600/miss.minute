@@ -1,37 +1,86 @@
 @import "tailwindcss";
 
+:root {
+  --mm-bg: #0b0908;
+  --mm-sidebar: #100d0a;
+  --mm-surface: #16120e;
+  --mm-surface-hover: #211b15;
+  --mm-surface-user: #241c14;
+  --mm-border: rgba(255, 176, 87, 0.16);
+  --mm-border-subtle: rgba(255, 255, 255, 0.08);
+  --mm-border-strong: rgba(255, 176, 87, 0.32);
+  --mm-accent: #ff7a1a;
+  --mm-accent-hover: #ff903b;
+  --mm-accent-soft: rgba(255, 122, 26, 0.14);
+  --mm-cream: #f5efe6;
+  --mm-text-secondary: #cbbeb0;
+  --mm-muted: #9d9082;
+}
+
 @layer base {
   *, *::before, *::after { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
   body {
-    font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
-    background-color: #0d0905;
-    color: #fef3c7;
+    font-family: "Segoe UI Variable", "Segoe UI", Roboto, system-ui, -apple-system, sans-serif;
+    background-color: var(--mm-bg);
+    color: var(--mm-cream);
+    -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
   }
-  ::selection { background: #d97706; color: #fff; }
+  ::selection { background: rgba(255, 122, 26, 0.35); color: #fff; }
 }
 
-/* Scrollbars in the TVA palette */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: rgba(40, 20, 10, 0.4); border-radius: 8px; }
-::-webkit-scrollbar-thumb { background: rgba(217, 119, 6, 0.4); border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(245, 158, 11, 0.7); }
+/* Sleek Obsidian & Amber Scrollbars */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255, 176, 87, 0.22); border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 122, 26, 0.55); }
 
-/* Her replies are markdown */
-.mm-md > * + * { margin-top: 0.5em; }
+/* Editorial Markdown Typography */
+.mm-md { font-size: 0.9375rem; line-height: 1.68; color: var(--mm-cream); }
+.mm-md > * + * { margin-top: 0.7em; }
 .mm-md p { margin: 0; }
-.mm-md ul, .mm-md ol { margin: 0.25em 0; padding-left: 1.25em; }
+.mm-md h1, .mm-md h2, .mm-md h3, .mm-md h4 {
+  color: #fff8ee;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  margin-top: 1.1em;
+  margin-bottom: 0.35em;
+}
+.mm-md h1 { font-size: 1.25rem; }
+.mm-md h2 { font-size: 1.125rem; }
+.mm-md h3 { font-size: 1rem; }
+.mm-md ul, .mm-md ol { margin: 0.45em 0; padding-left: 1.35em; }
 .mm-md ul { list-style: disc; }
 .mm-md ol { list-style: decimal; }
-.mm-md li + li { margin-top: 0.15em; }
-.mm-md a { color: #fbbf24; text-decoration: underline; }
-.mm-md strong { color: #fde68a; }
-.mm-md code { background: rgba(0, 0, 0, 0.5); border-radius: 4px; padding: 0 4px; font-size: 0.9em; }
-.mm-md pre { background: rgba(0, 0, 0, 0.6); border: 1px solid rgba(146, 64, 14, 0.5); border-radius: 8px; padding: 8px; overflow-x: auto; }
-.mm-md pre code { background: none; padding: 0; }
-.mm-md table { border-collapse: collapse; font-size: 0.9em; }
-.mm-md th, .mm-md td { border: 1px solid rgba(146, 64, 14, 0.6); padding: 2px 8px; }
+.mm-md li + li { margin-top: 0.28em; }
+.mm-md blockquote {
+  border-left: 2px solid var(--mm-accent);
+  padding-left: 0.9rem;
+  color: var(--mm-text-secondary);
+  margin: 0.6em 0;
+}
+.mm-md a { color: #ff9a48; text-decoration: underline; text-underline-offset: 3px; }
+.mm-md a:hover { color: #ffc188; }
+.mm-md strong { color: #fff7eb; font-weight: 600; }
+.mm-md hr { border: 0; border-top: 1px solid rgba(255, 255, 255, 0.1); margin: 1em 0; }
+.mm-md code {
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, ui-monospace, monospace;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 0.12em 0.4em;
+  font-size: 0.85em;
+  color: #ffd7b0;
+}
+.mm-md pre {
+  margin: 0;
+  overflow-x: auto;
+}
+.mm-md pre code { background: none; padding: 0; color: inherit; font-size: 0.84em; }
+.mm-md table { width: 100%; border-collapse: collapse; font-size: 0.875rem; margin: 0.65em 0; display: block; overflow-x: auto; }
+.mm-md th, .mm-md td { border: 1px solid rgba(255, 255, 255, 0.12); padding: 0.45rem 0.75rem; text-align: left; }
+.mm-md th { background: rgba(255, 255, 255, 0.04); color: #fff4e4; font-weight: 600; }
 
 /* Desktop overlay: fully transparent window */
 html.mm-native-overlay, body.mm-native-overlay { background: transparent !important; overflow: hidden; }
@@ -39,7 +88,6 @@ html.mm-native-overlay, body.mm-native-overlay { background: transparent !import
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
-
 
 /* Fourth wall glass tap ripple */
 .glass-tap-ripple {

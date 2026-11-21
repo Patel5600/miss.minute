@@ -9,8 +9,8 @@
  *     the scheduler rolls `startAt` forward. A one-off reminder that fired stays "overdue" until
  *     it is marked done or snoozed; a one-off alarm switches itself off (`done`).
  */
-import type { Recurrence, ScheduleItem, ScheduleKind, TimerRecord, TodoRecord } from '../../store/db';
-import { DAY, MINUTE, addDays, calendarDaysBetween, daysInMonth, isWeekend, startOfDay } from './time';
+import type { Recurrence, ScheduleItem, ScheduleKind, TimerRecord, TodoRecord } from '../../store/db.ts';
+import { DAY, MINUTE, addDays, calendarDaysBetween, daysInMonth, isWeekend, startOfDay } from './time.ts';
 
 export const RECURRENCES: readonly Recurrence[] = ['none', 'daily', 'weekdays', 'weekly', 'monthly'];
 

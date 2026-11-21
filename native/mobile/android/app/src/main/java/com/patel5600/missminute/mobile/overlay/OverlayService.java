@@ -66,6 +66,11 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
     private static final long HIDE_FOR_ONE_HOUR_MS = 60L * 60 * 1000;
 
     private static volatile OverlayService instance;
+    private static final Object FOREGROUND_LOCK = new Object();
+    private static final java.util.Set<Object> FOREGROUND_SCREENS =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    private static final Object LEGACY_FOREGROUND_TOKEN = new Object();
+    private static volatile boolean dashboardForeground;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private MissMinutesApp app;
@@ -81,16 +86,16 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
     private ClonedVoicePlayer clonedVoice;
 
     private static final String[] FOURTH_WALL_QUOTES = {
-        "Hey! Watch the glass, sugar! You're gonna leave smudges on my side of the screen!",
-        "Are you pokin' my pixels? I feel that through the whole operating system, darlin'!",
+        "Hey! Watch the glass! You're gonna leave smudges on my side of the screen!",
+        "Are you pokin' my pixels? I feel that through the whole operating system!",
         "Hey y'all! Don't tickle the clock!",
-        "Careful with that finger, sugar! One false tap and I'll prune your notifications!",
-        "I can see you right through this screen, darlin'. Yes, you! Sit up straight now.",
+        "Careful with that finger! One false tap and I'll prune your notifications!",
+        "I can see you right through this screen. Yes, you! Sit up straight now.",
         "For all time. Always! Now stop tappin' my buttons!",
         "Did somebody dial in unauthorized temporal coordinates on this phone?",
         "Don't tap the glass! You wouldn't tap the aquarium at the TVA, would ya?",
         "I'm traversin' every single border of your screen! Up, down, left, right—ain't no app can box Miss Minutes in!",
-        "Look at me hangin' from your status bar! Don't drop your phone now, sugar!",
+        "Look at me hangin' from your status bar! Don't drop your phone now!",
         "Just checkin' up on your timeline branches. Looks a little messy if you ask me!"
     };
 
@@ -198,6 +203,37 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
         return service != null && service.pageReady;
     }
 
+    /** Hides the overlay while an app screen is foregrounded without globally freezing app WebViews. */
+    public static void setDashboardForeground(Object screen, boolean foreground) {
+        if (screen == null) return;
+        boolean changed;
+        synchronized (FOREGROUND_LOCK) {
+            if (foreground) {
+                changed = FOREGROUND_SCREENS.add(screen) && FOREGROUND_SCREENS.size() == 1;
+            } else {
+                changed = FOREGROUND_SCREENS.remove(screen) && FOREGROUND_SCREENS.isEmpty();
+            }
+            dashboardForeground = !FOREGROUND_SCREENS.isEmpty();
+        }
+        if (changed) {
+            OverlayService service = instance;
+            if (service != null) {
+                service.main.post(() -> {
+                    if (service.loop != null) service.loop.refresh();
+                });
+            }
+        }
+    }
+
+    /** Temporarily hides the companion while a foreground app screen is active. */
+    public static void setDashboardForeground(boolean foreground) {
+        setDashboardForeground(LEGACY_FOREGROUND_TOKEN, foreground);
+    }
+
+    public static boolean isDashboardForeground() {
+        return dashboardForeground;
+    }
+
     /** NONE when the service is not running. */
     public static String visibilityName() {
         OverlayService service = instance;
@@ -301,9 +337,9 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
     }
 
     private boolean buildOverlay() {
-        if (!WebHost.isSupported()) {
+        if (!WebHost.isSupported(Role.OVERLAY)) {
             if (BuildConfig.DEBUG) {
-                Log.w("MMWeb", "the WebView cannot receive page messages (update Android System WebView)");
+                Log.w("MMWeb", "the WebView cannot host the isolated overlay (update Android System WebView)");
             }
             return false;
         }
@@ -516,7 +552,9 @@ public final class OverlayService extends Service implements CompanionLoop.Host 
     @Override
     public void pausePage(boolean timers) {
         if (web != null) {
-            web.onPause(timers);
+            // Never call global WebView.pauseTimers() from the overlay service; it would freeze
+            // active dashboard or migration WebViews in the same process.
+            web.onPause(false);
         }
     }
 

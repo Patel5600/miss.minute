@@ -5,8 +5,9 @@
  * trip and are removed whatever the outcome. The desktop app pairs through the host instead
  * (openrouter_pair_start / openrouter_pair_complete), so the key lands in the OS vault.
  */
-import { isDesktopRuntime } from '../../../desktop/bridge';
-import { setWebSecret } from '../../secrets-web';
+import { isDesktopRuntime } from '../../../desktop/bridge.ts';
+import { isAndroidApp } from '../../platform.ts';
+import { setWebSecret } from '../../secrets-web.ts';
 
 const AUTH_URL = 'https://openrouter.ai/auth';
 const KEYS_URL = 'https://openrouter.ai/api/v1/auth/keys';
@@ -41,10 +42,32 @@ function callbackUrl(): string {
 }
 
 function assertBrowser(): void {
-  if (isDesktopRuntime()) throw new Error('In the desktop app, pair OpenRouter from Settings; the key goes straight to the Windows vault.');
+  if (isDesktopRuntime() || isAndroidApp()) {
+    throw new Error('In the native app, pair OpenRouter from Settings; the key goes straight to native encrypted storage.');
+  }
   if (typeof window === 'undefined' || typeof crypto?.subtle?.digest !== 'function') {
     throw new Error('OpenRouter pairing needs a secure page (HTTPS or localhost).');
   }
+}
+
+/** Generates a standalone PKCE verifier and authorize URL without navigating the current WebView. */
+export async function createOpenRouterPkceChallenge(callback = 'https://openrouter.ai/'): Promise<{
+  verifier: string;
+  state: string;
+  authorizeUrl: string;
+}> {
+  if (typeof crypto?.subtle?.digest !== 'function') {
+    throw new Error('WebCrypto SHA-256 is required for OpenRouter PKCE pairing.');
+  }
+  const verifier = randomToken(48);
+  const state = randomToken(16);
+  const url = new URL(AUTH_URL);
+  url.searchParams.set('callback_url', callback);
+  url.searchParams.set('code_challenge', await codeChallenge(verifier));
+  url.searchParams.set('code_challenge_method', 'S256');
+  url.searchParams.set('state', state);
+  url.searchParams.set('key_label', 'Miss Minutes');
+  return { verifier, state, authorizeUrl: url.toString() };
 }
 
 /**
@@ -90,7 +113,7 @@ function scrubUrl(): void {
  * message when the pairing failed (expired, state mismatch, rejected code).
  */
 export async function completeOpenRouterPairingFromUrl(): Promise<boolean> {
-  if (typeof window === 'undefined' || isDesktopRuntime()) return false;
+  if (typeof window === 'undefined' || isDesktopRuntime() || isAndroidApp()) return false;
   const params = new URLSearchParams(window.location.search);
   const code = params.get('code');
   const pending = readPending();

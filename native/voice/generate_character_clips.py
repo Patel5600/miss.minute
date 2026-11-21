@@ -3,6 +3,7 @@ Uses Kyutai Pocket TTS (CPU voice cloning) with the authentic TVA Miss Minutes r
 Run:
     .\\native\\voice\\.venv\\Scripts\\python.exe -X utf8 native\\voice\\generate_character_clips.py
 """
+import json
 import os
 import sys
 from pathlib import Path
@@ -10,22 +11,31 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-import torch
 from miss_voice import paths
 from miss_voice.pocket_engine import PocketEngine
 from miss_voice import audio as au
 
 CLIPS = {
-    "mm_jump.wav": ("Wheee! Look at me leap, sugar!", "conversational"),
+    "mm_jump.wav": ("Wheee! Look at me leap!", "conversational"),
     "mm_land.wav": ("Yeehaw! Stuck the landing right on this app!", "conversational"),
-    "mm_sit.wav": ("Just restin' my little clock legs, sugar. Mighty comfy up here!", "conversational"),
-    "mm_hang.wav": ("Look at me hangin' on for dear life! Don't drop your phone now, darlin'!", "conversational"),
-    "mm_tap1.wav": ("Hey! Watch the glass, sugar! You're gonna leave smudges on my side of the screen!", "conversational"),
-    "mm_tap2.wav": ("Are you pokin' my pixels? I feel that through the whole operating system, darlin'!", "conversational"),
+    "mm_sit.wav": ("Just restin' my little clock legs! Mighty comfy up here!", "conversational"),
+    "mm_hang.wav": ("Look at me hangin' on for dear life! Don't drop your phone now!", "conversational"),
+    "mm_tap1.wav": ("Hey! Watch the glass! You're gonna leave smudges on my side of the screen!", "conversational"),
+    "mm_tap2.wav": ("Are you pokin' my pixels? I feel that through the whole operating system!", "conversational"),
     "mm_tap3.wav": ("Hey y'all! Don't tickle the clock!", "conversational"),
-    "mm_calibrate.wav": ("Spatial anchor locked in, darlin'! That icon is all mine now!", "conversational"),
-    "mm_app_switch.wav": ("Ooh, switchin' apps! I'll perch right up here on the screen border outta your way, sugar!", "conversational"),
+    "mm_calibrate.wav": ("Spatial anchor locked in! That icon is all mine now!", "conversational"),
+    "mm_app_switch.wav": ("Ooh, switchin' apps! I'll perch right up here on the screen border outta your way!", "conversational"),
 }
+
+SCENARIO_DESTS = {
+    "conversational": "mm_cloned_conversational.wav",
+    "persuasive": "mm_cloned_persuasive.wav",
+}
+
+scenarios = json.loads((ROOT / "scenarios.json").read_text(encoding="utf-8"))
+for key, dest_name in SCENARIO_DESTS.items():
+    if key in scenarios:
+        CLIPS[dest_name] = (scenarios[key]["script"], key)
 
 DEST_DIR = ROOT.parent / "mobile" / "android" / "app" / "src" / "main" / "assets" / "audio"
 DEST_DIR.mkdir(parents=True, exist_ok=True)

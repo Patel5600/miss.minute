@@ -64,6 +64,48 @@ public final class MessageTypes {
         t.put("voice.listen.stop", Authority.DASHBOARD);
         t.put("voice.speak", Authority.DASHBOARD);
         t.put("voice.stop", Authority.DASHBOARD);
+        // Current native owner/session, migration and provider bridge contract.
+        t.put("owner.authenticate", Authority.DASHBOARD);
+        t.put("owner.setup.enroll", Authority.DASHBOARD);
+        t.put("owner.setup.consent", Authority.DASHBOARD);
+        t.put("owner.setup.face", Authority.DASHBOARD);
+        t.put("owner.setup.voice", Authority.DASHBOARD);
+        t.put("owner.setup.presence", Authority.DASHBOARD);
+        t.put("owner.identity.summary", Authority.DASHBOARD);
+        t.put("owner.device.revoke", Authority.DASHBOARD);
+        t.put("owner.pairing.request.create", Authority.DASHBOARD);
+        t.put("owner.pairing.request.approve", Authority.DASHBOARD);
+        t.put("owner.pairing.receipt.import", Authority.DASHBOARD);
+        t.put("owner.recovery.create", Authority.DASHBOARD);
+        t.put("owner.recovery.restore", Authority.DASHBOARD);
+        t.put("owner.store", Authority.DASHBOARD);
+        t.put("owner.migration.start", Authority.DASHBOARD);
+        t.put("owner.migration.progress", Authority.DASHBOARD);
+        t.put("owner.migration.complete", Authority.DASHBOARD);
+        t.put("provider.secret.status", Authority.DASHBOARD);
+        t.put("provider.secret.set", Authority.DASHBOARD);
+        t.put("provider.secret.remember", Authority.DASHBOARD);
+        t.put("provider.secret.remove", Authority.DASHBOARD);
+        t.put("provider.http.request", Authority.DASHBOARD);
+        t.put("provider.http.cancel", Authority.DASHBOARD);
+        t.put("provider.chatgpt.account", Authority.DASHBOARD);
+        t.put("provider.chatgpt.models", Authority.DASHBOARD);
+        t.put("provider.chatgpt.request", Authority.DASHBOARD);
+        t.put("provider.chatgpt.cancel", Authority.DASHBOARD);
+        t.put("provider.chatgpt.signIn", Authority.DASHBOARD);
+        t.put("provider.chatgpt.signOut", Authority.DASHBOARD);
+        t.put("provider.openrouter.exchange", Authority.DASHBOARD);
+        t.put("provider.http.stream", Authority.DASHBOARD);
+        t.put("wake.start", Authority.DASHBOARD);
+        t.put("wake.stop", Authority.DASHBOARD);
+        t.put("wake.status", Authority.DASHBOARD);
+        t.put("wake.feed", Authority.DASHBOARD);
+        t.put("calls.prepare", Authority.DASHBOARD);
+        t.put("calls.start", Authority.DASHBOARD);
+        t.put("calls.hangup", Authority.DASHBOARD);
+        t.put("owner.audit.verify", Authority.DASHBOARD);
+        t.put("owner.audit.list", Authority.DASHBOARD);
+        t.put("owner.kill", Authority.DASHBOARD);
         TABLE = Collections.unmodifiableMap(t);
     }
 

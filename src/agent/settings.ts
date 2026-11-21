@@ -5,10 +5,26 @@
  * Secrets never touch localStorage. Desktop keys go to the OS vault through credential_set and
  * are only ever checked with provider_has_credential; browser keys go to secrets-web.
  */
-import type { AIProvider, AISettings, VoiceEngine } from '../types';
-import { TVA_SYSTEM_PROMPT } from '../data/tvaLore';
-import { invokeNative, isDesktopRuntime } from '../desktop/bridge';
-import { clearWebSecret, hasWebSecret, loadRememberedWebSecrets, setWebSecret, type WebSecretId } from './secrets-web';
+import type { AIProvider, AISettings, VoiceEngine } from '../types/index.ts';
+import { TVA_SYSTEM_PROMPT } from '../data/tvaLore.ts';
+import { invokeNative, isDesktopRuntime } from '../desktop/bridge.ts';
+import {
+  androidProviderSecretRemember,
+  androidProviderSecretRemove,
+  androidProviderSecretSet,
+  androidProviderSecretStatus,
+  isAndroidApp,
+} from './platform.ts';
+import {
+  clearWebSecret,
+  hasWebSecret,
+  isWebSecretRemembered,
+  loadRememberedWebSecrets,
+  setWebSecret,
+  setWebSecretRemembered,
+  type WebSecretId,
+} from './secrets-web.ts';
+import { forgetCredentialCache } from './brain/providers/auth.ts';
 
 export const SETTINGS_STORAGE_KEY = 'miss_minutes_settings';
 const SCHEMA_VERSION = 2;
@@ -74,6 +90,12 @@ export function defaultSettings(): AISettings {
     homeCity: '',
     memoryEnabled: true,
     strictApprovals: false,
+    wakeWordEnabled: false,
+    customWakePhrases: [],
+    dncNumbers: [],
+    callQuietHoursEnabled: true,
+    callQuietStartMin: 21 * 60,
+    callQuietEndMin: 8 * 60,
   };
 }
 
@@ -90,6 +112,23 @@ function bool(value: unknown, fallback: boolean): boolean {
 function num(value: unknown, fallback: number, min: number, max: number): number {
   const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+}
+
+function strList(value: unknown, maxItems: number, maxLen: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const clean = item.trim().slice(0, maxLen);
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(clean);
+    if (out.length >= maxItems) break;
+  }
+  return out;
 }
 
 /** http(s) URL without credentials, trailing slash removed; otherwise the default. */
@@ -144,6 +183,12 @@ export function normalizeSettings(raw: unknown): AISettings {
     homeCity: str(r.homeCity, '', 120).trim(),
     memoryEnabled: bool(r.memoryEnabled, d.memoryEnabled ?? true),
     strictApprovals: bool(r.strictApprovals, d.strictApprovals ?? false),
+    wakeWordEnabled: bool(r.wakeWordEnabled, d.wakeWordEnabled ?? false),
+    customWakePhrases: strList(r.customWakePhrases, 16, 64),
+    dncNumbers: strList(r.dncNumbers, 200, 32),
+    callQuietHoursEnabled: bool(r.callQuietHoursEnabled, d.callQuietHoursEnabled ?? true),
+    callQuietStartMin: Math.round(num(r.callQuietStartMin, d.callQuietStartMin ?? 21 * 60, 0, 1439)),
+    callQuietEndMin: Math.round(num(r.callQuietEndMin, d.callQuietEndMin ?? 8 * 60, 0, 1439)),
   };
 }
 
@@ -264,11 +309,11 @@ export async function initializeSettings(): Promise<AISettings> {
       }
     }
   }
-  if (!isDesktopRuntime()) await loadRememberedWebSecrets();
+  if (!isDesktopRuntime() && !isAndroidApp()) await loadRememberedWebSecrets();
   return settings;
 }
 
-// ── Provider keys (one API for both runtimes) ──────────────────────────────────
+// ── Provider keys (one API for all runtimes) ───────────────────────────────────
 
 export type KeyProvider = WebSecretId;
 
@@ -283,8 +328,13 @@ export function providerNeedsKey(provider: AIProvider): boolean {
   return provider === 'openai' || provider === 'gemini' || provider === 'anthropic' || provider === 'openrouter';
 }
 
+function notifyKeysChanged(provider: KeyProvider): void {
+  if (typeof window === 'undefined' || typeof CustomEvent === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('miss-minutes:keys-changed', { detail: { provider } }));
+}
+
 /**
- * Stores a key. Desktop: OS vault via credential_set (never readable from here afterwards).
+ * Stores a key. Desktop: OS vault via credential_set. Android: Keystore-backed native storage.
  * Browser: held in memory; `remember: true` also keeps it encrypted on this device.
  */
 export async function saveProviderKey(provider: KeyProvider, secret: string, options: { remember?: boolean } = {}): Promise<void> {
@@ -293,26 +343,71 @@ export async function saveProviderKey(provider: KeyProvider, secret: string, opt
   if (isDesktopRuntime()) {
     if (!value) {
       await invokeNative<void>('credential_delete', { provider });
-      return;
+    } else {
+      await invokeNative<void>('credential_set', { provider, secret: value });
     }
-    await invokeNative<void>('credential_set', { provider, secret: value });
+    forgetCredentialCache();
+    notifyKeysChanged(provider);
+    return;
+  }
+  if (isAndroidApp()) {
+    if (!value) {
+      await androidProviderSecretRemove(provider);
+    } else {
+      await androidProviderSecretSet(provider, value, options.remember ?? true);
+    }
+    forgetCredentialCache();
+    notifyKeysChanged(provider);
     return;
   }
   await setWebSecret(provider, value, options);
+  forgetCredentialCache();
+  notifyKeysChanged(provider);
 }
 
 /** Whether a key is stored for this provider. Never returns the key itself. */
 export async function hasProviderKey(provider: KeyProvider): Promise<boolean> {
   if (!isKeyProvider(provider)) return false;
   if (isDesktopRuntime()) return invokeNative<boolean>('provider_has_credential', { provider });
+  if (isAndroidApp()) return (await androidProviderSecretStatus(provider)).present;
   return hasWebSecret(provider);
+}
+
+/** Whether the key is persisted across restarts ("remember on this device"). */
+export async function isProviderKeyRemembered(provider: KeyProvider): Promise<boolean> {
+  if (!isKeyProvider(provider) || isDesktopRuntime()) return false;
+  if (isAndroidApp()) return (await androidProviderSecretStatus(provider)).remembered;
+  return isWebSecretRemembered(provider);
+}
+
+/** Toggles persistent encrypted storage on browser or Android Keystore for an already-loaded key. */
+export async function setProviderKeyRemembered(provider: KeyProvider, remember: boolean): Promise<boolean> {
+  if (!isKeyProvider(provider) || isDesktopRuntime()) return false;
+  if (isAndroidApp()) {
+    const res = await androidProviderSecretRemember(provider, remember);
+    notifyKeysChanged(provider);
+    return res.remembered;
+  }
+  await setWebSecretRemembered(provider, remember);
+  notifyKeysChanged(provider);
+  return isWebSecretRemembered(provider);
 }
 
 export async function removeProviderKey(provider: KeyProvider): Promise<void> {
   if (!isKeyProvider(provider)) return;
   if (isDesktopRuntime()) {
     await invokeNative<void>('credential_delete', { provider });
+    forgetCredentialCache();
+    notifyKeysChanged(provider);
+    return;
+  }
+  if (isAndroidApp()) {
+    await androidProviderSecretRemove(provider);
+    forgetCredentialCache();
+    notifyKeysChanged(provider);
     return;
   }
   await clearWebSecret(provider);
+  forgetCredentialCache();
+  notifyKeysChanged(provider);
 }

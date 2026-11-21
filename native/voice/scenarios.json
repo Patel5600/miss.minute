@@ -2,7 +2,7 @@
   "conversational": {
     "label": "Conversational",
     "blurb": "Warm, chatty and quick, the way she talks while you work.",
-    "script": "Well hey there, sugar! [chuckle] I was just fixin' to check on your timeline when you wandered in. So tell me, how's your day treatin' you? Anything I can help you sort out before the clock runs out?",
+    "script": "Well howdy there! [chuckle] I was just fixin' to check on your timeline when you wandered in. So tell me, how's your day treatin' you? Anything I can help you sort out before the clock runs out?",
     "temperature": 0.85,
     "top_p": 0.95,
     "repetition_penalty": 1.2,
@@ -20,7 +20,7 @@
   "persuasive": {
     "label": "Persuasive",
     "blurb": "Confident and coaxing, leaning on the key phrases.",
-    "script": "Now listen close, darlin'. A little planning today saves a whole lot of pruning tomorrow. Let me keep your calendar tidy, your reminders on time, and your day running smooth as clockwork. Just say the word, and I'll take care of the rest.",
+    "script": "Now listen close! A little planning today saves a whole lot of pruning tomorrow. Let me keep your calendar tidy, your reminders on time, and your day running smooth as clockwork. Just say the word, and I'll take care of the rest.",
     "temperature": 0.8,
     "top_p": 0.95,
     "repetition_penalty": 1.2,

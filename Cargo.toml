@@ -1,3 +1,14 @@
 [workspace]
-members = ["native/agent", "native/identity"]
+members = [
+    "native/agent",
+    "native/identity",
+    "crates/mm-wake",
+    "crates/mm-face",
+    "crates/mm-speaker",
+    "crates/mm-gaze",
+    "crates/mm-presence",
+    "crates/mm-computer",
+    "crates/mm-mission",
+    "crates/mm-telemetry",
+]
 resolver = "3"

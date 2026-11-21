@@ -58,7 +58,7 @@ public final class WebHost {
     public static final String ASSET_PATH = "/assets/web/";
 
     static final String CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            + "img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https:; base-uri 'none'; "
+            + "img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'none'; base-uri 'none'; "
             + "form-action 'none'; frame-ancestors 'none'";
 
     private static final String TAG = "MMWeb";
@@ -94,14 +94,15 @@ public final class WebHost {
         this.role = role;
         this.router = router;
         this.callbacks = callbacks;
-        this.pageUrl = ORIGIN + ASSET_PATH + (role == Role.OVERLAY ? "overlay.html" : "dashboard.html");
+        this.pageUrl = originForRole(role) + ASSET_PATH
+                + (role == Role.OVERLAY ? "overlay.html" : role == Role.MIGRATION ? "migration.html" : "dashboard.html");
         this.worker = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "mm-bridge-" + role.name().toLowerCase());
             thread.setDaemon(true);
             return thread;
         });
         this.loader = new WebViewAssetLoader.Builder()
-                .setDomain(HOST)
+                .setDomain(hostForRole(role))
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(context))
                 .build();
     }
@@ -110,10 +111,34 @@ public final class WebHost {
         return new WebHost(context, role, router, callbacks);
     }
 
-    /** False when this WebView cannot receive messages from pages (an old WebView): update it. */
+    /** Separate WebView origins isolate legacy IndexedDB from the dashboard and overlay. */
+    public static String hostForRole(Role role) {
+        if (role == Role.MIGRATION) return HOST;
+        if (role == Role.OVERLAY) return "overlay.missminutes.local";
+        return "dashboard.missminutes.local";
+    }
+
+    private static String originForRole(Role role) {
+        return "https://" + hostForRole(role);
+    }
+
+    /** A reply is safe only while its document is alive and remains the active document. */
+    static boolean mayPostToCurrentDocument(boolean destroyed, boolean currentDocument) {
+        return !destroyed && currentDocument;
+    }
+
+    /** False when this WebView cannot host the default dashboard role with required storage controls. */
     public static boolean isSupported() {
+        return isSupported(Role.DASHBOARD);
+    }
+
+    /** False when this WebView lacks the bridge or storage-isolation features required for {@code role}. */
+    public static boolean isSupported(Role role) {
         try {
-            return WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER);
+            return RendererStoragePolicy.canHost(
+                    role,
+                    WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER),
+                    WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT));
         } catch (RuntimeException e) {
             return false;
         }
@@ -134,7 +159,7 @@ public final class WebHost {
         if (destroyed) {
             return false;
         }
-        if (!isSupported()) {
+        if (!isSupported(role)) {
             callbacks.onProblem(PROBLEM_UNSUPPORTED);
             return false;
         }
@@ -146,8 +171,14 @@ public final class WebHost {
             return false;
         }
         configure(webView);
+        if (RendererStoragePolicy.shouldBlockIndexedDb(role)) {
+            WebViewCompat.addDocumentStartJavaScript(
+                    webView,
+                    RendererStoragePolicy.indexedDbBlockScript(),
+                    Collections.singleton(originForRole(role)));
+        }
         // The listener must exist before the page loads: the object is injected while the page starts.
-        WebViewCompat.addWebMessageListener(webView, OBJECT_NAME, Collections.singleton(ORIGIN),
+        WebViewCompat.addWebMessageListener(webView, OBJECT_NAME, Collections.singleton(originForRole(role)),
                 (v, message, sourceOrigin, isMainFrame, replyProxy) ->
                         onMessage(message, sourceOrigin, isMainFrame, replyProxy));
         view = webView;
@@ -265,8 +296,9 @@ public final class WebHost {
                 new ByteArrayInputStream(new byte[0]));
     }
 
-    private static boolean isOurOrigin(Uri uri) {
-        return uri != null && "https".equals(uri.getScheme()) && HOST.equals(uri.getHost()) && uri.getPort() == -1;
+    private boolean isOurOrigin(Uri uri) {
+        return uri != null && "https".equals(uri.getScheme())
+                && hostForRole(role).equals(uri.getHost()) && uri.getPort() == -1;
     }
 
     /** Runs on the UI thread. Anything not from the main frame of our origin is dropped without an answer. */
@@ -289,7 +321,7 @@ public final class WebHost {
     }
 
     private void post(JavaScriptReplyProxy target, String json) {
-        if (destroyed) {
+        if (!mayPostToCurrentDocument(destroyed, target == proxy)) {
             return;
         }
         try {

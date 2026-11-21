@@ -34,11 +34,12 @@ public final class Vocabulary {
 
     public static final List<String> ERROR_CODES = list(
             "bad_json", "bad_version", "bad_type", "too_large", "bad_payload",
-            "forbidden", "unknown_type", "unavailable", "cancelled", "internal");
+            "forbidden", "owner_auth_required", "restricted_to_owner", "unknown_type", "unavailable",
+            "cancelled", "internal");
 
     public static final List<String> EVENT_NAMES = list(
             "state.changed", "kill.happened", "provider.event", "approval.requested", "reminder.fired",
-            "voice.state", "voice.partial", "voice.final", "voice.range");
+            "voice.state", "voice.partial", "voice.final", "voice.range", "wake.state", "calls.state");
 
     private static List<String> list(String... names) {
         return Collections.unmodifiableList(Arrays.asList(names));

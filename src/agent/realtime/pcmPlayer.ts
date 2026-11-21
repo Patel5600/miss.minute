@@ -7,7 +7,7 @@
  * order they were opened; a segment's bytes may arrive while earlier ones are still playing
  * and are scheduled the moment the timeline reaches them.
  */
-import type { MouthFrame } from '../../types';
+import type { MouthFrame } from '../../types/index.ts';
 
 /** Maps loudness to one of the five mouth shapes. Shared by every audio engine. */
 export function mouthFrameForRms(rms: number): MouthFrame {

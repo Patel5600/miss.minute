@@ -15,8 +15,9 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use miss_minute_identity::{
-    AuthenticationAssurance, AuthorizationDecision, AuthorityEngine, Capability, CommandOrigin, CommandRequest,
-    DeviceCredentialRegistration, DeviceId, DevicePlatform, OwnerId, Risk, capabilities,
+    AuthenticationAssurance, AuthorityEngine, AuthorizationDecision, Capability, CommandOrigin,
+    CommandRequest, DeviceCredentialRegistration, DeviceId, DevicePlatform,
+    MIN_CANDIDATE_CONFIDENCE, OperatingMode, OwnerId, RecognitionSignal, Risk, capabilities,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -62,10 +63,16 @@ pub struct OwnerStatus {
     pub enrolled: bool,
     pub authenticated: bool,
     /// True when the engine is in `OwnerCandidate` state: a local recognition signal was
-    /// observed but device-backed authentication has not completed. Maps to the 🟡 UI state.
+    /// observed but device-backed authentication has not completed.
     pub owner_candidate: bool,
     /// Raw Rust AuthState as a snake_case string for the UI status pill.
     pub auth_state: String,
+    /// Unified 3-mode policy ("owner_mode" | "owner_candidate" | "guest_mode").
+    pub mode: OperatingMode,
+    /// Present only in `OwnerCandidate` mode (when locked and a candidate signal was observed).
+    pub candidate_name: Option<String>,
+    /// Combined candidate signal confidence in [0.0, 1.0]; 0.0 when locked/unenrolled.
+    pub candidate_confidence: f32,
     pub session_id: Option<String>,
     pub platform: &'static str,
 }
@@ -112,31 +119,47 @@ impl DesktopAuthority {
     }
 
     pub fn status(&mut self) -> OwnerStatus {
+        let now = Instant::now();
         let authenticated = self
             .session_id
             .as_deref()
-            .is_some_and(|id| self.engine.owner_session_active(id, Instant::now()));
-        if !authenticated {
-            self.session_id = None;
+            .is_some_and(|id| self.engine.owner_session_active(id, now));
+        if !authenticated
+            && self.session_id.take().is_some()
+            && self.engine.state() == miss_minute_identity::AuthState::OwnerAuthenticated
+        {
+            self.engine.lock();
         }
         let raw_state = self.engine.state();
         let auth_state = match raw_state {
-            miss_minute_identity::AuthState::Unenrolled           => "unenrolled",
-            miss_minute_identity::AuthState::Locked               => "locked",
-            miss_minute_identity::AuthState::OwnerCandidate        => "owner_candidate",
+            miss_minute_identity::AuthState::Unenrolled => "unenrolled",
+            miss_minute_identity::AuthState::Locked => "locked",
+            miss_minute_identity::AuthState::OwnerCandidate => "owner_candidate",
             miss_minute_identity::AuthState::AuthenticationPending => "authentication_pending",
-            miss_minute_identity::AuthState::OwnerAuthenticated    => "owner_authenticated",
-            miss_minute_identity::AuthState::StepUpRequired        => "step_up_required",
-            miss_minute_identity::AuthState::GuestActive           => "guest_active",
-            miss_minute_identity::AuthState::Revoked               => "revoked",
-            miss_minute_identity::AuthState::DeviceUntrusted       => "device_untrusted",
+            miss_minute_identity::AuthState::OwnerAuthenticated => "owner_authenticated",
+            miss_minute_identity::AuthState::StepUpRequired => "step_up_required",
+            miss_minute_identity::AuthState::GuestActive => "guest_active",
+            miss_minute_identity::AuthState::Revoked => "revoked",
+            miss_minute_identity::AuthState::DeviceUntrusted => "device_untrusted",
         };
+        let mode = self.engine.operating_mode(now);
+        let owner_candidate = mode == OperatingMode::OwnerCandidate;
+        // Never leak or presume an owner display name/pet-name when unauthenticated.
+        let candidate_name = None;
+        let candidate_confidence = self.engine.candidate_confidence();
         OwnerStatus {
             enrolled: self.device.is_some(),
             authenticated,
-            owner_candidate: raw_state == miss_minute_identity::AuthState::OwnerCandidate,
+            owner_candidate,
             auth_state: auth_state.to_owned(),
-            session_id: if authenticated { self.session_id.clone() } else { None },
+            mode,
+            candidate_name,
+            candidate_confidence,
+            session_id: if authenticated {
+                self.session_id.clone()
+            } else {
+                None
+            },
             platform: if cfg!(windows) {
                 "windows-webauthn"
             } else {
@@ -145,9 +168,141 @@ impl DesktopAuthority {
         }
     }
 
+    pub fn owner_id(&self) -> Option<&str> {
+        self.device.as_ref().map(|d| d.owner_id.as_str())
+    }
+
     pub fn lock(&mut self) {
         self.engine.lock();
         self.session_id = None;
+    }
+
+    pub fn emergency_kill(&mut self) -> OwnerStatus {
+        self.engine.emergency_kill();
+        self.session_id = None;
+        self.status()
+    }
+
+    pub fn verify_audit_chain(&self) -> bool {
+        self.engine.verify_audit_chain()
+    }
+
+    pub fn audit_entries(&self) -> Vec<miss_minute_identity::AuditEntry> {
+        self.engine.audit_log()
+    }
+
+    pub fn export_recovery_kit(
+        &mut self,
+        window: &tauri::WebviewWindow,
+        passphrase: &str,
+    ) -> Result<String, String> {
+        use ring::{
+            rand::SystemRandom,
+            signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair as _},
+        };
+        if self.device.is_none() {
+            return Err("Enroll this desktop with Windows Hello first.".to_owned());
+        }
+        validate_recovery_passphrase(passphrase)?;
+        self.require_step_up(window)?;
+        let session_id = self
+            .session_id
+            .clone()
+            .ok_or_else(|| "Fresh Windows Hello verification is required.".to_owned())?;
+        let record = self
+            .device
+            .clone()
+            .ok_or_else(|| "Owner device enrollment is missing.".to_owned())?;
+
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng)
+            .map_err(|_| "Could not generate an offline recovery keypair.".to_owned())?;
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
+            .map_err(|_| "Generated offline recovery keypair was invalid.".to_owned())?;
+        let public_key = kp.public_key().as_ref().to_vec();
+
+        self.engine
+            .set_recovery_public_key(&session_id, public_key.clone(), Instant::now())
+            .map_err(|error| format!("Cannot register offline recovery public key: {error:?}"))?;
+
+        let mut updated = record.clone();
+        updated.recovery_public_key = Some(public_key.clone());
+        if let Err(error) = self.persist_record(&updated) {
+            self.engine = engine_for_device(&record)?;
+            self.session_id = None;
+            return Err(error);
+        }
+        self.device = Some(updated);
+
+        seal_recovery_kit(&record.owner_id, &public_key, pkcs8.as_ref(), passphrase)
+    }
+
+    /// Records a local recognition observation (`face`, `voice`, `presence`/`gaze`, or `wake`).
+    /// Recognition signals can only prepare `OwnerCandidate` state and never mint an owner session.
+    pub fn record_candidate_signal(
+        &mut self,
+        signal: &str,
+        confidence: f32,
+        liveness_passed: bool,
+        engaged: bool,
+    ) -> Result<OwnerStatus, String> {
+        let current = self.status();
+        if !current.enrolled {
+            return Err(
+                "Enroll this desktop with Windows Hello before recording candidate signals."
+                    .to_owned(),
+            );
+        }
+        match signal {
+            "face" => {
+                self.engine
+                    .record_face_candidate(confidence, liveness_passed)
+                    .map_err(|e| format!("Face candidate signal was rejected: {e:?}"))?;
+            }
+            "voice" => {
+                self.engine
+                    .record_voice_candidate(confidence)
+                    .map_err(|e| format!("Voice candidate signal was rejected: {e:?}"))?;
+            }
+            "presence" | "gaze" => {
+                self.engine
+                    .record_gaze_presence(engaged)
+                    .map_err(|e| format!("Presence candidate signal was rejected: {e:?}"))?;
+            }
+            "wake" => {
+                if !confidence.is_finite()
+                    || !(0.0..=1.0).contains(&confidence)
+                    || confidence < MIN_CANDIDATE_CONFIDENCE
+                {
+                    return Err("Wake phrase confidence is invalid or below threshold.".to_owned());
+                }
+                if !current.authenticated {
+                    self.engine
+                        .observe_owner_candidate(RecognitionSignal::VoiceMatch)
+                        .map_err(|e| format!("Wake candidate signal was rejected: {e:?}"))?;
+                }
+            }
+            _ => return Err(format!("Unsupported candidate signal \"{signal}\".")),
+        }
+        Ok(self.status())
+    }
+
+    /// Requires a fresh Windows Hello ceremony for a named privileged operation.
+    pub fn step_up_authenticate(
+        &mut self,
+        window: &tauri::WebviewWindow,
+        action_name: &str,
+    ) -> Result<OwnerStatus, String> {
+        let trimmed = action_name.trim();
+        if trimmed.is_empty()
+            || trimmed.len() > 128
+            || !trimmed
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-: ".contains(&b))
+        {
+            return Err("Step-up action name is invalid.".to_owned());
+        }
+        self.require_step_up(window)
     }
 
     pub fn authorize(
@@ -197,7 +352,9 @@ impl DesktopAuthority {
         risk: Risk,
         owner_confirmed: bool,
     ) -> Result<(), String> {
-        let session = self.session_id.as_deref()
+        let session = self
+            .session_id
+            .as_deref()
             .ok_or_else(|| "Unlock Miss Minutes with Windows Hello first.".to_owned())?;
         if !self.engine.owner_session_active(session, Instant::now()) {
             self.lock();
@@ -215,15 +372,27 @@ impl DesktopAuthority {
         match result.decision {
             AuthorizationDecision::Allow => Ok(()),
             AuthorizationDecision::ConfirmationRequired if owner_confirmed => Ok(()),
-            AuthorizationDecision::ConfirmationRequired => Err("This operation needs explicit owner confirmation.".into()),
-            AuthorizationDecision::FreshAuthenticationRequired => Err("This operation needs a fresh Windows Hello verification.".into()),
-            AuthorizationDecision::Deny => Err(format!("Owner policy denied this operation ({})", result.reason)),
+            AuthorizationDecision::ConfirmationRequired => {
+                Err("This operation needs explicit owner confirmation.".into())
+            }
+            AuthorizationDecision::FreshAuthenticationRequired => {
+                Err("This operation needs a fresh Windows Hello verification.".into())
+            }
+            AuthorizationDecision::Deny => Err(format!(
+                "Owner policy denied this operation ({})",
+                result.reason
+            )),
         }
     }
 
     /// Invalidates the current session before a fresh Windows Hello step-up ceremony.
-    pub fn require_step_up(&mut self, window: &tauri::WebviewWindow) -> Result<OwnerStatus, String> {
-        let session = self.session_id.as_deref()
+    pub fn require_step_up(
+        &mut self,
+        window: &tauri::WebviewWindow,
+    ) -> Result<OwnerStatus, String> {
+        let session = self
+            .session_id
+            .as_deref()
             .ok_or_else(|| "Unlock Miss Minutes with Windows Hello first.".to_owned())?;
         if !self.engine.require_step_up(session, Instant::now()) {
             self.lock();
@@ -520,12 +689,8 @@ impl DesktopAuthority {
         #[cfg(not(windows))]
         let proof: Vec<u8> =
             return Err("Windows WebAuthn is unavailable on this desktop platform.".into());
-        let verified = verify_authentication_proof(
-            &mut self.engine,
-            record,
-            &challenge.bytes,
-            &proof,
-        )?;
+        let verified =
+            verify_authentication_proof(&mut self.engine, record, &challenge.bytes, &proof)?;
         let session = self
             .engine
             .complete_owner_authentication_with_verified_proof(
@@ -579,7 +744,7 @@ fn pairing_source_fingerprint(owner_id: &str, source_device_id: &str, source_key
         .collect::<String>()
         .as_bytes()
         .chunks(4)
-        .map(|chunk| std::str::from_utf8(chunk).expect("hex is ASCII"))
+        .map(|chunk| std::str::from_utf8(chunk).unwrap_or_default())
         .collect::<Vec<_>>()
         .join("-")
 }
@@ -635,10 +800,13 @@ fn open_recovery_kit(material: &str, passphrase: &str) -> Result<RecoveryCredent
         kit.owner_id,
         STANDARD.encode(&public_key)
     );
+    let Some(iteration_count) = std::num::NonZeroU32::new(ITERATIONS) else {
+        return Err("Recovery kit iteration count cannot be zero.".into());
+    };
     let mut derived = Zeroizing::new([0_u8; 32]);
     ring::pbkdf2::derive(
         ring::pbkdf2::PBKDF2_HMAC_SHA256,
-        std::num::NonZeroU32::new(ITERATIONS).expect("fixed non-zero iteration count"),
+        iteration_count,
         &salt,
         passphrase.as_bytes(),
         &mut derived[..],
@@ -686,7 +854,77 @@ struct PairingRequest {
     public_key: String,
 }
 
-#[derive(Deserialize)]
+fn validate_recovery_passphrase(passphrase: &str) -> Result<(), String> {
+    if passphrase.len() < 12
+        || passphrase.len() > 256
+        || !passphrase.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+    {
+        return Err("Recovery passphrase must be 12–256 printable ASCII characters.".into());
+    }
+    Ok(())
+}
+
+fn seal_recovery_kit(
+    owner_id: &str,
+    public_key: &[u8],
+    private_key_pkcs8: &[u8],
+    passphrase: &str,
+) -> Result<String, String> {
+    const KIT_TYPE: &str = "miss-minutes-recovery-kit-v1";
+    const ITERATIONS: u32 = 600_000;
+    validate_recovery_passphrase(passphrase)?;
+    if owner_id.len() < 16
+        || owner_id.len() > 64
+        || !owner_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+        || public_key.len() != 65
+        || public_key[0] != 4
+    {
+        return Err("Cannot seal recovery kit with invalid owner identity or public key.".into());
+    }
+    let salt = crate::crypto::random_bytes(16)?;
+    let nonce = crate::crypto::random_bytes(12)?;
+    let encoded_pub = STANDARD.encode(public_key);
+    let aad = format!("{KIT_TYPE}\n{owner_id}\n{encoded_pub}");
+    let Some(iteration_count) = std::num::NonZeroU32::new(ITERATIONS) else {
+        return Err("Recovery kit iteration count cannot be zero.".into());
+    };
+    let mut derived = Zeroizing::new([0_u8; 32]);
+    ring::pbkdf2::derive(
+        ring::pbkdf2::PBKDF2_HMAC_SHA256,
+        iteration_count,
+        &salt,
+        passphrase.as_bytes(),
+        &mut derived[..],
+    );
+    let cipher = Aes256Gcm::new_from_slice(&derived[..])
+        .map_err(|_| "Could not initialize recovery encryption.".to_owned())?;
+    let encrypted = cipher
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: private_key_pkcs8,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| "Could not encrypt recovery private key.".to_owned())?;
+
+    let kit = RecoveryKit {
+        kind: KIT_TYPE.to_owned(),
+        version: 1,
+        owner_id: owner_id.to_owned(),
+        public_key: encoded_pub,
+        salt: STANDARD.encode(&salt),
+        nonce: STANDARD.encode(&nonce),
+        iterations: ITERATIONS,
+        encrypted_private_key: STANDARD.encode(&encrypted),
+    };
+    serde_json::to_string_pretty(&kit)
+        .map_err(|error| format!("Cannot serialize recovery kit: {error}"))
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RecoveryKit {
     #[serde(rename = "type")]
@@ -710,6 +948,13 @@ fn engine_for_device(record: &StoredOwnerDevice) -> Result<AuthorityEngine, Stri
     if record.credential_id.is_empty() || record.credential_id.len() > 2048 {
         return Err("Windows WebAuthn credential ID is missing or too large.".into());
     }
+    let capabilities = OWNER_CAPABILITIES
+        .iter()
+        .map(|name| {
+            Capability::new(*name)
+                .map_err(|e| format!("Invalid owner capability constant {name}: {e:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut engine = AuthorityEngine::new();
     engine
         .enroll_owner(
@@ -719,9 +964,7 @@ fn engine_for_device(record: &StoredOwnerDevice) -> Result<AuthorityEngine, Stri
                 platform: DevicePlatform::Windows,
                 public_key: record.public_key.clone(),
             },
-            OWNER_CAPABILITIES
-                .iter()
-                .map(|name| Capability::new(*name).expect("fixed capability")),
+            capabilities,
         )
         .map_err(|e| format!("Windows owner credential was rejected: {e:?}"))?;
     for device in &record.trusted_devices {
@@ -786,15 +1029,265 @@ mod tests {
         let mut engine = engine_for_device(&record).unwrap();
         let device_id = DeviceId(record.device_id.clone());
 
-        engine.observe_owner_candidate(miss_minute_identity::RecognitionSignal::Presence).unwrap();
+        engine
+            .observe_owner_candidate(miss_minute_identity::RecognitionSignal::Presence)
+            .unwrap();
         let challenge = engine.begin_authentication(&device_id).unwrap();
-        let error = verify_authentication_proof(&mut engine, &record, &challenge.bytes, b"not-json")
-            .unwrap_err();
+        let error =
+            verify_authentication_proof(&mut engine, &record, &challenge.bytes, b"not-json")
+                .unwrap_err();
 
         assert!(error.contains("Windows Hello assertion was rejected"));
         assert_eq!(engine.state(), miss_minute_identity::AuthState::Locked);
-        engine.observe_owner_candidate(miss_minute_identity::RecognitionSignal::Presence).unwrap();
+        engine
+            .observe_owner_candidate(miss_minute_identity::RecognitionSignal::Presence)
+            .unwrap();
         assert!(engine.begin_authentication(&device_id).is_ok());
+    }
+
+    fn authority_with_real_p256() -> (DesktopAuthority, ring::signature::EcdsaKeyPair, PathBuf) {
+        use ring::{
+            rand::SystemRandom,
+            signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair},
+        };
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let dev = StoredOwnerDevice {
+            owner_id: "owner-test-123456".into(),
+            device_id: "device-test-123456".into(),
+            credential_id: vec![1, 2, 3, 4],
+            public_key: kp.public_key().as_ref().to_vec(),
+            trusted_devices: Vec::new(),
+            recovery_public_key: None,
+        };
+        let engine = engine_for_device(&dev).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "miss-minutes-owner-unit-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let authority = DesktopAuthority {
+            file: dir.join("owner-identity.sealed"),
+            device: Some(dev),
+            engine,
+            session_id: None,
+        };
+        (authority, kp, dir)
+    }
+
+    #[test]
+    fn candidate_state_cannot_execute_private_tool() {
+        let (mut authority, _kp, dir) = authority_with_real_p256();
+        let status = authority
+            .record_candidate_signal("face", 0.92, true, false)
+            .unwrap();
+        assert_eq!(status.mode, OperatingMode::OwnerCandidate);
+        assert!(status.owner_candidate);
+        assert!(!status.authenticated);
+        assert_eq!(status.candidate_name, None);
+        assert!(status.candidate_confidence > 0.0);
+
+        assert!(
+            authority
+                .authorize(
+                    capabilities::PRIVATE_MEMORY_READ,
+                    CommandOrigin::UserInput,
+                    Risk::Low,
+                    false,
+                )
+                .is_err()
+        );
+        assert!(
+            authority
+                .authorize(
+                    capabilities::DEVICE_CONTROL,
+                    CommandOrigin::Model,
+                    Risk::Low,
+                    false,
+                )
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_revokes_session_and_resets_mode() {
+        use ring::{rand::SystemRandom, signature::KeyPair};
+        let (mut authority, kp, dir) = authority_with_real_p256();
+        let rng = SystemRandom::new();
+        authority
+            .record_candidate_signal("voice", 0.88, false, false)
+            .unwrap();
+        let dev_id = DeviceId(authority.device.as_ref().unwrap().device_id.clone());
+        let challenge = authority.engine.begin_authentication(&dev_id).unwrap();
+        let sig = kp.sign(&rng, &challenge.bytes).unwrap();
+        let proof = miss_minute_identity::verify_platform_signature(
+            kp.public_key().as_ref(),
+            &challenge.bytes,
+            sig.as_ref(),
+        )
+        .unwrap();
+        let session = authority
+            .engine
+            .complete_owner_authentication_with_verified_proof(
+                &challenge.challenge_id,
+                proof,
+                AuthenticationAssurance::PlatformUserVerification,
+                Duration::from_secs(600),
+            )
+            .unwrap();
+        authority.session_id = Some(session.session_id);
+
+        let authed_status = authority.status();
+        assert_eq!(authed_status.mode, OperatingMode::OwnerMode);
+        assert!(authed_status.authenticated);
+        assert_eq!(authed_status.candidate_name, None);
+        assert!(
+            authority
+                .authorize(
+                    capabilities::PRIVATE_MEMORY_READ,
+                    CommandOrigin::UserInput,
+                    Risk::Low,
+                    false,
+                )
+                .is_ok()
+        );
+
+        authority.lock();
+        let locked_status = authority.status();
+        assert_eq!(locked_status.mode, OperatingMode::GuestMode);
+        assert!(!locked_status.authenticated);
+        assert!(!locked_status.owner_candidate);
+        assert_eq!(locked_status.candidate_confidence, 0.0);
+        assert_eq!(locked_status.session_id, None);
+        assert!(
+            authority
+                .authorize(
+                    capabilities::PRIVATE_MEMORY_READ,
+                    CommandOrigin::UserInput,
+                    Risk::Low,
+                    false,
+                )
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_candidate_confidence_rejected() {
+        let (mut authority, _kp, dir) = authority_with_real_p256();
+        assert!(
+            authority
+                .record_candidate_signal("face", f32::NAN, true, false)
+                .is_err()
+        );
+        assert!(
+            authority
+                .record_candidate_signal("face", -0.2, true, false)
+                .is_err()
+        );
+        assert!(
+            authority
+                .record_candidate_signal("face", 1.2, true, false)
+                .is_err()
+        );
+        assert!(
+            authority
+                .record_candidate_signal("face", 0.55, true, false)
+                .is_err()
+        );
+        assert!(
+            authority
+                .record_candidate_signal("face", 0.95, false, false)
+                .is_err()
+        );
+        assert!(
+            authority
+                .record_candidate_signal("voice", 0.40, false, false)
+                .is_err()
+        );
+        assert!(
+            authority
+                .record_candidate_signal("wake", 0.40, false, false)
+                .is_err()
+        );
+        assert_eq!(authority.status().mode, OperatingMode::GuestMode);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emergency_kill_wipes_sessions_and_preserves_valid_audit_chain() {
+        use ring::{rand::SystemRandom, signature::KeyPair};
+        let (mut authority, kp, dir) = authority_with_real_p256();
+        let rng = SystemRandom::new();
+        authority
+            .record_candidate_signal("face", 0.90, true, true)
+            .unwrap();
+        let dev_id = DeviceId(authority.device.as_ref().unwrap().device_id.clone());
+        let challenge = authority.engine.begin_authentication(&dev_id).unwrap();
+        let sig = kp.sign(&rng, &challenge.bytes).unwrap();
+        let proof = miss_minute_identity::verify_platform_signature(
+            kp.public_key().as_ref(),
+            &challenge.bytes,
+            sig.as_ref(),
+        )
+        .unwrap();
+        let session = authority
+            .engine
+            .complete_owner_authentication_with_verified_proof(
+                &challenge.challenge_id,
+                proof,
+                AuthenticationAssurance::PlatformUserVerification,
+                Duration::from_secs(600),
+            )
+            .unwrap();
+        authority.session_id = Some(session.session_id);
+        assert!(authority.status().authenticated);
+
+        let killed = authority.emergency_kill();
+        assert!(!killed.authenticated);
+        assert!(!killed.owner_candidate);
+        assert_eq!(killed.mode, OperatingMode::GuestMode);
+        assert!(authority.verify_audit_chain());
+        assert!(
+            authority
+                .audit_entries()
+                .iter()
+                .any(|entry| entry.event == "emergency_kill")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recovery_kit_seal_and_open_roundtrip_and_wrong_passphrase_fails() {
+        use ring::{
+            rand::SystemRandom,
+            signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair},
+        };
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let pub_key = kp.public_key().as_ref();
+        let kit_json = seal_recovery_kit(
+            "owner-recovery-test-01",
+            pub_key,
+            pkcs8.as_ref(),
+            "correct-horse-battery-staple",
+        )
+        .unwrap();
+
+        let opened = open_recovery_kit(&kit_json, "correct-horse-battery-staple").unwrap();
+        assert_eq!(opened.owner_id, "owner-recovery-test-01");
+        assert_eq!(opened.public_key.as_slice(), pub_key);
+        assert_eq!(opened.private_key_pkcs8.as_slice(), pkcs8.as_ref());
+
+        assert!(open_recovery_kit(&kit_json, "wrong-horse-battery-staple").is_err());
+        assert!(
+            seal_recovery_kit("owner-recovery-test-01", pub_key, pkcs8.as_ref(), "short").is_err()
+        );
     }
 }
 
@@ -868,12 +1361,14 @@ mod windows_auth {
             cCredentialParameters: 1,
             pCredentialParameters: &mut parameter,
         };
-        let mut options = WEBAUTHN_AUTHENTICATOR_MAKE_CREDENTIAL_OPTIONS::default();
-        options.dwVersion = WEBAUTHN_AUTHENTICATOR_MAKE_CREDENTIAL_OPTIONS_VERSION_1;
-        options.dwTimeoutMilliseconds = 120_000;
-        options.dwAuthenticatorAttachment = WEBAUTHN_AUTHENTICATOR_ATTACHMENT_PLATFORM;
-        options.dwUserVerificationRequirement = WEBAUTHN_USER_VERIFICATION_REQUIREMENT_REQUIRED;
-        options.dwAttestationConveyancePreference = WEBAUTHN_ATTESTATION_CONVEYANCE_PREFERENCE_NONE;
+        let options = WEBAUTHN_AUTHENTICATOR_MAKE_CREDENTIAL_OPTIONS {
+            dwVersion: WEBAUTHN_AUTHENTICATOR_MAKE_CREDENTIAL_OPTIONS_VERSION_1,
+            dwTimeoutMilliseconds: 120_000,
+            dwAuthenticatorAttachment: WEBAUTHN_AUTHENTICATOR_ATTACHMENT_PLATFORM,
+            dwUserVerificationRequirement: WEBAUTHN_USER_VERIFICATION_REQUIREMENT_REQUIRED,
+            dwAttestationConveyancePreference: WEBAUTHN_ATTESTATION_CONVEYANCE_PREFERENCE_NONE,
+            ..Default::default()
+        };
         let hwnd = window
             .hwnd()
             .map_err(|e| format!("Cannot open Windows Hello: {e}"))?;
@@ -958,12 +1453,14 @@ mod windows_auth {
             cCredentials: 1,
             pCredentials: &mut allowed,
         };
-        let mut options = WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS::default();
-        options.dwVersion = WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS_VERSION_1;
-        options.dwTimeoutMilliseconds = 120_000;
-        options.CredentialList = list;
-        options.dwAuthenticatorAttachment = WEBAUTHN_AUTHENTICATOR_ATTACHMENT_PLATFORM;
-        options.dwUserVerificationRequirement = WEBAUTHN_USER_VERIFICATION_REQUIREMENT_REQUIRED;
+        let options = WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS {
+            dwVersion: WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS_VERSION_1,
+            dwTimeoutMilliseconds: 120_000,
+            CredentialList: list,
+            dwAuthenticatorAttachment: WEBAUTHN_AUTHENTICATOR_ATTACHMENT_PLATFORM,
+            dwUserVerificationRequirement: WEBAUTHN_USER_VERIFICATION_REQUIREMENT_REQUIRED,
+            ..Default::default()
+        };
         let hwnd = window
             .hwnd()
             .map_err(|e| format!("Cannot open Windows Hello: {e}"))?;

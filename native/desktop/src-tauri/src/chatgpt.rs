@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::AppHandle;
@@ -105,7 +105,8 @@ fn refresh_lock() -> &'static Mutex<()> {
 
 fn chatgpt_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = util::app_data_dir(app)?.join("chatgpt");
-    std::fs::create_dir_all(&dir).map_err(|error| format!("Cannot create the ChatGPT directory: {error}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("Cannot create the ChatGPT directory: {error}"))?;
     Ok(dir)
 }
 
@@ -119,12 +120,11 @@ fn credentials_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn load_host(app: &AppHandle) -> Result<HostState, String> {
     let path = host_path(app)?;
-    if let Ok(bytes) = std::fs::read(&path) {
-        if let Ok(state) = serde_json::from_slice::<HostState>(&bytes) {
-            if !state.host_id.is_empty() {
-                return Ok(state);
-            }
-        }
+    if let Ok(bytes) = std::fs::read(&path)
+        && let Ok(state) = serde_json::from_slice::<HostState>(&bytes)
+        && !state.host_id.is_empty()
+    {
+        return Ok(state);
     }
     // First launch for this host: mint and persist a stable UUID-based host id.
     let state = HostState {
@@ -136,12 +136,14 @@ fn load_host(app: &AppHandle) -> Result<HostState, String> {
 }
 
 fn save_host(app: &AppHandle, state: &HostState) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(state).map_err(|error| format!("Cannot serialize host state: {error}"))?;
+    let bytes = serde_json::to_vec_pretty(state)
+        .map_err(|error| format!("Cannot serialize host state: {error}"))?;
     util::atomic_write(&host_path(app)?, &bytes)
 }
 
 fn seal_key() -> Result<zeroize::Zeroizing<Vec<u8>>, String> {
-    miss_minute_agent::secrets::get_or_create_file_key(FILE_KEY).map_err(|error| format!("{error:#}"))
+    miss_minute_agent::secrets::get_or_create_file_key(FILE_KEY)
+        .map_err(|error| format!("{error:#}"))
 }
 
 fn load_credentials(app: &AppHandle) -> Result<Option<Credentials>, String> {
@@ -160,7 +162,8 @@ fn load_credentials(app: &AppHandle) -> Result<Option<Credentials>, String> {
 
 fn save_credentials(app: &AppHandle, credentials: &Credentials) -> Result<(), String> {
     let key = seal_key()?;
-    let plaintext = serde_json::to_vec(credentials).map_err(|error| format!("Cannot serialize credentials: {error}"))?;
+    let plaintext = serde_json::to_vec(credentials)
+        .map_err(|error| format!("Cannot serialize credentials: {error}"))?;
     let blob = crypto::seal(&key, &plaintext)?;
     util::atomic_write(&credentials_path(app)?, &blob)
 }
@@ -192,8 +195,11 @@ fn account_view(credentials: &Credentials) -> ChatGptAccount {
 
 /// Opens the system browser and resolves when the loopback callback completes (or times out).
 #[tauri::command]
-pub async fn chatgpt_sign_in(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<ChatGptAccount, String> {
-    crate::require_dashboard(&window)?;
+pub async fn chatgpt_sign_in(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<ChatGptAccount, String> {
+    crate::require_owner_capability(&window, miss_minute_identity::capabilities::SETTINGS_MODIFY)?;
 
     let host = load_host(&app)?;
     let returning_client = host.client_id.clone();
@@ -211,7 +217,9 @@ pub async fn chatgpt_sign_in(window: tauri::WebviewWindow, app: tauri::AppHandle
         .port();
     let redirect_uri = format!("http://127.0.0.1:{port}/auth/callback");
 
-    let client_id = returning_client.clone().unwrap_or_else(|| DYNAMIC_CLIENT.to_owned());
+    let client_id = returning_client
+        .clone()
+        .unwrap_or_else(|| DYNAMIC_CLIENT.to_owned());
     let mut url = Url::parse(AUTHORIZE_URL).map_err(|_| "Internal URL error.".to_owned())?;
     {
         let mut query = url.query_pairs_mut();
@@ -244,10 +252,13 @@ pub async fn chatgpt_sign_in(window: tauri::WebviewWindow, app: tauri::AppHandle
     // Never logged: this URL may carry id_token_hint/login_hint.
     util::open_in_browser(&authorize_url)?;
 
-    let callback = loopback::wait_for_callback(&listener, "/auth/callback", SIGN_IN_TIMEOUT).await?;
+    let callback =
+        loopback::wait_for_callback(&listener, "/auth/callback", SIGN_IN_TIMEOUT).await?;
 
     if callback.query.get("state").map(String::as_str) != Some(state_token.as_str()) {
-        return Err("The sign-in response did not match this request. Please try again.".to_owned());
+        return Err(
+            "The sign-in response did not match this request. Please try again.".to_owned(),
+        );
     }
     if let Some(error) = callback.query.get("error") {
         if error == "access_denied" {
@@ -266,16 +277,20 @@ pub async fn chatgpt_sign_in(window: tauri::WebviewWindow, app: tauri::AppHandle
     let issued = callback.query.get("client_id").cloned();
     let client_id = match &returning_client {
         Some(previous) => {
-            if let Some(issued) = &issued {
-                if issued != previous {
-                    return Err("The sign-in returned a different client registration than expected.".to_owned());
-                }
+            if let Some(issued) = &issued
+                && issued != previous
+            {
+                return Err(
+                    "The sign-in returned a different client registration than expected."
+                        .to_owned(),
+                );
             }
             previous.clone()
         }
         None => {
-            let issued =
-                issued.ok_or_else(|| "Registration did not complete (no client id was issued).".to_owned())?;
+            let issued = issued.ok_or_else(|| {
+                "Registration did not complete (no client id was issued).".to_owned()
+            })?;
             let mut host = host.clone();
             host.client_id = Some(issued.clone());
             save_host(&app, &host)?;
@@ -303,10 +318,10 @@ pub async fn chatgpt_sign_in(window: tauri::WebviewWindow, app: tauri::AppHandle
         .ok_or_else(|| "The token response did not include an ID token.".to_owned())?;
     let claims = verify_id_token(&client, &id_token, &client_id, &nonce).await?;
 
-    if let Some(previous) = &existing {
-        if previous.subject != claims.sub {
-            return Err("The verified account did not match the saved account.".to_owned());
-        }
+    if let Some(previous) = &existing
+        && previous.subject != claims.sub
+    {
+        return Err("The verified account did not match the saved account.".to_owned());
     }
 
     let scopes: Vec<String> = token
@@ -335,39 +350,53 @@ pub async fn chatgpt_sign_in(window: tauri::WebviewWindow, app: tauri::AppHandle
 }
 
 #[tauri::command]
-pub fn chatgpt_account(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<ChatGptAccount, String> {
-    crate::require_dashboard(&window)?;
-    Ok(load_credentials(&app)?.map(|credentials| account_view(&credentials)).unwrap_or_default())
+pub fn chatgpt_account(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<ChatGptAccount, String> {
+    crate::require_owner_capability(&window, miss_minute_identity::capabilities::AI_PROVIDER_USE)?;
+    Ok(load_credentials(&app)?
+        .map(|credentials| account_view(&credentials))
+        .unwrap_or_default())
 }
 
 #[tauri::command]
-pub async fn chatgpt_sign_out(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
-    crate::require_dashboard(&window)?;
+pub async fn chatgpt_sign_out(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    crate::require_owner_capability(&window, miss_minute_identity::capabilities::SETTINGS_MODIFY)?;
     // Serialize against refreshes so a concurrent request cannot resurrect cleared tokens.
     let _guard = refresh_lock().lock().await;
-    if let Some(credentials) = load_credentials(&app)? {
-        if !credentials.refresh_token.is_empty() {
-            let client = util::http_client(Duration::from_secs(15), true)?;
-            // Best effort: revoke the renewable session, then clear locally regardless.
-            let body = util::form_encode(&[
-                ("token", &credentials.refresh_token),
-                ("token_type_hint", "refresh_token"),
-                ("client_id", &credentials.client_id),
-            ]);
-            let _ = client
-                .post(REVOKE_URL)
-                .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(body)
-                .send()
-                .await;
-        }
+    if let Some(credentials) = load_credentials(&app)?
+        && !credentials.refresh_token.is_empty()
+    {
+        let client = util::http_client(Duration::from_secs(15), true)?;
+        // Best effort: revoke the renewable session, then clear locally regardless.
+        let body = util::form_encode(&[
+            ("token", &credentials.refresh_token),
+            ("token_type_hint", "refresh_token"),
+            ("client_id", &credentials.client_id),
+        ]);
+        let _ = client
+            .post(REVOKE_URL)
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(body)
+            .send()
+            .await;
     }
     clear_credentials(&app)
 }
 
 #[tauri::command]
-pub async fn chatgpt_models(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<Vec<ChatGptModel>, String> {
-    crate::require_dashboard(&window)?;
+pub async fn chatgpt_models(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<Vec<ChatGptModel>, String> {
+    crate::require_owner_capability(&window, miss_minute_identity::capabilities::AI_PROVIDER_USE)?;
     let token = access_token_for_request(&app).await?;
     let client = util::http_client(Duration::from_secs(15), true)?;
     let response = client
@@ -391,7 +420,8 @@ pub async fn chatgpt_models(window: tauri::WebviewWindow, app: tauri::AppHandle)
 /// expiry. Used by the sign-in flow result and by the provider proxy for `chatgpt` requests.
 pub(crate) async fn access_token_for_request(app: &AppHandle) -> Result<String, String> {
     let _guard = refresh_lock().lock().await;
-    let mut credentials = load_credentials(app)?.ok_or_else(|| "Not signed in to ChatGPT.".to_owned())?;
+    let mut credentials =
+        load_credentials(app)?.ok_or_else(|| "Not signed in to ChatGPT.".to_owned())?;
     let now = util::now_ms();
     if credentials.access_expires_at_unix_ms - now > REFRESH_SKEW_MS {
         return Ok(credentials.access_token);
@@ -420,29 +450,42 @@ pub(crate) async fn access_token_for_request(app: &AppHandle) -> Result<String, 
     if let Some(scope) = refreshed.scope {
         credentials.scopes = scope.split_whitespace().map(str::to_owned).collect();
     }
-    credentials.access_expires_at_unix_ms = util::now_ms() + refreshed.expires_in.unwrap_or(3600) * 1000;
+    credentials.access_expires_at_unix_ms =
+        util::now_ms() + refreshed.expires_in.unwrap_or(3600) * 1000;
     save_credentials(app, &credentials)?;
     Ok(credentials.access_token)
 }
 
 /// POSTs a form-encoded grant to the token endpoint and parses the response. Error messages
 /// carry only the HTTP status and the OAuth error code, never token material.
-async fn post_token(client: &reqwest::Client, params: &[(&str, &str)]) -> Result<TokenResponse, String> {
+async fn post_token(
+    client: &reqwest::Client,
+    params: &[(&str, &str)],
+) -> Result<TokenResponse, String> {
     let body = util::form_encode(params);
     let response = client
         .post(TOKEN_URL)
-        .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
         .header(reqwest::header::ACCEPT, "application/json")
         .body(body)
         .send()
         .await
         .map_err(crate::provider::describe_error)?;
     let status = response.status();
-    let text = response.text().await.map_err(|_| "Malformed token response.".to_owned())?;
+    let text = response
+        .text()
+        .await
+        .map_err(|_| "Malformed token response.".to_owned())?;
     if !status.is_success() {
-        let code = serde_json::from_str::<Value>(&text)
-            .ok()
-            .and_then(|value| value.get("error").and_then(Value::as_str).map(str::to_owned));
+        let code = serde_json::from_str::<Value>(&text).ok().and_then(|value| {
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
         return Err(match code {
             Some(code) => format!("Token request failed (HTTP {}): {code}", status.as_u16()),
             None => format!("Token request failed (HTTP {}).", status.as_u16()),
@@ -468,8 +511,11 @@ async fn verify_id_token(
         .await
         .map_err(|_| "Could not read the OpenAI signing keys.".to_owned())?;
 
-    let header = decode_header(id_token).map_err(|_| "The ID token header is unreadable.".to_owned())?;
-    let kid = header.kid.ok_or_else(|| "The ID token has no key id.".to_owned())?;
+    let header =
+        decode_header(id_token).map_err(|_| "The ID token header is unreadable.".to_owned())?;
+    let kid = header
+        .kid
+        .ok_or_else(|| "The ID token has no key id.".to_owned())?;
     let jwk = jwks
         .get("keys")
         .and_then(Value::as_array)
@@ -480,11 +526,17 @@ async fn verify_id_token(
             })
         })
         .ok_or_else(|| "No matching OpenAI signing key was found.".to_owned())?;
-    let modulus = jwk.get("n").and_then(Value::as_str).ok_or_else(|| "Malformed signing key.".to_owned())?;
-    let exponent = jwk.get("e").and_then(Value::as_str).ok_or_else(|| "Malformed signing key.".to_owned())?;
+    let modulus = jwk
+        .get("n")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Malformed signing key.".to_owned())?;
+    let exponent = jwk
+        .get("e")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Malformed signing key.".to_owned())?;
 
-    let decoding_key =
-        DecodingKey::from_rsa_components(modulus, exponent).map_err(|_| "Malformed signing key.".to_owned())?;
+    let decoding_key = DecodingKey::from_rsa_components(modulus, exponent)
+        .map_err(|_| "Malformed signing key.".to_owned())?;
     let mut validation = Validation::new(Algorithm::RS256);
     validation.set_issuer(&[ISSUER]);
     validation.set_audience(&[client_id]);
@@ -525,7 +577,10 @@ fn parse_models(body: &Value) -> Vec<ChatGptModel> {
                 .or_else(|| entry.get("id"))
                 .and_then(Value::as_str);
             if let Some(slug) = slug {
-                let display_name = entry.get("display_name").and_then(Value::as_str).unwrap_or(slug);
+                let display_name = entry
+                    .get("display_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(slug);
                 models.push(ChatGptModel {
                     slug: slug.to_owned(),
                     display_name: display_name.to_owned(),

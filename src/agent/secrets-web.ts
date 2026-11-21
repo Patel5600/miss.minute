@@ -9,8 +9,9 @@
  * The desktop app never uses this module: there, keys go to the OS vault (credential_set) and
  * are never read back into the renderer.
  */
-import { kvGet, kvSet } from '../store/db';
-import { isDesktopRuntime } from '../desktop/bridge';
+import { kvGet, kvSet } from '../store/db.ts';
+import { isDesktopRuntime } from '../desktop/bridge.ts';
+import { isAndroidApp } from './platform.ts';
 
 export type WebSecretId = 'openai' | 'gemini' | 'anthropic' | 'openrouter' | 'ollama' | 'elevenlabs';
 
@@ -43,8 +44,8 @@ function notify(): void {
 }
 
 function assertWeb(): void {
-  if (isDesktopRuntime()) {
-    throw new Error('In the desktop app, keys are stored in the Windows Credential Manager, not in the browser.');
+  if (isDesktopRuntime() || isAndroidApp()) {
+    throw new Error('In the native app, keys are stored in OS native storage, not in the browser.');
   }
 }
 
@@ -108,7 +109,7 @@ function isSealed(value: unknown): value is SealedSecret {
  * first. Records that no longer decrypt (device key wiped) are removed.
  */
 export function loadRememberedWebSecrets(): Promise<void> {
-  if (isDesktopRuntime() || !canRememberWebSecrets()) return Promise.resolve();
+  if (isDesktopRuntime() || isAndroidApp() || !canRememberWebSecrets()) return Promise.resolve();
   if (!loading) {
     loading = (async () => {
       for (const id of WEB_SECRET_IDS) {

@@ -19,11 +19,14 @@ public final class Notifications {
     public static final String CHANNEL_OVERLAY = "mm_overlay";
     public static final String CHANNEL_REMINDERS = "mm_reminders";
     public static final String CHANNEL_CARDS = "mm_cards";
+    public static final String CHANNEL_WAKE = "mm_wake";
 
     /** The ongoing notification of the overlay foreground service. 7412 belongs to the metadata service. */
     public static final int ID_OVERLAY = 7413;
     /** Prompts: "Tap to bring her back" and "needs a permission". */
     public static final int ID_PROMPT = 7414;
+    /** Ongoing notification for user-started local wake-word listening. */
+    public static final int ID_WAKE = 7415;
 
     private static final int FLAGS = PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT;
 
@@ -44,9 +47,13 @@ public final class Notifications {
         NotificationChannel cards = new NotificationChannel(CHANNEL_CARDS,
                 context.getString(R.string.cards_channel_name), NotificationManager.IMPORTANCE_DEFAULT);
         cards.setDescription(context.getString(R.string.cards_channel_description));
+        NotificationChannel wake = new NotificationChannel(CHANNEL_WAKE,
+                context.getString(R.string.wake_channel_name), NotificationManager.IMPORTANCE_LOW);
+        wake.setDescription(context.getString(R.string.wake_channel_description));
         manager.createNotificationChannel(overlay);
         manager.createNotificationChannel(reminders);
         manager.createNotificationChannel(cards);
+        manager.createNotificationChannel(wake);
     }
 
     private static PendingIntent open(Context context) {
@@ -57,6 +64,33 @@ public final class Notifications {
     private static PendingIntent stop(Context context) {
         Intent intent = new Intent(context, KillReceiver.class).setAction(KillReceiver.ACTION_KILL);
         return PendingIntent.getBroadcast(context, 1, intent, FLAGS);
+    }
+
+    private static PendingIntent stopWake(Context context) {
+        Intent intent = new Intent(context, KillReceiver.class).setAction(KillReceiver.ACTION_STOP_WAKE);
+        return PendingIntent.getBroadcast(context, 5, intent, FLAGS);
+    }
+
+    /** The ongoing notification that keeps the local wake-word listener transparent to the user. */
+    public static Notification wakeListening(Context context) {
+        Icon icon = Icon.createWithResource(context, R.drawable.ic_stat_mm);
+        Notification.Builder builder = new Notification.Builder(context, CHANNEL_WAKE)
+                .setSmallIcon(R.drawable.ic_stat_mm)
+                .setContentTitle(context.getString(R.string.wake_notification_title))
+                .setContentText(context.getString(R.string.wake_notification_text))
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setContentIntent(open(context))
+                .addAction(new Notification.Action.Builder(icon, context.getString(R.string.action_open),
+                        open(context)).build())
+                .addAction(new Notification.Action.Builder(icon, context.getString(R.string.action_stop_wake),
+                        stopWake(context)).build());
+        if (Build.VERSION.SDK_INT >= 31) {
+            builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
+        }
+        return builder.build();
     }
 
     /** The ongoing notification that keeps the overlay service in the foreground. */
@@ -120,6 +154,14 @@ public final class Notifications {
         if (manager != null) {
             manager.cancel(ID_OVERLAY);
             manager.cancel(ID_PROMPT);
+            manager.cancel(ID_WAKE);
+        }
+    }
+
+    public static void cancelWakeNotification(Context context) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager != null) {
+            manager.cancel(ID_WAKE);
         }
     }
 }
